@@ -1,0 +1,8 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Child</title>
+<body><p>child</p>
+<script>
+// Only works if this window kept its opener.
+if (window.opener) { window.opener.postMessage('from-child', '*'); }
+</script>

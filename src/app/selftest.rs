@@ -188,6 +188,30 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
 
     run_input(shell, r).await;
     run_scroll(shell, r).await;
+    if let Ok(url) = std::env::var("BROWSAH_MANIFEST_TEST") {
+        // Spike: load a page and read its web manifest through the DevTools protocol.
+        let st = shell.state();
+        shell.entry.set_text(&url);
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        let before = st.borrow().address.clone();
+        let _ = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.address != before }).await;
+        glib::timeout_future(Duration::from_millis(1000)).await;
+        let v = shell.view();
+        let t0 = std::time::Instant::now();
+        let id = v.cdp("Page.getAppManifest");
+        let ok = wait_until(10_000, || v.cdp_result(id).is_some()).await;
+        println!("manifest spike: answered={ok} in {} ms", t0.elapsed().as_millis());
+        if let Some((success, json)) = v.cdp_result(id) {
+            println!("manifest spike: success={success}\n{json}");
+        }
+        for icon in ["icon.svg", "icon-192.png", "missing.png"] {
+            let u = url.replace("index.html", icon);
+            let t0 = std::time::Instant::now();
+            v.download_image(&u);
+            let ok = wait_until(10_000, || v.image_result(&u).is_some()).await;
+            println!("icon spike: {icon}: answered={ok} in {} ms, (status, w, h)={:?}", t0.elapsed().as_millis(), v.image_result(&u));
+        }
+    }
     if let Ok(text) = std::env::var("BROWSAH_NET_TEST") {
         // Optional: type this into the address bar and report where the page ends up (needs network).
         let st = shell.state();
@@ -202,6 +226,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         println!("net test: {:?} -> address {:?} title {:?}", text, st.borrow().address, st.borrow().title);
     }
     run_tabs(shell, r).await;
+    run_opener(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -575,7 +600,10 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     shell.entry.emit_by_name::<()>("activate", &[]);
     let ok = wait_until(15_000, || cur.state.borrow().crashed).await;
     r.check("a crashed renderer is reported and the crashed page shown", ok && cur.sad_visible() && !cur.view().widget.is_visible(), || format!("{:?}", cur.state.borrow()));
-    r.check("other tabs are not affected by the crash", other.as_ref().is_some_and(|o| !o.state.borrow().crashed), || "other tab crashed".into());
+    // The other tab is a popup of this one, so it keeps `window.opener` and therefore shares the
+    // renderer process: it goes down with its opener (an unrelated tab would not).
+    let ok = wait_until(5_000, || other.as_ref().is_some_and(|o| o.state.borrow().crashed)).await;
+    r.check("a popup shares its opener's renderer and crashes with it", ok, || "other tab did not crash".into());
     shell.entry.set_text(&page("a.html"));
     shell.entry.emit_by_name::<()>("activate", &[]);
     let ok = wait_until(15_000, || {
@@ -644,4 +672,29 @@ async fn run_scroll(shell: &Rc<Shell>, r: &mut Report) {
         r.check(&format!("sustained {per_event_px} px events every {interval_ms} ms are all applied"), (y() - sent).abs() <= sent * 0.02 + 5.0, || format!("sent {sent}, scrolled {}", y()));
     }
     let _ = &v;
+}
+
+/// A popup opened by a click keeps `window.opener`: the child posts a message to its opener.
+async fn run_opener(shell: &Rc<Shell>, r: &mut Report) {
+    let d = Driver { shell };
+    // Back to one tab, on the opener page.
+    while shell.tab_count() > 1 {
+        let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+        glib::timeout_future(Duration::from_millis(300)).await;
+    }
+    let parent = shell.current().expect("tab");
+    shell.entry.set_text(&page("opener.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || {
+        let s = parent.state.borrow();
+        !s.loading && s.title == "Opener test"
+    })
+    .await;
+    r.check("opener test page loads", ok, || format!("{:?}", parent.state.borrow()));
+    glib::timeout_future(Duration::from_millis(800)).await;
+    d.click(80.0, 40.0);
+    let ok = wait_until(10_000, || parent.state.borrow().title == "msg:from-child").await;
+    r.check("a popup keeps window.opener (postMessage reaches the opener)", ok, || {
+        format!("tabs={} parent title={:?}", shell.tab_count(), parent.state.borrow().title)
+    });
 }

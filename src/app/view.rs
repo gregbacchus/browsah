@@ -98,10 +98,44 @@ pub enum ViewEvent {
     Address(String),
     Title(String),
     Loading { loading: bool, can_back: bool, can_forward: bool },
-    /// The page asked for a new window (`window.open`, `target=_blank`): open this URL as a tab.
-    OpenUrl(String),
+    /// A popup that keeps its opener (`window.open` with a user gesture): adopt it as a tab.
+    Popup(PopupSpec),
     /// The page's renderer process died (crash, out of memory, killed).
     Crashed(String),
+}
+
+/// Keeps a DevTools observer registration alive (dropping it unregisters the observer).
+struct RegHandle(#[allow(dead_code)] Registration);
+unsafe impl Send for RegHandle {}
+
+wrap_dev_tools_message_observer! {
+    struct ViewDevTools { shared: Arc<Shared> }
+
+    impl DevToolsMessageObserver {
+        // Results of `execute_dev_tools_method` calls, kept by message id for the caller to read.
+        fn on_dev_tools_method_result(
+            &self,
+            _b: Option<&mut Browser>,
+            message_id: ::std::os::raw::c_int,
+            success: ::std::os::raw::c_int,
+            result: Option<&[u8]>,
+        ) {
+            let text = result.map(|r| String::from_utf8_lossy(r).into_owned()).unwrap_or_default();
+            self.shared.cdp_results.lock().unwrap().insert(message_id, (success != 0, text));
+        }
+    }
+}
+
+wrap_download_image_callback! {
+    struct ViewImage { shared: Arc<Shared> }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(&self, url: Option<&CefString>, status: ::std::os::raw::c_int, image: Option<&mut Image>) {
+            let url = url.map(|u| u.to_string()).unwrap_or_default();
+            let (w, h) = image.map(|i| (i.width(), i.height())).unwrap_or((0, 0));
+            self.shared.images.lock().unwrap().insert(url, (status, w, h));
+        }
+    }
 }
 
 /// State shared with CEF's thread.
@@ -117,6 +151,48 @@ struct Shared {
     hidden: AtomicBool,
     /// A navigation requested before the browser existed; run when it is created.
     pending_url: Mutex<Option<String>>,
+    /// DevTools method results by message id: (success, JSON text).
+    cdp_results: Mutex<HashMap<i32, (bool, String)>>,
+    cdp_registration: Mutex<Option<RegHandle>>,
+    /// Downloaded images by URL: (HTTP status, width, height).
+    images: Mutex<HashMap<String, (i32, usize, usize)>>,
+    next_cdp_id: std::sync::atomic::AtomicI32,
+    /// Rendering settings, so a popup browser can be created like its opener.
+    accel: bool,
+    frame_rate: i32,
+}
+
+impl Shared {
+    fn new(id: u64, device_resolution: bool, accel: bool, frame_rate: i32) -> Arc<Shared> {
+        Arc::new(Shared {
+            id,
+            view: Mutex::new(View { size: (1280, 800), scale: 1.0, backing: device_resolution }),
+            browser: Mutex::new(None),
+            host: Mutex::new(None),
+            frames: AtomicU64::new(0),
+            hidden: AtomicBool::new(false),
+            pending_url: Mutex::new(None),
+            cdp_results: Mutex::new(HashMap::new()),
+            cdp_registration: Mutex::new(None),
+            images: Mutex::new(HashMap::new()),
+            next_cdp_id: std::sync::atomic::AtomicI32::new(1),
+            accel,
+            frame_rate,
+        })
+    }
+}
+
+/// A popup browser CEF is creating for a page (`window.open`) that keeps its opener. It is
+/// built on CEF's thread; the shell turns it into a tab with `BrowserView::adopt`.
+#[derive(Clone)]
+pub struct PopupSpec {
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for PopupSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PopupSpec(view {})", self.shared.id)
+    }
 }
 
 /// GTK-thread-only state, looked up by view id from the closures sent across threads.
@@ -339,6 +415,10 @@ wrap_life_span_handler! {
             let Some(host) = browser.host() else { return };
             host.was_hidden(self.shared.hidden.load(Ordering::Relaxed) as _);
             host.was_resized();
+            let mut observer = ViewDevTools::new(self.shared.clone());
+            if let Some(reg) = host.add_dev_tools_message_observer(Some(&mut observer)) {
+                *self.shared.cdp_registration.lock().unwrap() = Some(RegHandle(reg));
+            }
             *self.shared.host.lock().unwrap() = Some(HostHandle(host));
             *self.shared.browser.lock().unwrap() = Some(BrowserHandle(browser.clone()));
             if let Some(url) = self.shared.pending_url.lock().unwrap().take() {
@@ -349,31 +429,43 @@ wrap_life_span_handler! {
             send(self.shared.id, ViewEvent::Ready);
         }
 
-        // A page wants a new window. Windowless browsers have no window to give it, so cancel
-        // the popup and let the shell open the URL as a tab. Only for a user gesture: pages
-        // that open windows on their own (timers, load) are blocked.
+        // A page wants a new window. A windowless browser has no window to give it, so create the
+        // popup as another windowless browser (keeping `window.opener`, which login and payment
+        // flows rely on) and let the shell show it as a tab. Only for a user gesture: pages that
+        // open windows on their own (timers, load) are blocked.
         fn on_before_popup(
             &self,
             _b: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             _popup_id: ::std::os::raw::c_int,
-            target_url: Option<&CefString>,
+            _target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             _disposition: WindowOpenDisposition,
             user_gesture: ::std::os::raw::c_int,
             _features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
-            _settings: Option<&mut BrowserSettings>,
+            window_info: Option<&mut WindowInfo>,
+            client: Option<&mut Option<Client>>,
+            settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_js_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            if user_gesture != 0 {
-                if let Some(url) = target_url.map(|u| u.to_string()).filter(|u| !u.is_empty()) {
-                    send(self.shared.id, ViewEvent::OpenUrl(url));
-                }
+            let (Some(window_info), Some(client), Some(settings)) = (window_info, client, settings) else { return 1 };
+            if user_gesture == 0 {
+                return 1;
             }
-            1
+            let opener = &self.shared;
+            let backing = opener.view.lock().unwrap().backing;
+            let shared = Shared::new(NEXT_ID.fetch_add(1, Ordering::Relaxed), backing, opener.accel, opener.frame_rate);
+            *window_info = WindowInfo {
+                windowless_rendering_enabled: 1,
+                shared_texture_enabled: opener.accel as _,
+                runtime_style: RuntimeStyle::from(sys::cef_runtime_style_t::CEF_RUNTIME_STYLE_ALLOY),
+                ..Default::default()
+            };
+            settings.windowless_frame_rate = opener.frame_rate;
+            *client = Some(make_client(shared.clone()));
+            send(opener.id, ViewEvent::Popup(PopupSpec { shared }));
+            0
         }
 
         // The browser is gone: drop its GTK-side state so late events find nothing.
@@ -544,6 +636,17 @@ wrap_client! {
     }
 }
 
+fn make_client(shared: Arc<Shared>) -> Client {
+    ViewClient::new(
+        ViewRender::new(shared.clone()),
+        ViewLife::new(shared.clone()),
+        ViewLoad::new(shared.clone()),
+        ViewDisplay::new(shared.clone()),
+        ViewMenu::new(shared.clone()),
+        ViewRequest::new(shared),
+    )
+}
+
 /// The GTK input controllers, exposed so the self-test can emit their signals as a user would.
 pub struct Controllers {
     pub motion: gtk::EventControllerMotion,
@@ -588,6 +691,35 @@ impl BrowserView {
         on_event: impl Fn(ViewEvent) + 'static,
     ) -> Rc<BrowserView> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let shared = Shared::new(id, device_resolution, mode == Mode::Accel, frame_rate);
+        let view = Self::build(display, shared.clone(), on_event);
+        let window_info = WindowInfo {
+            windowless_rendering_enabled: 1,
+            shared_texture_enabled: (mode == Mode::Accel) as _,
+            runtime_style: RuntimeStyle::from(sys::cef_runtime_style_t::CEF_RUNTIME_STYLE_ALLOY),
+            ..Default::default()
+        };
+        let settings = BrowserSettings { windowless_frame_rate: frame_rate, ..Default::default() };
+        let mut client = make_client(shared);
+        browser_host_create_browser(
+            Some(&window_info),
+            Some(&mut client),
+            Some(&CefString::from(url)),
+            Some(&settings),
+            None,
+            None,
+        );
+        view
+    }
+
+    /// The view for a popup browser CEF is already creating (see `PopupSpec`).
+    pub fn adopt(display: gdk::Display, spec: PopupSpec, on_event: impl Fn(ViewEvent) + 'static) -> Rc<BrowserView> {
+        Self::build(display, spec.shared, on_event)
+    }
+
+    /// The GTK side of a view: widgets, input controllers, size tracking.
+    fn build(display: gdk::Display, shared: Arc<Shared>, on_event: impl Fn(ViewEvent) + 'static) -> Rc<BrowserView> {
+        let id = shared.id;
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Fill)
             .can_shrink(true)
@@ -611,15 +743,6 @@ impl BrowserView {
         widget.set_focusable(true);
         widget.set_focus_on_click(true);
 
-        let shared = Arc::new(Shared {
-            id,
-            view: Mutex::new(View { size: (1280, 800), scale: 1.0, backing: device_resolution }),
-            browser: Mutex::new(None),
-            host: Mutex::new(None),
-            frames: AtomicU64::new(0),
-            hidden: AtomicBool::new(false),
-            pending_url: Mutex::new(None),
-        });
         VIEWS.with(|v| {
             v.borrow_mut().insert(
                 id,
@@ -708,29 +831,6 @@ impl BrowserView {
             });
         }
 
-        let window_info = WindowInfo {
-            windowless_rendering_enabled: 1,
-            shared_texture_enabled: (mode == Mode::Accel) as _,
-            runtime_style: RuntimeStyle::from(sys::cef_runtime_style_t::CEF_RUNTIME_STYLE_ALLOY),
-            ..Default::default()
-        };
-        let settings = BrowserSettings { windowless_frame_rate: frame_rate, ..Default::default() };
-        let mut client = ViewClient::new(
-            ViewRender::new(shared.clone()),
-            ViewLife::new(shared.clone()),
-            ViewLoad::new(shared.clone()),
-            ViewDisplay::new(shared.clone()),
-            ViewMenu::new(shared.clone()),
-            ViewRequest::new(shared),
-        );
-        browser_host_create_browser(
-            Some(&window_info),
-            Some(&mut client),
-            Some(&CefString::from(url)),
-            Some(&settings),
-            None,
-            None,
-        );
         view
     }
 
@@ -780,6 +880,43 @@ impl BrowserView {
 
     pub fn stop(&self) {
         self.with_browser(|b| b.stop_load());
+    }
+
+    /// Run a DevTools protocol method with no parameters; returns the id to read the result with
+    /// `cdp_result`. Posted to CEF's UI thread.
+    pub fn cdp(&self, method: &'static str) -> i32 {
+        let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                h.0.execute_dev_tools_method(id, Some(&CefString::from(method)), None);
+            });
+        }
+        id
+    }
+
+    /// Download an image (an app icon) through the page's network stack. Posted to CEF's UI thread.
+    pub fn download_image(&self, url: &str) {
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let url = url.to_owned();
+            let shared = self.shared.clone();
+            on_ui(move || {
+                let h = h;
+                let mut cb = ViewImage::new(shared);
+                h.0.download_image(Some(&CefString::from(url.as_str())), 0, 512, 0, Some(&mut cb));
+            });
+        }
+    }
+
+    pub fn image_result(&self, url: &str) -> Option<(i32, usize, usize)> {
+        self.shared.images.lock().unwrap().get(url).copied()
+    }
+
+    /// The result of a `cdp` call once it has arrived: (success, JSON).
+    pub fn cdp_result(&self, id: i32) -> Option<(bool, String)> {
+        self.shared.cdp_results.lock().unwrap().get(&id).cloned()
     }
 
     /// Tell CEF whether the widget has the keyboard focus. Needed once the browser exists: a new

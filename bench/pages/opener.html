@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Opener test</title>
+<body style="font: 24px sans-serif; margin: 0">
+<button style="position: absolute; left: 20px; top: 20px; width: 120px; height: 40px"
+        onclick="window.open('child.html')">Open</button>
+<script>
+addEventListener('message', e => { document.title = 'msg:' + e.data; });
+</script>

@@ -1,0 +1,20 @@
+{
+  "id": "/app",
+  "name": "Spike Application",
+  "short_name": "Spike",
+  "description": "A manifest used to test reading web app details",
+  "start_url": "/index.html?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["minimal-ui"],
+  "theme_color": "#336699",
+  "background_color": "#ffffff",
+  "categories": ["productivity"],
+  "icons": [
+    {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [{"name": "Inbox", "url": "/inbox", "description": "Go to inbox"}],
+  "protocol_handlers": [{"protocol": "web+spike", "url": "/open?u=%s"}],
+  "launch_handler": {"client_mode": "focus-existing"}
+}

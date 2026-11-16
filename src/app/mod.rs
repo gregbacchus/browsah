@@ -157,17 +157,28 @@ impl Shell {
         self.stop.set_visible(s.loading);
     }
 
+    /// Show a popup browser (one that keeps its opener) as a new selected tab.
+    fn adopt_tab(self: &Rc<Self>, spec: view::PopupSpec) -> Rc<Tab> {
+        let (cell, state) = (Rc::new(OnceCell::new()), Rc::new(RefCell::new(State::default())));
+        let on_event = self.event_closure(&cell);
+        let view = BrowserView::adopt(WidgetExt::display(&self.window), spec, on_event);
+        self.add_tab(view, cell, state, true)
+    }
+
+    /// The closure that delivers a view's events to its tab.
+    fn event_closure(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>) -> impl Fn(ViewEvent) + 'static {
+        let shell = Rc::downgrade(self);
+        let cell = cell.clone();
+        move |ev: ViewEvent| {
+            if let (Some(shell), Some(tab)) = (shell.upgrade(), cell.get().and_then(|w| w.upgrade())) {
+                shell.handle(&tab, ev);
+            }
+        }
+    }
+
     /// Create a view for a tab, wired to deliver its events to `tab`.
     fn make_view(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>, url: &str) -> Rc<BrowserView> {
-        let on_event = {
-            let shell = Rc::downgrade(self);
-            let cell = cell.clone();
-            move |ev: ViewEvent| {
-                if let (Some(shell), Some(tab)) = (shell.upgrade(), cell.get().and_then(|w| w.upgrade())) {
-                    shell.handle(&tab, ev);
-                }
-            }
-        };
+        let on_event = self.event_closure(cell);
         BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate, url, on_event)
     }
 
@@ -176,6 +187,11 @@ impl Shell {
         let state = Rc::new(RefCell::new(State::default()));
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let view = self.make_view(&cell, url);
+        self.add_tab(view, cell, state, select)
+    }
+
+    /// Put a view in a new tab.
+    fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool) -> Rc<Tab> {
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
         let sad = adw::StatusPage::builder()
@@ -302,8 +318,8 @@ impl Shell {
                 }
                 tab.view().show_context_menu(req);
             }
-            ViewEvent::OpenUrl(url) => {
-                self.open_tab(&url, true);
+            ViewEvent::Popup(spec) => {
+                self.adopt_tab(spec);
             }
             ViewEvent::Crashed(why) => {
                 eprintln!("browsah: a page's renderer ended: {why}");
