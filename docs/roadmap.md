@@ -124,11 +124,13 @@ between windows; a workspace config layer with per-window live reload; colour (l
 controls (back, forward, reload, address bar editable/read-only/hidden, new-tab button, tab bar); locked
 workspaces (no new tabs; links and popups go to an ephemeral window); pinned tabs with scope limits that
 cannot be closed; tab restore with sleeping tabs behind blurred screenshots; per-workspace bookmarks and
-bookmark bar; the profile database. **History is built** (visits per workspace, closed tabs, the history window, reopen, ephemeral windows
+bookmark bar; the profile database. **Tab sweeping is built** (rules per workspace, close or discard, protection for unsaved input and playing
+media).
+**History is built** (visits per workspace, closed tabs, the history window, reopen, ephemeral windows
 recoverable, retention, `browsah history`). **Modals and popup policy are built** (the `modal` routing action, `tabs.popups`, `modals.style`).
 **Routing is built too** (rules in `config.yaml`, `profile.yaml` and `workspace.yaml`; a tab's right-click
-*Send to workspace*; `browsah route test`). **Not built:** tab groups, sweeping, permissions and cookie rules, web apps, address-bar suggestions from
-history.
+*Send to workspace*; `browsah route test`). **Not built:** tab groups, permissions and cookie rules, web apps, address-bar suggestions from history,
+sweeping actions beyond close and discard.
 Known gaps: pinned tabs reload on every open (not restored), bookmarks cannot be reordered or put in
 folders, no import, restore keeps only address, title and selection (not scroll position or history).
 

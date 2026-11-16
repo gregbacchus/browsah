@@ -67,6 +67,17 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |
 | `modals` | map | overlay | How modals are shown. |
 | `modals.style` | `overlay` or `window` | `overlay` | `overlay`: over the window's content. `window`: a separate window kept above the workspace's window. |
+| `sweep` | map | off | Tidying up tabs that are not used (below, and [sweep.md](sweep.md)). Applies when the workspace opens. |
+| `sweep.enabled` | bool | `false` | Sweeping is off unless this is `true`. |
+| `sweep.interval` | duration | `5m` | How often the rules are checked: a number and a unit (`30s`, `5m`, `2h`, `1d`), from 30 seconds to a day. |
+| `sweep.rules` | list | none | The rules; a tab is swept by the first rule whose conditions all hold. A rule with a mistake is skipped with a warning. |
+| `sweep.rules[].name` | text | `rule N` | Shown in messages and in the history of closed tabs (`closed by sweep:<name>`). |
+| `sweep.rules[].match` | map | every tab | Which tabs the rule is for. |
+| `sweep.rules[].match.url` | list of text | every address | Address patterns, as for a pinned tab's scope (`*.google.com`, `example.com/app/*`). Any one may match. |
+| `sweep.rules[].idle_for` | duration | none | The tab has not been used for at least this long. |
+| `sweep.rules[].score_below` | number | none | The tab's use score (see [sweep.md](sweep.md)) is below this. A rule needs `idle_for`, `score_below` or both; both must hold. |
+| `sweep.rules[].half_life` | duration | `12h` | How fast use is forgotten when working out the score: use this long ago counts for half. |
+| `sweep.rules[].action` | `close` or `discard` | `close` | `close` closes the tab (recorded as closed by the rule; `Ctrl+Shift+T` reopens it). `discard` keeps the tab but frees its page (it shows its last screenshot and reloads when shown). |
 | `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Each is a map with the keys below. They load fresh each time the workspace opens. |
 | `tabs.pinned[].url` | text | required | The address the tab opens on. |
 | `tabs.pinned[].title` | text | the page's title | Label shown until the page gives its own title. |

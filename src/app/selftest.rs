@@ -236,6 +236,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_routing(shell, r).await;
     run_modals(shell, r).await;
     run_history(shell, r).await;
+    run_sweep(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -842,6 +843,7 @@ fn start_test_server() -> u16 {
                     String::new(),
                     format!("<!doctype html><title>Scope test</title><a href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">out of scope</a><a target=\"_blank\" href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">in a new tab</a>"),
                 ),
+                "/form.html" => ("200 OK", String::new(), "<!doctype html><title>Form</title><input id=i value=\"\"><textarea id=t></textarea>".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
                 _ => ("404 Not Found", String::new(), "<title>Not found</title>".to_owned()),
@@ -1399,4 +1401,74 @@ async fn run_history(shell: &Rc<Shell>, r: &mut Report) {
         let _ = store().delete_workspace(id);
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }
+}
+
+/// Tab sweeping: tabs idle past their rule are closed (recorded as swept and reopenable) or discarded,
+/// while the selected tab and a tab with unsaved form input are left alone.
+async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::store::Scope;
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let store = || crate::store::Store::open(&db).expect("store");
+    let dir = profile.workspaces_dir().join("sw");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = store().delete_workspace("sw");
+    let _ = store().clear_history(None);
+    std::fs::write(
+        dir.join("workspace.yaml"),
+        format!(
+            "name: Sweep\nhome_page: 'http://localhost:{port}/scope.html'\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Stale\n      match: {{ url: ['localhost/b.html*'] }}\n      idle_for: 2s\n    - name: Sleepy\n      match: {{ url: ['127.0.0.1'] }}\n      idle_for: 2s\n      action: discard\n    - name: Forms\n      match: {{ url: ['localhost/form.html'] }}\n      idle_for: 2s\n"
+        ),
+    )
+    .expect("workspace.yaml");
+    crate::router::install(crate::router::Router::default());
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "sw"));
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"sw".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    r.check("a workspace with sweeping rules opens", ok, || "not open".into());
+    let Some(sw) = find() else { return };
+    r.check("its rules are loaded", sw.sweeper.as_ref().is_some_and(|s| s.rules.len() == 3), || format!("{:?}", sw.sweeper));
+    let home = sw.current().expect("home tab");
+    let stale = sw.open_tab(&format!("http://localhost:{port}/b.html?stale=1"), true);
+    let sleepy = sw.open_tab(&format!("http://127.0.0.1:{port}/b.html?sleepy=1"), true);
+    let form = sw.open_tab(&format!("http://localhost:{port}/form.html"), true);
+    let ok = wait_until(20_000, || [&stale, &sleepy, &form].iter().all(|t| !t.state.borrow().loading && !t.state.borrow().title.is_empty())).await;
+    r.check("the tabs to sweep load", ok, || "not loaded".into());
+    // Type into the form (set by script, as a page would see it), then look at the home tab so nothing else is selected.
+    let id = form.view().cdp_eval("document.getElementById('i').value = 'half typed'; 'ok'");
+    let _ = wait_until(5_000, || form.view().cdp_result(id).is_some()).await;
+    sw.tab_view.set_selected_page(&home.page);
+    glib::timeout_future(Duration::from_millis(3500)).await; // idle for longer than the rules' 2 s
+
+    let before = sw.tab_count();
+    sw.sweep_now();
+    let ok = wait_until(15_000, || sw.sweeps_done() == 1).await;
+    r.check("a sweep runs", ok, || "no sweep".into());
+    r.check("an idle tab matching a close rule is closed", sw.tab_count() == before - 1 && !sw.tabs().iter().any(|t| t.uid == stale.uid), || format!("{} tabs (was {before}); {:?}", sw.tab_count(), sw.last_sweep_notes()));
+    let closed = store().closed_tabs(Scope::Workspace("sw"), 10);
+    r.check("the closed tab is recorded as swept by its rule", closed.len() == 1 && closed[0].reason == "sweep:Stale" && closed[0].url.contains("stale=1"), || format!("{closed:?}"));
+    r.check("an idle tab matching a discard rule stays but is put to sleep", sw.tabs().iter().any(|t| t.uid == sleepy.uid) && sleepy.view().is_dormant(), || format!("dormant={}", sleepy.view().is_dormant()));
+    r.check("a tab with unsaved form input is left alone and marked", sw.tabs().iter().any(|t| t.uid == form.uid) && form.dirty.get() && form.page.indicator_icon().is_some(), || format!("dirty={}", form.dirty.get()));
+    r.check("the tab being looked at is never swept", sw.tabs().iter().any(|t| t.uid == home.uid), || "home swept".into());
+
+    // A swept tab comes back with Ctrl+Shift+T.
+    let n = sw.tab_count();
+    let _ = WidgetExt::activate_action(&sw.window, "win.reopen-tab", None);
+    let ok = wait_until(15_000, || sw.tab_count() == n + 1 && sw.current().is_some_and(|t| t.state.borrow().address.contains("stale=1"))).await;
+    r.check("reopening brings the swept tab back", ok, || format!("{} tabs (was {n})", sw.tab_count()));
+
+    // Use is remembered with the tabs.
+    sw.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let saved = store().load_tabs("sw");
+    r.check("tab use is saved with the remembered tabs", !saved.is_empty() && saved.iter().all(|t| !t.usage.is_empty()), || format!("{saved:?}"));
+
+    let _ = store().delete_workspace("sw");
+    let _ = store().clear_history(None);
+    let _ = std::fs::remove_dir_all(&dir);
 }

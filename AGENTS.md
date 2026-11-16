@@ -54,6 +54,7 @@ take minutes.
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
 | `src/history.rs` | History helpers and the `browsah history` command line |
+| `src/sweep.rs` | Tab sweeping model: durations, `Usage` (decaying score), rules and the `Sweeper` (pure, tested); applying it is `app/sweep.rs` |
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
@@ -92,6 +93,12 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **Sweeping** (`app/sweep.rs`, model in `sweep.rs`): a workspace's `sweep:` rules run on a timer. Each pass
+  probes every live tab with a script (`PROBE`: unsaved form input, playing media) through DevTools
+  `Runtime.evaluate`, waits 1.5 s, then closes (reason `sweep:<rule>` in `closed_tabs`) or discards
+  (`Shell::discard_tab`: screenshot, then a dormant view replaces the page) the tabs a rule fires for. A tab
+  whose probe gives no answer is left alone. Use is recorded as events (`Usage`) on selection and activity
+  (`BrowserView::input_events`) and stored with the tabs (`tabs.usage`).
 - **History** lives in the profile database (`Store::record_visit`, `record_closed`, `Scope`), written by
   `Shell::record_visit` (on load end, deduped per tab), `record_closed` (user close) and
   `record_window_closed` (an ephemeral window's tabs, as a group). `Shell::private` (sign-in windows) and

@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod latency;
 mod modal;
+mod sweep;
 mod nav;
 mod selftest;
 mod view;
@@ -55,6 +56,14 @@ pub struct Tab {
     pub uid: u64,
     /// The address last written to the history (a reload is not a new visit).
     last_recorded: RefCell<String>,
+    /// How the tab has been used, for sweeping.
+    usage: RefCell<crate::sweep::Usage>,
+    /// When the tab was created (unix seconds); a tab with no use counts as idle since then.
+    created: std::cell::Cell<i64>,
+    /// What the last probe found: unsaved form input, playing media, and the input count then.
+    dirty: std::cell::Cell<bool>,
+    playing: std::cell::Cell<bool>,
+    input_seen: std::cell::Cell<u64>,
 }
 
 thread_local! {
@@ -139,6 +148,11 @@ pub struct Shell {
     /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
+    /// This workspace's sweeping rules (None: off), how many sweeps have run, and the last one's notes.
+    sweeper: Option<crate::sweep::Sweeper>,
+    sweeps_done: Cell<u32>,
+    last_sweep: RefCell<Vec<String>>,
+    pending_close_reason: RefCell<Option<String>>,
     /// Nothing in this window is remembered (a sign-in another application started).
     pub private: Cell<bool>,
     /// The history window, while it is open.
@@ -317,6 +331,9 @@ impl Shell {
         send.append_item(&new_window);
         self.tab_menu.append_submenu(Some("Send to workspace"), &send);
         let close = gio::Menu::new();
+        if self.sweeper.is_some() {
+            close.append(Some("Sweep unused tabs now"), Some("win.sweep-now"));
+        }
         close.append(Some("Close tab"), Some("win.close-menu-tab"));
         self.tab_menu.append_section(None, &close);
     }
@@ -566,7 +583,7 @@ impl Shell {
                 if s.address.is_empty() || s.address == "about:blank" {
                     return None;
                 }
-                Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: page.is_pinned(), selected: selected.as_ref() == Some(&page) })
+                Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: page.is_pinned(), selected: selected.as_ref() == Some(&page), usage: tab.usage.borrow().to_text() })
             })
             .collect()
     }
@@ -641,6 +658,10 @@ impl Shell {
         let view = BrowserView::new_dormant(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &rec.url, shot.as_deref(), on_event);
         let tab = self.add_tab(view, cell, state, false, rec.uid);
         tab.page.set_title(&tab_title(&tab.state.borrow()));
+        // Use is remembered across runs: a tab unused for a week while the browser was closed is idle for a week.
+        if !rec.usage.is_empty() {
+            *tab.usage.borrow_mut() = crate::sweep::Usage::from_text(&rec.usage);
+        }
         tab
     }
 
@@ -798,7 +819,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, last_recorded: RefCell::new(String::new()) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -852,6 +873,7 @@ impl Shell {
         if let Some(t) = current {
             *self.last_selected.borrow_mut() = Rc::downgrade(&t);
             if !self.restoring.get() {
+                t.usage.borrow_mut().record(now_secs(), 1.0); // being shown is use
                 t.view().wake(); // a restored tab comes to life when it is first shown
             }
             t.view().widget.grab_focus();
@@ -904,7 +926,8 @@ impl Shell {
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
-            self.record_closed(&tab, "user", None);
+            let reason = self.pending_close_reason.borrow_mut().take().unwrap_or_else(|| "user".to_owned());
+            self.record_closed(&tab, &reason, None);
             tab.view().close();
         }
         self.schedule_save();
@@ -1162,6 +1185,18 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
+        sweeper: if workspace.is_some() {
+            let sweeper = crate::sweep::Sweeper::from_config(&ws_config.sweep);
+            for w in sweeper.iter().flat_map(|s| s.warnings.iter()) {
+                eprintln!("sweep: {w}");
+            }
+            sweeper
+        } else {
+            None
+        },
+        sweeps_done: Cell::new(0),
+        last_sweep: RefCell::new(Vec::new()),
+        pending_close_reason: RefCell::new(None),
         private: Cell::new(false),
         history: RefCell::new(None),
         modals: RefCell::new(Vec::new()),
@@ -1247,6 +1282,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move |_, page| {
             if let Some(s) = weak.upgrade() {
                 s.setup_tab_menu(page);
+            }
+        }
+    });
+    add_action(&window, "sweep-now", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.sweep_now();
             }
         }
     });
@@ -1441,6 +1484,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             shell.open_tab(start_url, true); // a link given when opening: after the remembered tabs
         }
     }
+    shell.start_sweeping();
     shell
 }
 

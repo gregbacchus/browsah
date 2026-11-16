@@ -13,6 +13,7 @@ mod profile;
 mod router;
 mod selector;
 mod store;
+mod sweep;
 mod workspace;
 
 use adw::prelude::*;

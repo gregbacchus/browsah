@@ -66,6 +66,8 @@ Workspaces have theirs, [workspace.yaml](workspace.md).
 
 The profile selector (which profile gets a link from another application) is described in [selector.md](selector.md).
 
+Tab sweeping rules are described in [sweep.md](sweep.md).
+
 Profiles have their own file, [profile.yaml](profile.md) (name and colour; more will arrive with workspaces and routing).
 
 Command-line flags override the matching config options: `--mode=paint|accel`

@@ -23,6 +23,20 @@ tabs:
 modals:
   style: overlay            # overlay (default) or window
 
+sweep:                      # tidy up tabs that are not used (docs/config/sweep.md)
+  enabled: true
+  interval: 5m              # how often to check
+  rules:
+    - name: Stale searches
+      match: { url: ["*.google.com/search*"] }
+      idle_for: 1h          # not used for an hour
+      action: close
+    - name: Rarely used
+      idle_for: 7d
+      score_below: 0.5      # and not used much before that either
+      half_life: 1d
+      action: discard       # keep the tab, free its page
+
 # Rules for links clicked in this workspace's tabs (docs/config/routing.md); tried first.
 routing:
   rules:

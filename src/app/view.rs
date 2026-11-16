@@ -868,6 +868,8 @@ pub struct BrowserView {
     im_state: RefCell<ImState>,
     /// Last pointer position in widget (logical) coordinates, for wheel events.
     pointer: Cell<(f64, f64)>,
+    /// Keys, clicks and scrolls sent to the page so far (tab sweeping reads this as activity).
+    input_events: Cell<u64>,
     /// Scroll distance not yet sent (sub-pixel remainders), and the kinetic-scroll generation.
     scroll_acc: Cell<(f64, f64)>,
     kinetic_gen: Cell<u64>,
@@ -1051,6 +1053,7 @@ impl BrowserView {
             shared: shared.clone(),
             im_state: RefCell::new(ImState::default()),
             pointer: Cell::new((0.0, 0.0)),
+            input_events: Cell::new(0),
             scroll_acc: Cell::new((0.0, 0.0)),
             kinetic_gen: Cell::new(0),
         });
@@ -1162,6 +1165,29 @@ impl BrowserView {
 
     /// Run a DevTools protocol method with no parameters; returns the id to read the result with
     /// `cdp_result`. Posted to CEF's UI thread.
+    /// How many keys, clicks and scrolls the user has sent to this page.
+    pub fn input_events(&self) -> u64 {
+        self.input_events.get()
+    }
+
+    /// Run a JavaScript expression in the page (DevTools `Runtime.evaluate`, by value); returns the id to
+    /// read the result with `cdp_result`. Posted to CEF's UI thread.
+    pub fn cdp_eval(&self, expression: &str) -> i32 {
+        let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let expression = expression.to_owned();
+            on_ui(move || {
+                let h = h;
+                let Some(mut params) = dictionary_value_create() else { return };
+                params.set_string(Some(&CefString::from("expression")), Some(&CefString::from(expression.as_str())));
+                params.set_bool(Some(&CefString::from("returnByValue")), 1);
+                h.0.execute_dev_tools_method(id, Some(&CefString::from("Runtime.evaluate")), Some(&mut params));
+            });
+        }
+        id
+    }
+
     pub fn cdp(&self, method: &'static str) -> i32 {
         let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
@@ -1385,6 +1411,7 @@ impl BrowserView {
                     return glib::Propagation::Stop;
                 }
                 let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
+                v.input_events.set(v.input_events.get() + 1);
                 v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
                 let k = v.k();
                 let unit = ctrl.unit();
@@ -1526,6 +1553,7 @@ impl BrowserView {
     }
 
     pub(super) fn click(&self, button: u32, n_press: i32, x: f64, y: f64, state: gdk::ModifierType, up: bool) {
+        self.input_events.set(self.input_events.get() + 1);
         let kind = match button {
             1 => MouseButtonType::LEFT,
             2 => MouseButtonType::MIDDLE,
@@ -1665,6 +1693,9 @@ impl BrowserView {
 
     /// Handle a key press or release. Returns whether the event was consumed.
     fn key(self: &Rc<Self>, press: bool, key: gdk::Key, keycode: u32, state: gdk::ModifierType, event: Option<gdk::Event>) -> bool {
+        if press {
+            self.input_events.set(self.input_events.get() + 1);
+        }
         if press && input::is_shell_shortcut(key, state) {
             return false; // the window's accelerators handle it
         }

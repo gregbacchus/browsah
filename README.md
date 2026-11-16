@@ -71,6 +71,11 @@ the history window, `Ctrl+Shift+T` reopens the last closed tab (in an ephemeral 
 window, so ephemeral windows are recoverable). `browsah history` lists and clears it from the command line.
 See [docs/config/history.md](docs/config/history.md).
 
+Tab sweeping: a workspace can tidy up tabs you no longer use by rules (idle for how long, a decaying use
+score, which sites), closing them (recoverable with `Ctrl+Shift+T`, recorded as swept) or putting them to
+sleep. Tabs with unsaved form input or playing media are never swept. See
+[docs/config/sweep.md](docs/config/sweep.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

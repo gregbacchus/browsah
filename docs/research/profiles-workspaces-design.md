@@ -409,6 +409,39 @@ running browser (unit-tested at the store level), clearing history from the comm
 database, history across two workspaces' windows at once, titles that change after load (the title at load end is
 stored). Not built: address-bar suggestions from history, per-visit deletion, import.
 
+## Status: tab sweeping (2026-11-17)
+
+Built as designed: rules per workspace (`sweep:` in `workspace.yaml`, off until enabled) with an address
+pattern, `idle_for`, a decaying `score_below` (events weighted by recency with a per-rule `half_life`),
+and the actions `close` and `discard` (extensible). A swept close is recorded in the history of closed tabs
+as `sweep:<rule>`, so it is told apart from a user close and `Ctrl+Shift+T` reopens it. Never swept: the
+selected tab, pinned tabs, tabs loading, tabs with unsaved form input (marked with an edit icon), tabs playing
+media (marked with a speaker), and tabs whose probe did not answer.
+
+Decisions made while building, not discussed before:
+- **Use model.** Events (time, weight): being shown 1.0; the selected tab of the active window 0.2 each pass; typing,
+  clicking or scrolling since the last pass 0.3. A list of the last 120 events per tab (not a running total) is
+  kept so each rule can use its own half-life; it is stored with the remembered tabs, so idle time continues
+  across runs, and it survives a restore.
+- **Detecting unsaved input** is a script in the page, run on each pass (not continuously): any text box or
+  text area whose value differs from its HTML default, a changed checkbox or choice, or non-empty rich
+  text. It errs towards protection (a box filled by script looks unsaved). Measured with a page whose box was
+  set by script. **Not detected:** microphone or camera use without a media element, sound from WebAudio,
+  work in a canvas, text in a field inside a closed shadow root or a cross-origin frame.
+- **Discard** keeps the tab with its screenshot (as a restored tab) and frees the page; closing, discarding and
+  reopening are recorded only for closes (discards are not history).
+- **Applying a change to the rules** needs the workspace to be reopened (the section is read when the window opens).
+- **Not built:** other actions (archive, move to another workspace), per-rule protection lists, a dry run, a way
+  to see a tab's score, sweeping for ephemeral windows.
+
+Measured (scripted, 11 new self-test checks and 8 unit tests): a close rule closes an idle tab and records
+`sweep:Stale`; a discard rule puts an idle tab to sleep; a tab with script-set input is left alone and marked;
+the selected tab is never swept; `Ctrl+Shift+T` reopens the swept tab; use is saved with the tabs. The rule
+conditions, decay arithmetic and duration parsing are unit tests. **Not verified:** the timer in real use (the
+test calls the pass directly; the interval is validated), a long-running window, a swept tab being the
+only tab, many tabs (each pass probes every live tab), the media probe against real video, restore of a
+tab that was discarded, the look of the indicators.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and
