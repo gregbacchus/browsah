@@ -548,4 +548,23 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     d.click(80.0, 40.0);
     let ok = wait_until(10_000, || shell.tab_count() == 2).await;
     r.check("the surviving tab still works after the others closed", ok && first.view().frames() >= n0, || shell.tab_count().to_string());
+
+    // A dead renderer shows a crashed page, leaves other tabs alone, and a new load recovers.
+    let _ = WidgetExt::activate_action(&shell.window, "win.prev-tab", None);
+    let other = shell.tabs().get(1).cloned();
+    let cur = shell.current().expect("tab");
+    shell.entry.set_text("chrome://crash");
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || cur.state.borrow().crashed).await;
+    r.check("a crashed renderer is reported and the crashed page shown", ok && cur.sad_visible() && !cur.view().widget.is_visible(), || format!("{:?}", cur.state.borrow()));
+    r.check("other tabs are not affected by the crash", other.as_ref().is_some_and(|o| !o.state.borrow().crashed), || "other tab crashed".into());
+    shell.entry.set_text(&page("a.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || {
+        let s = cur.state.borrow();
+        !s.crashed && !s.loading && s.title == "Page A"
+    })
+    .await;
+    r.check("loading an address again recovers the crashed tab", ok && !cur.sad_visible() && cur.view().widget.is_visible(), || format!("{:?}", cur.state.borrow()));
+    let _ = wait_until(5_000, || cur.view().has_frame()).await;
 }

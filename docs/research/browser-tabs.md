@@ -79,3 +79,12 @@ a slow-but-working first frame beyond 3 s (it would fall back needlessly), frame
 ```bash
 BROWSAH_NO_GPU_WORKAROUNDS=1 ./target/release/browsah --selftest
 ```
+
+## Renderer crash
+
+`RequestHandler::on_render_process_terminated` marks the tab crashed and shows a "This tab crashed"
+page with a Reload button in place of the view; any new load (reload or a typed address) restores
+it. Measured with `chrome://crash` in `--selftest` (3 checks, 71 total, dmabuf and readback, one run
+each): the crash is reported, the other tab is unaffected, and navigating to a page recovers the
+tab. **Not tested:** a GPU-process crash, an out-of-memory kill, crash loops (no limit on reloads),
+whether history survives the reload.

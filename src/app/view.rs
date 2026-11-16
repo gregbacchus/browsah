@@ -100,6 +100,8 @@ pub enum ViewEvent {
     Loading { loading: bool, can_back: bool, can_forward: bool },
     /// The page asked for a new window (`window.open`, `target=_blank`): open this URL as a tab.
     OpenUrl(String),
+    /// The page's renderer process died (crash, out of memory, killed).
+    Crashed(String),
 }
 
 /// State shared with CEF's thread.
@@ -505,6 +507,23 @@ wrap_context_menu_handler! {
     }
 }
 
+wrap_request_handler! {
+    struct ViewRequest { shared: Arc<Shared> }
+
+    impl RequestHandler {
+        fn on_render_process_terminated(
+            &self,
+            _b: Option<&mut Browser>,
+            status: TerminationStatus,
+            _error_code: ::std::os::raw::c_int,
+            error_string: Option<&CefString>,
+        ) {
+            let why = error_string.map(|e| e.to_string()).filter(|e| !e.is_empty()).unwrap_or_else(|| format!("{status:?}"));
+            send(self.shared.id, ViewEvent::Crashed(why));
+        }
+    }
+}
+
 wrap_client! {
     struct ViewClient {
         render: RenderHandler,
@@ -512,6 +531,7 @@ wrap_client! {
         load: LoadHandler,
         display: DisplayHandler,
         menu: ContextMenuHandler,
+        request: RequestHandler,
     }
 
     impl Client {
@@ -520,6 +540,7 @@ wrap_client! {
         fn load_handler(&self) -> Option<LoadHandler> { Some(self.load.clone()) }
         fn display_handler(&self) -> Option<DisplayHandler> { Some(self.display.clone()) }
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(self.menu.clone()) }
+        fn request_handler(&self) -> Option<RequestHandler> { Some(self.request.clone()) }
     }
 }
 
@@ -690,7 +711,8 @@ impl BrowserView {
             ViewLife::new(shared.clone()),
             ViewLoad::new(shared.clone()),
             ViewDisplay::new(shared.clone()),
-            ViewMenu::new(shared),
+            ViewMenu::new(shared.clone()),
+            ViewRequest::new(shared),
         );
         browser_host_create_browser(
             Some(&window_info),

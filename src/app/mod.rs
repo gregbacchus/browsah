@@ -31,6 +31,8 @@ pub struct State {
     pub menus: u32,
     /// The view was replaced by a readback one because no accelerated frame arrived.
     pub fell_back: bool,
+    /// The renderer died; the tab shows a "crashed" page until it loads something again.
+    pub crashed: bool,
 }
 
 /// One tab: a browser view, what it last told the shell, and its page in the tab bar.
@@ -39,11 +41,17 @@ pub struct Tab {
     view: RefCell<Rc<BrowserView>>,
     /// The page's child in the tab view; holds whichever view is current.
     holder: gtk::Box,
+    /// Shown in place of the view while the page's renderer is dead.
+    sad: adw::StatusPage,
     pub state: Rc<RefCell<State>>,
     pub page: adw::TabPage,
 }
 
 impl Tab {
+    pub fn sad_visible(&self) -> bool {
+        self.sad.is_visible()
+    }
+
     pub fn view(&self) -> Rc<BrowserView> {
         self.view.borrow().clone()
     }
@@ -166,9 +174,18 @@ impl Shell {
         let view = self.make_view(&cell, url);
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
+        let sad = adw::StatusPage::builder()
+            .icon_name("dialog-warning-symbolic")
+            .title("This tab crashed")
+            .hexpand(true)
+            .vexpand(true)
+            .visible(false)
+            .child(&gtk::Button::builder().label("Reload").halign(gtk::Align::Center).action_name("win.reload").css_classes(["suggested-action", "pill"]).build())
+            .build();
+        holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, state, page: page.clone() });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone() });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -194,7 +211,7 @@ impl Shell {
         let _ = cell.set(Rc::downgrade(tab));
         let old = tab.view();
         let new = self.make_view(&cell, &url);
-        tab.holder.append(&new.widget);
+        tab.holder.prepend(&new.widget);
         tab.holder.remove(&old.widget);
         *tab.view.borrow_mut() = new;
         old.close();
@@ -284,6 +301,13 @@ impl Shell {
             ViewEvent::OpenUrl(url) => {
                 self.open_tab(&url, true);
             }
+            ViewEvent::Crashed(why) => {
+                eprintln!("browsah: a page's renderer ended: {why}");
+                tab.state.borrow_mut().crashed = true;
+                tab.sad.set_description(Some(&why));
+                tab.sad.set_visible(true);
+                tab.view().widget.set_visible(false);
+            }
             ViewEvent::Address(a) => {
                 tab.state.borrow_mut().address = a;
                 // Navigating to another host resets the zoom.
@@ -291,6 +315,12 @@ impl Shell {
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
             ViewEvent::Loading { loading, can_back, can_forward } => {
+                if loading && tab.state.borrow().crashed {
+                    // Something is loading again (reload or a new address): show the page.
+                    tab.state.borrow_mut().crashed = false;
+                    tab.sad.set_visible(false);
+                    tab.view().widget.set_visible(true);
+                }
                 {
                     let mut s = tab.state.borrow_mut();
                     if s.loading && !loading {

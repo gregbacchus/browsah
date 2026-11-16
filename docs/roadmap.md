@@ -89,7 +89,7 @@ focus), so build it early on top of the thinnest navigation UI that lets you tes
 
 - Watchdog: if no accelerated frame arrives within 3 s, switch to `OnPaint`: **DONE**
   ([note](research/browser-tabs.md#dmabuf-watchdog)); not tried on non-AMD GPUs.
-- Handle renderer and GPU process crashes (`sad tab` and reload), correct shutdown ordering.
+- Renderer crash: **DONE** (crashed-tab page with Reload; [note](research/browser-tabs.md#renderer-crash)). Still to do: GPU-process crash, memory-pressure kills, correct shutdown ordering.
 - Per-site zoom (replace the periodic zoom re-apply), fractional scales, monitor scale changes.
 - Test on other hardware: Intel, NVIDIA, and a second compositor.
 
