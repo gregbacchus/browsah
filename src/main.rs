@@ -9,6 +9,7 @@ mod config;
 mod frames;
 mod gpu;
 mod profile;
+mod workspace;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -33,6 +34,10 @@ fn main() {
     // `browsah config show [--profile=ID] [--config=PATH]`: the effective configuration.
     if args.first().map(String::as_str) == Some("config") && args.get(1).map(String::as_str) == Some("show") {
         std::process::exit(config_show(&args[2..]));
+    }
+
+    if args.first().map(String::as_str) == Some("workspace") {
+        std::process::exit(workspace::cli(&args[1..]));
     }
 
     let opts = Rc::new(cli::Options::parse());
@@ -62,6 +67,13 @@ fn main() {
     };
     let cfg = &loaded.config;
 
+    if let Some(w) = &opts.workspace {
+        if let Err(e) = workspace::Workspace::resolve(&profile, w) {
+            eprintln!("browsah: {e}");
+            std::process::exit(2);
+        }
+    }
+
     // One process per profile (Chromium locks the profile's cache directory): if this profile is
     // already running, hand it the link (or ask it to show its window) and leave, before CEF
     // starts.
@@ -71,12 +83,19 @@ fn main() {
         std::process::exit(1);
     }
     if app.is_remote() && !test_run {
-        match &opts.url {
-            Some(url) => app.open(&[gio::File::for_uri(&app::resolve_address(url, &cfg.search_url))], ""),
-            None => app.activate(),
+        // Hand the request to the running process: a link (with the workspace as the hint), a
+        // workspace to show, or just "show a window".
+        let hint = opts.workspace.clone().unwrap_or_default();
+        match (&opts.url, &opts.workspace) {
+            (Some(url), _) => app.open(&[gio::File::for_uri(&app::resolve_address(url, &cfg.search_url))], &hint),
+            (None, Some(w)) => gio::prelude::ActionGroupExt::activate_action(&app, "open-workspace", Some(&w.to_variant())),
+            (None, None) => app.activate(),
         }
+        // Calls to a remote instance are asynchronous: let the message leave before exiting.
+        gtk::glib::MainContext::default().iteration(false);
         std::process::exit(0);
     }
+
     if let Err(e) = profile.ensure_dirs() {
         eprintln!("browsah: cannot create {}: {e}", profile.dir.display());
         std::process::exit(1);

@@ -11,7 +11,7 @@
 //! This module has no GTK or CEF dependency apart from locating directories, so the `profile`
 //! command line works without starting either.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Application id of every profile is this prefix, a dot and the profile id.
@@ -83,6 +83,8 @@ pub struct ProfileConfig {
     pub name: Option<String>,
     /// Icon and accent colour, for light and dark appearance.
     pub color: Option<ColorPair>,
+    /// The workspace opened when the profile starts with no workspace remembered or named.
+    pub default_workspace: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +118,26 @@ impl Profile {
 
     pub fn display_name(&self) -> &str {
         self.config.name.as_deref().unwrap_or(&self.id)
+    }
+
+    /// Where the profile's workspaces live (one directory each).
+    pub fn workspaces_dir(&self) -> PathBuf {
+        self.dir.join("workspaces")
+    }
+
+    fn state_file(&self) -> PathBuf {
+        self.dir.join("state.yaml")
+    }
+
+    /// What the profile remembers between runs (written by the program, not hand edited).
+    pub fn load_state(&self) -> ProfileState {
+        std::fs::read_to_string(self.state_file()).ok().and_then(|t| serde_yaml_ng::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn save_state(&self, state: &ProfileState) {
+        if let Ok(text) = serde_yaml_ng::to_string(state) {
+            let _ = std::fs::create_dir_all(&self.dir).and_then(|_| std::fs::write(self.state_file(), text));
+        }
     }
 
     /// Chromium's cache directory for this profile.
@@ -154,6 +176,14 @@ impl Profile {
 
 /// Read the profile's own settings (name, colour) from `profile.yaml`. The file also holds
 /// configuration overrides (see `config::load_effective`); those are not read here.
+/// Remembered between runs, in `state.yaml`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileState {
+    /// Workspaces whose windows were open when the profile last ran.
+    pub open_workspaces: Vec<String>,
+}
+
 pub fn parse_config(text: &str) -> Result<ProfileConfig, String> {
     if text.trim().is_empty() {
         return Ok(ProfileConfig::default());
@@ -281,7 +311,7 @@ fn uninstall(p: &Profile) {
 }
 
 /// Is a process for this profile running (does anyone own its application id on the bus)?
-fn running(p: &Profile) -> bool {
+pub fn is_running(p: &Profile) -> bool {
     use gtk::gio;
     use gtk::prelude::*;
     let Ok(conn) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else { return false };
@@ -375,7 +405,7 @@ fn add(args: &[String], exe: &Path, libs: &Path) -> i32 {
         None => None,
     };
     let name = flag_value(args, "--name");
-    let p = Profile { id: id.clone(), config: ProfileConfig { name, color }, dir: dir.clone() };
+    let p = Profile { id: id.clone(), config: ProfileConfig { name, color, ..Default::default() }, dir: dir.clone() };
     if let Err(e) = write_config(&p).and_then(|_| install(&p, exe, libs)) {
         eprintln!("cannot create profile: {e}");
         return 1;
@@ -419,7 +449,7 @@ fn remove(args: &[String]) -> i32 {
             return 1;
         }
     };
-    if running(&p) {
+    if is_running(&p) {
         eprintln!("profile {id:?} is running; close it first");
         return 1;
     }
@@ -538,7 +568,7 @@ mod tests {
     fn desktop_entry_and_icon() {
         let p = Profile {
             id: "work".into(),
-            config: ProfileConfig { name: Some("Work".into()), color: ColorPair::parse("#4a2f80 #7a56c2").ok() },
+            config: ProfileConfig { name: Some("Work".into()), color: ColorPair::parse("#4a2f80 #7a56c2").ok(), ..Default::default() },
             dir: PathBuf::from("/x/work"),
         };
         let d = desktop_entry(&p, Path::new("/opt/my apps/browsah"), Path::new("/opt/my apps"));

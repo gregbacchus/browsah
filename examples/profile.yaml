@@ -6,6 +6,7 @@ color:                      # icon colour for light and dark appearance
   light: "#4a2f80"
   dark: "#7a56c2"
 # color: "#4a2f80 #7a56c2"
+default_workspace: mail     # opened by a plain start when no workspace was open last time
 
 # Any option from docs/config/options.md can be overridden for this profile. Maps merge, values and
 # lists replace, and `key+:` appends to a list.

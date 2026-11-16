@@ -90,7 +90,7 @@ pub struct Shell {
     search_url: RefCell<String>,
     toasts: adw::ToastOverlay,
     /// The workspace this window shows; `None` is an ephemeral window (not remembered).
-    pub workspace: Option<String>,
+    pub workspace: Option<crate::workspace::Workspace>,
     /// The user has typed in the address bar and not yet committed or cancelled.
     editing: Cell<bool>,
     /// Set while the shell itself changes the entry text, so that is not mistaken for typing.
@@ -179,10 +179,10 @@ impl Shell {
         if !self.editing.get() {
             self.set_entry_text(address_text(&s.address));
         }
-        self.window.set_title(Some(&if s.title.is_empty() && address_text(&s.address).is_empty() {
-            "browsah".to_owned()
-        } else {
-            tab_title(&s)
+        let page_title = if s.title.is_empty() && address_text(&s.address).is_empty() { "browsah".to_owned() } else { tab_title(&s) };
+        self.window.set_title(Some(&match &self.workspace {
+            Some(w) => format!("{page_title} \u{2014} {}", w.display_name()),
+            None => page_title,
         }));
         self.back_action.set_enabled(s.can_back);
         self.forward_action.set_enabled(s.can_forward);
@@ -442,7 +442,7 @@ fn icon_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
     b
 }
 
-fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<String>) -> Rc<Shell> {
+fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<crate::workspace::Workspace>) -> Rc<Shell> {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("browsah")
@@ -723,16 +723,29 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     // Open a window showing `workspace` (None: an ephemeral window) on `start`.
     let new_window = {
         let (opts, cfg, exit, watcher, profile) = (opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
-        move |app: &adw::Application, workspace: Option<String>, start: &str| -> Rc<Shell> {
+        move |app: &adw::Application, workspace: Option<crate::workspace::Workspace>, start: &str| -> Rc<Shell> {
             let first = WINDOWS.with(|w| w.borrow().is_empty());
-            let s = build(app, &opts, &cfg.borrow(), start, workspace);
+            let s = build(app, &opts, &cfg.borrow(), start, workspace.clone());
             WINDOWS.with(|w| w.borrow_mut().push(s.clone()));
+            if let Some(w) = &workspace {
+                remember_workspace(&profile, &w.id, true);
+            }
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: window opened (workspace {:?}) on {start}", workspace.as_ref().map(|w| &w.id));
+            }
             // A closed window leaves the registry at once (its widgets are only disposed of later, and
             // a closure must not hold the window strongly or it would never be).
             s.window.connect_close_request({
-                let window = s.window.downgrade();
+                let (window, profile) = (s.window.downgrade(), profile.clone());
                 move |_| {
+                    let id = window.upgrade().and_then(|w| windows_workspace_id(&w));
+                    let more = WINDOWS.with(|w| w.borrow().len()) > 1;
                     WINDOWS.with(|w| w.borrow_mut().retain(|s| Some(&s.window) != window.upgrade().as_ref()));
+                    // Closing one of several windows forgets its workspace; the last window's
+                    // stays remembered, so the next plain start brings it back.
+                    if let (Some(id), true) = (id, more) {
+                        remember_workspace(&profile, &id, false);
+                    }
                     glib::Propagation::Proceed
                 }
             });
@@ -761,6 +774,26 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         }
     };
 
+    // Show a workspace: raise its window if it is open, otherwise open one. `url` opens as a tab.
+    let open_workspace = {
+        let (cfg, profile, new_window) = (cfg.clone(), profile.clone(), new_window.clone());
+        move |app: &adw::Application, id: &str, url: Option<&str>| -> Result<Rc<Shell>, String> {
+            if let Some(s) = windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id)) {
+                if let Some(u) = url {
+                    s.open_tab(u, true);
+                }
+                s.window.present();
+                return Ok(s);
+            }
+            let w = crate::workspace::Workspace::resolve(&profile, id)?;
+            let start = match url {
+                Some(u) => u.to_owned(),
+                None => cfg.borrow().home_page.clone(),
+            };
+            Ok(new_window(app, Some(w), &start))
+        }
+    };
+
     // Another window with no workspace (Ctrl+Shift+N): nothing about it is remembered.
     let new_ephemeral = gio::SimpleAction::new("new-window", None);
     new_ephemeral.connect_activate({
@@ -773,34 +806,78 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     app.add_action(&new_ephemeral);
     app.set_accels_for_action("app.new-window", &["<Ctrl><Shift>N"]);
 
+    // `browsah --workspace=ID` against a running profile arrives here.
+    let open_ws_action = gio::SimpleAction::new("open-workspace", Some(glib::VariantTy::STRING));
+    open_ws_action.connect_activate({
+        let (open_workspace, app) = (open_workspace.clone(), app.clone());
+        move |_, param| {
+            if let Some(id) = param.and_then(|p| p.get::<String>()) {
+                if let Err(e) = open_workspace(&app, &id, None) {
+                    eprintln!("browsah: {e}");
+                }
+            }
+        }
+    });
+    app.add_action(&open_ws_action);
+
     app.connect_activate({
-        let (opts, cfg, new_window) = (opts.clone(), cfg.clone(), new_window.clone());
+        let (opts, cfg, profile, new_window, open_workspace) = (opts.clone(), cfg.clone(), profile.clone(), new_window.clone(), open_workspace.clone());
         move |app| {
             if let Some(s) = windows().last() {
                 s.window.present(); // another launch of this profile: show a window
                 return;
             }
-            let start = if opts.selftest {
-                selftest::start_url()
+            let test_run = opts.selftest || opts.latency;
+            let url = if opts.selftest {
+                Some(selftest::start_url())
             } else if opts.latency {
-                latency::start_url()
+                Some(latency::start_url())
             } else {
-                let c = cfg.borrow();
-                nav::resolve(opts.url.as_deref().unwrap_or(&c.home_page), &c.search_url)
+                opts.url.as_deref().map(|u| nav::resolve(u, &cfg.borrow().search_url))
             };
-            new_window(app, None, &start);
+            // Which workspaces to open: the one asked for, else those open at last exit, else the
+            // profile's default; with none of those, an ephemeral window.
+            let ids: Vec<String> = match (&opts.workspace, test_run) {
+                (Some(id), _) => vec![id.clone()],
+                (None, true) => Vec::new(),
+                (None, false) => startup_workspaces(&profile),
+            };
+            let mut opened = false;
+            for (i, id) in ids.iter().enumerate() {
+                // A link given on the command line goes to the first workspace.
+                match open_workspace(app, id, if i == 0 { url.as_deref() } else { None }) {
+                    Ok(_) => opened = true,
+                    Err(e) => eprintln!("browsah: {e}"),
+                }
+            }
+            if !opened {
+                let start = url.unwrap_or_else(|| cfg.borrow().home_page.clone());
+                new_window(app, None, &start);
+            }
         }
     });
 
     // Links handed over by another launch of this profile (or by the desktop, when this profile's
-    // entry is the default browser): each opens as a tab in the active window.
+    // entry is the default browser): each opens as a tab in the workspace named by the hint, else
+    // the active window.
     app.connect_open({
-        let (cfg, new_window) = (cfg.clone(), new_window);
-        move |app, files, _hint| {
+        let (cfg, new_window, open_workspace) = (cfg.clone(), new_window, open_workspace);
+        move |app, files, hint| {
             let search = cfg.borrow().search_url.clone();
             let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &search)).collect();
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
-                eprintln!("browsah: asked to open {urls:?}");
+                eprintln!("browsah: asked to open {urls:?} (workspace hint {hint:?})");
+            }
+            if !hint.is_empty() {
+                for (i, url) in urls.iter().enumerate() {
+                    if let Err(e) = open_workspace(app, hint, Some(url)) {
+                        eprintln!("browsah: {e}");
+                        if i == 0 {
+                            new_window(app, None, url);
+                        }
+                    }
+                }
+                return;
             }
             let active = app.active_window().and_then(|w| windows().into_iter().find(|s| s.window.upcast_ref::<gtk::Window>() == &w));
             let existing = active.or_else(|| windows().last().cloned());
@@ -817,6 +894,32 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 
     app.run_with_args::<&str>(&[]);
     exit.get()
+}
+
+/// The workspace id of the window, if it shows one.
+fn windows_workspace_id(window: &adw::ApplicationWindow) -> Option<String> {
+    WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).and_then(|s| s.workspace.as_ref().map(|w| w.id.clone())))
+}
+
+/// Which workspaces a plain start opens: those open at last exit that still exist, else the
+/// profile's `default_workspace`, else none.
+fn startup_workspaces(profile: &crate::profile::Profile) -> Vec<String> {
+    let exists = |id: &String| crate::workspace::Workspace::resolve(profile, id).is_ok();
+    let remembered: Vec<String> = profile.load_state().open_workspaces.into_iter().filter(exists).collect();
+    if !remembered.is_empty() {
+        return remembered;
+    }
+    profile.config.default_workspace.clone().filter(exists).into_iter().collect()
+}
+
+/// Record that a workspace's window is open (or no longer).
+fn remember_workspace(profile: &crate::profile::Profile, id: &str, open: bool) {
+    let mut state = profile.load_state();
+    state.open_workspaces.retain(|w| w != id);
+    if open {
+        state.open_workspaces.push(id.to_owned());
+    }
+    profile.save_state(&state);
 }
 
 /// A config file changed: load the effective configuration again and apply what can change live.

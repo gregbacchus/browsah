@@ -178,7 +178,7 @@ use serde_yaml_ng::Value;
 pub const APP_ONLY: &[&str] = &["watch_config"];
 
 /// Keys of `profile.yaml` that describe the profile itself and are not configuration.
-pub const PROFILE_IDENTITY_KEYS: &[&str] = &["name", "color"];
+pub const PROFILE_IDENTITY_KEYS: &[&str] = &["name", "color", "default_workspace"];
 
 /// Merge `over` onto `base` using the rules above.
 pub fn merge(base: &mut Value, over: &Value) {

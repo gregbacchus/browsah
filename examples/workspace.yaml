@@ -1,0 +1,8 @@
+# A workspace's configuration:
+# ~/.local/share/browsah/profiles/<profile>/workspaces/<id>/workspace.yaml
+# Created for you by `browsah workspace add`; every option and its meaning: docs/config/workspace.md
+
+name: Mail                  # shown in the window title
+color:                      # accent colour for light and dark appearance
+  light: "#2a6f97"
+  dark: "#61a5c2"

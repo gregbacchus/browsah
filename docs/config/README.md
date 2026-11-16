@@ -56,6 +56,8 @@ says what happened. An invalid file is reported and the running settings are kep
 | immediately | `search_url`, `home_page` (new tabs), `rendering.frame_rate`, `input.*` |
 | next start (the message says so) | `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
+Workspaces have theirs, [workspace.yaml](workspace.md).
+
 Profiles have their own file, [profile.yaml](profile.md) (name and colour; more will arrive with workspaces and routing).
 
 Command-line flags override the matching config options: `--mode=paint|accel`

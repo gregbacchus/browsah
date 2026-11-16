@@ -38,6 +38,8 @@ pub struct Options {
     /// Profile to run (`--profile=ID`, or `BROWSAH_PROFILE`). Default: `default`; the self-test,
     /// latency and benchmark runs use the throwaway `selftest` profile.
     pub profile: Option<String>,
+    /// Workspace to open (`--workspace=ID`).
+    pub workspace: Option<String>,
     /// Do not reload config files when they change (`--no-watch`).
     pub no_watch: bool,
     /// Alternative config file (`--config=PATH`).
@@ -59,6 +61,7 @@ impl Options {
             selftest: false,
             latency: false,
             profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
+            workspace: None,
             no_watch: false,
             config_path: None,
             flags: Vec::new(),
@@ -78,6 +81,7 @@ impl Options {
                 _ if a.starts_with("--tab-mode=") => o.tab_mode = a[11..].to_string(),
                 _ if a.starts_with("--url=") => o.url = Some(a[6..].to_string()),
                 _ if a.starts_with("--seconds=") => o.seconds = a[10..].parse().unwrap_or(0),
+                _ if a.starts_with("--workspace=") => o.workspace = Some(a[12..].to_string()),
                 _ if a.starts_with("--profile=") => o.profile = Some(a[10..].to_string()),
                 _ if a.starts_with("--config=") => o.config_path = Some(a[9..].to_string()),
                 _ if a.starts_with("--") => o.flags.push(a),
