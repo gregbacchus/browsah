@@ -167,7 +167,11 @@ pub fn is_shell_shortcut(key: Key, state: ModifierType) -> bool {
 static WHEEL_NOTCH_BITS: AtomicU64 = AtomicU64::new(0);
 static TOUCHPAD_GAIN_BITS: AtomicU64 = AtomicU64::new(0);
 
-pub fn set_scroll_tuning(wheel_notch: f64, touchpad_speed: f64) {
+static TOUCHPAD_ACCEL_BITS: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_scroll_tuning(wheel_notch: f64, touchpad_speed: f64, touchpad_acceleration: f64) {
+    // Stored as the factor plus one so that an exact 0 is distinguishable from "unset".
+    TOUCHPAD_ACCEL_BITS.store((touchpad_acceleration + 1.0).to_bits(), Ordering::Relaxed);
     WHEEL_NOTCH_BITS.store(wheel_notch.to_bits(), Ordering::Relaxed);
     TOUCHPAD_GAIN_BITS.store(touchpad_speed.to_bits(), Ordering::Relaxed);
 }
@@ -178,6 +182,16 @@ fn tuning(bits: &AtomicU64, default: f64) -> f64 {
         0 => default,
         b => f64::from_bits(b),
     }
+}
+
+/// Speed-dependent scaling of one touchpad scroll event of `delta` px: fast swipes (big events)
+/// are amplified so they cover much more than slow ones.
+pub fn touchpad_acceleration(delta: f64) -> f64 {
+    let a = match TOUCHPAD_ACCEL_BITS.load(Ordering::Relaxed) {
+        0 => 1.05,
+        b => f64::from_bits(b),
+    };
+    1.0 + (a - 1.0) * delta.abs()
 }
 
 /// View pixels to scroll for one GTK scroll delta (fractional; the caller keeps the remainder).
@@ -346,6 +360,13 @@ mod tests {
         let mut acc = -2.7;
         assert_eq!(take_whole(&mut acc), -2);
         assert_eq!(wheel_delta(0.0, gdk::ScrollUnit::Wheel, 2.0), 0);
+    }
+
+    #[test]
+    fn fast_swipes_are_amplified() {
+        assert_eq!(touchpad_acceleration(0.0), 1.0);
+        assert!(touchpad_acceleration(40.0) > 2.5 * touchpad_acceleration(5.0).max(1.0) * 0.9);
+        assert_eq!(touchpad_acceleration(-10.0), touchpad_acceleration(10.0));
     }
 
     #[test]

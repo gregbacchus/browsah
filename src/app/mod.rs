@@ -597,7 +597,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
 
 /// Run the browser. Returns the process exit code.
 pub fn run(opts: Rc<Options>, cfg: Config) -> i32 {
-    input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed);
+    input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed, cfg.input.touchpad_acceleration);
     let app = adw::Application::builder()
         .application_id("nz.co.bacchus.browsah")
         // Each launch is its own browser for now (no single-instance forwarding).

@@ -62,11 +62,13 @@ chromium:
 |---|---|---|---|
 | `input.wheel_notch` | number | `100` | CSS pixels scrolled by one mouse-wheel notch, 10 to 1000. Applies at startup. |
 | `input.touchpad_speed` | number | `3.0` | Multiplier on touchpad scrolling distance (and on the coasting after a flick), 0.1 to 20. Raise it if scrolling feels slow compared with other browsers. Applies at startup. |
+| `input.touchpad_acceleration` | number | `0.05` | Extra multiplier per pixel of one touchpad scroll event, 0 to 1: an event of `d` px is scaled by `1 + acceleration * d`, so fast swipes (large events, 30 to 40 px) scroll disproportionately further than slow ones (5 to 10 px). `0` is linear. Applies at startup. |
 
 ```yaml
 input:
   wheel_notch: 100
   touchpad_speed: 3.0
+  touchpad_acceleration: 0.05
 ```
 
 ## `gpu`

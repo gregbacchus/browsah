@@ -965,7 +965,9 @@ impl BrowserView {
                 if std::env::var_os("BROWSAH_DEBUG_SCROLL").is_some() {
                     eprintln!("browsah: scroll dx={dx:.2} dy={dy:.2} unit={unit:?}");
                 }
-                v.scroll_by(input::wheel_delta_f(dx, unit, k), input::wheel_delta_f(dy, unit, k), ctrl.current_event_state());
+                // Touchpad events (not wheel notches) are accelerated by their size.
+                let accel = |d: f64| if unit == gdk::ScrollUnit::Wheel { d } else { d * input::touchpad_acceleration(d) };
+                v.scroll_by(input::wheel_delta_f(accel(dx), unit, k), input::wheel_delta_f(accel(dy), unit, k), ctrl.current_event_state());
                 glib::Propagation::Stop
             }
         });

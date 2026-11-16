@@ -80,11 +80,12 @@ pub struct GpuConfig {
 pub struct InputConfig {
     pub wheel_notch: f64,
     pub touchpad_speed: f64,
+    pub touchpad_acceleration: f64,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { wheel_notch: 100.0, touchpad_speed: 3.0 }
+        Self { wheel_notch: 100.0, touchpad_speed: 3.0, touchpad_acceleration: 0.05 }
     }
 }
 
@@ -139,6 +140,7 @@ impl Config {
         self.rendering.frame_rate = self.rendering.frame_rate.clamp(1, 120);
         self.input.wheel_notch = self.input.wheel_notch.clamp(10.0, 1000.0);
         self.input.touchpad_speed = self.input.touchpad_speed.clamp(0.1, 20.0);
+        self.input.touchpad_acceleration = self.input.touchpad_acceleration.clamp(0.0, 1.0);
         if !self.search_url.contains("{query}") {
             eprintln!("config: search_url has no {{query}} placeholder; using the default");
             self.search_url = DEFAULT_SEARCH_URL.into();

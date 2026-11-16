@@ -21,6 +21,7 @@ chromium:
 
 input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000
+  touchpad_acceleration: 0.05  # extra scaling for fast swipes, 0 to 1; 0 = linear
   touchpad_speed: 3.0      # touchpad scroll multiplier, 0.1 to 20; raise if scrolling feels slow
 
 gpu:
