@@ -38,6 +38,8 @@ pub struct Options {
     /// Profile to run (`--profile=ID`, or `BROWSAH_PROFILE`). Default: `default`; the self-test,
     /// latency and benchmark runs use the throwaway `selftest` profile.
     pub profile: Option<String>,
+    /// Do not reload config files when they change (`--no-watch`).
+    pub no_watch: bool,
     /// Alternative config file (`--config=PATH`).
     pub config_path: Option<String>,
     /// Extra Chromium switches given on the command line.
@@ -57,6 +59,7 @@ impl Options {
             selftest: false,
             latency: false,
             profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
+            no_watch: false,
             config_path: None,
             flags: Vec::new(),
         };
@@ -69,6 +72,7 @@ impl Options {
                 "--bench=fps" => o.bench = Bench::Fps,
                 "--backing=off" => o.backing = Some(false),
                 "--selftest" => o.selftest = true,
+                "--no-watch" => o.no_watch = true,
                 "--latency" => o.latency = true,
                 _ if a.starts_with("--tabs=") => o.tabs = a[7..].parse().unwrap_or(0),
                 _ if a.starts_with("--tab-mode=") => o.tab_mode = a[11..].to_string(),

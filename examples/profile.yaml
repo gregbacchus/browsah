@@ -5,4 +5,12 @@ name: Work                  # shown as "Browsah (Work)" and used for the icon's 
 color:                      # icon colour for light and dark appearance
   light: "#4a2f80"
   dark: "#7a56c2"
-# color: "#4a2f80 #7a56c2"  # the same on one line (light then dark); one colour is used for both
+# color: "#4a2f80 #7a56c2"
+
+# Any option from docs/config/options.md can be overridden for this profile. Maps merge, values and
+# lists replace, and `key+:` appends to a list.
+search_url: "https://www.google.com/search?q={query}"
+input:
+  touchpad_speed: 8.0
+chromium:
+  flags+: ["--force-dark-mode"]  # the same on one line (light then dark); one colour is used for both

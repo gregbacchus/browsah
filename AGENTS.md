@@ -78,6 +78,13 @@ take minutes.
   profile so they never touch a real profile or collide with a running browser. Profile config
   (`profile.yaml`) has its own docs and example, with tests that check both (see
   `docs/config/profile.md`, `examples/profile.yaml`).
+- **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
+  merged over it (`config::load_effective`; rules in `docs/config/README.md`). Option names are the
+  same at every level, so adding an option to `Config` makes it overridable in a profile; mark it
+  application-only in `config::APP_ONLY` if a profile must not set it, and classify it live or
+  restart-only in `config::RESTART_REQUIRED` (otherwise it is treated as live, so it must be read
+  from the live configuration, not copied at start-up). Reloading is `app::reload` plus
+  `app/watch.rs`.
 - **Tabs:** one `BrowserView` per tab inside an `adw::TabView`; the address bar and buttons are
   shared and show the selected tab (`Shell::refresh`). A view tells CEF it is hidden when its widget
   is unmapped (`BrowserView::set_hidden`, posted to CEF's UI thread). Events carry no tab: each tab

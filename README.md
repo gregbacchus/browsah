@@ -39,7 +39,9 @@ browsah --profile=work https://example.com
 
 With no `--profile`, the `default` profile is used. Choose a profile's entry as the default browser
 in GNOME's settings and links from other applications open in that profile. Details:
-[docs/config/profile.md](docs/config/profile.md).
+[docs/config/profile.md](docs/config/profile.md). A profile's `profile.yaml` can also override any
+configuration option, and config files are reloaded when they change (`watch_config`, `--no-watch`);
+see [docs/config/README.md](docs/config/README.md#layers-and-reloading).
 
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.

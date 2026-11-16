@@ -979,6 +979,17 @@ impl BrowserView {
         self.with_host(|h| h.set_focus(focused as _));
     }
 
+    /// Change the frame-rate cap. Posted to CEF's UI thread.
+    pub fn set_frame_rate(&self, fps: i32) {
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                h.0.set_windowless_frame_rate(fps);
+            });
+        }
+    }
+
     /// Tell CEF whether the view is on screen. Posted to CEF's UI thread.
     fn set_hidden(&self, hidden: bool) {
         self.shared.hidden.store(hidden, Ordering::Relaxed);

@@ -7,6 +7,8 @@ home_page: https://duckduckgo.com/
 # Search used when the address bar text is not a URL. {query} is replaced by the text.
 search_url: https://duckduckgo.com/?q={query}
 
+watch_config: true         # reload this file and the profile's file when they change
+
 window:
   width: 1280   # initial size in logical pixels
   height: 800

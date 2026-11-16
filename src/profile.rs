@@ -152,11 +152,22 @@ impl Profile {
     }
 }
 
+/// Read the profile's own settings (name, colour) from `profile.yaml`. The file also holds
+/// configuration overrides (see `config::load_effective`); those are not read here.
 pub fn parse_config(text: &str) -> Result<ProfileConfig, String> {
     if text.trim().is_empty() {
         return Ok(ProfileConfig::default());
     }
-    serde_yaml_ng::from_str(text).map_err(|e| e.to_string())
+    let all: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
+    let mut own = serde_yaml_ng::Mapping::new();
+    if let Some(map) = all.as_mapping() {
+        for key in crate::config::PROFILE_IDENTITY_KEYS {
+            if let Some(v) = map.get(*key) {
+                own.insert(serde_yaml_ng::Value::String((*key).to_owned()), v.clone());
+            }
+        }
+    }
+    serde_yaml_ng::from_value(serde_yaml_ng::Value::Mapping(own)).map_err(|e| e.to_string())
 }
 
 /// Every profile that has a directory with a `profile.yaml`, plus the implicit default.

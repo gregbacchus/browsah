@@ -30,13 +30,14 @@ fn main() {
         std::process::exit(profile::cli(&args[1..]));
     }
 
+    // `browsah config show [--profile=ID] [--config=PATH]`: the effective configuration.
+    if args.first().map(String::as_str) == Some("config") && args.get(1).map(String::as_str) == Some("show") {
+        std::process::exit(config_show(&args[2..]));
+    }
+
     let opts = Rc::new(cli::Options::parse());
     let is_bench = opts.bench != cli::Bench::None;
-    // Benchmarks use fixed defaults so results do not depend on a user's config file.
-    let cfg = if is_bench { config::Config::default() } else { config::load(opts.config_path.as_deref()) };
-
-    // Which profile this process is. Tests and benchmarks use a throwaway profile so they never
-    // collide with a running browser.
+    // Tests and benchmarks use a throwaway profile so they never collide with a running browser.
     let test_run = is_bench || opts.selftest || opts.latency;
     let profile_id = match (&opts.profile, test_run) {
         (Some(id), _) => id.clone(),
@@ -50,6 +51,16 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // The application config with the profile's file merged over it. Benchmarks use fixed
+    // defaults so results do not depend on a user's files.
+    let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+    let loaded = if is_bench {
+        config::Loaded { config: config::Config::default(), profile_overrides: Vec::new(), warnings: Vec::new() }
+    } else {
+        config::load_for_startup(&app_file, Some(&profile.dir.join("profile.yaml")))
+    };
+    let cfg = &loaded.config;
 
     // One process per profile (Chromium locks the profile's cache directory): if this profile is
     // already running, hand it the link (or ask it to show its window) and leave, before CEF
@@ -94,9 +105,43 @@ fn main() {
         bench::run(opts);
         0
     } else {
-        app::run(app, opts, cfg, profile)
+        app::run(app, opts, loaded, profile)
     };
 
     runtime.shutdown();
     std::process::exit(code);
+}
+
+/// Print the effective configuration for a profile and which options the profile set.
+fn config_show(args: &[String]) -> i32 {
+    let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
+    let id = value("--profile").unwrap_or_else(|| profile::DEFAULT_ID.to_owned());
+    let profile = match profile::Profile::resolve(&id) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("browsah: {e}");
+            return 2;
+        }
+    };
+    let app_file = value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+    let profile_file = profile.dir.join("profile.yaml");
+    match config::load_effective(&app_file, Some(&profile_file)) {
+        Ok(l) => {
+            println!("# profile: {id}\n# application file: {}\n# profile file: {}", app_file.display(), profile_file.display());
+            if l.profile_overrides.is_empty() {
+                println!("# options set by the profile: none");
+            } else {
+                println!("# options set by the profile: {}", l.profile_overrides.join(", "));
+            }
+            for w in &l.warnings {
+                println!("# warning: {w}");
+            }
+            print!("{}", serde_yaml_ng::to_string(&l.config).unwrap_or_default());
+            0
+        }
+        Err(e) => {
+            eprintln!("browsah: {e}");
+            1
+        }
+    }
 }

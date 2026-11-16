@@ -219,6 +219,24 @@ exited in 34 ms. **Not verified:** the new link opening as a visible tab (the ru
 logged receiving it), GNOME listing the entries in its default-browser chooser, making an entry the
 default browser, the icon's look in the shell.
 
+Step 2 (layers, first part) is built: application file, then the profile's `profile.yaml`, merged
+by the rules in `docs/config/README.md` (maps merge, values and lists replace, `key+:` appends,
+application-only options ignored in a profile). Choices made while building it: a profile may set any
+non-application-only option, including process-wide ones, because a profile is its own process
+(only workspaces and web apps, which share a process, will be limited to per-window options); the
+schema per level is the same option set filtered by the application-only list, with each level's
+own identity keys (`name`, `color` for a profile) kept out of the merge. Files are watched with GIO
+file monitors (`watch_config`, `--no-watch`), changes are coalesced for 0.3 s, and options are
+classified as live (`search_url`, `home_page`, `rendering.frame_rate`, `input.*`) or restart-only
+(`chromium`, `gpu`, `rendering.mode`, `device_resolution`, `window`). Measured here by editing a
+profile file while the browser ran: a live edit, a restart-only edit, an invalid edit (kept the old
+settings), an editor-style rename over the file and a no-change save were all handled as intended; the
+restart message stays correct when a restart-only option is edited back; `--no-watch` gave no
+reload. **Not verified:** the in-window message (only the debug log was read), live frame-rate change
+on an existing tab, a symlinked config file, a config directory that does not exist yet.
+Not built: workspace and web app layers, list items with provenance beyond option paths, a config
+reference for what is application-only beyond `watch_config`.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

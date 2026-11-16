@@ -25,6 +25,21 @@ is used by `--selftest` and the benchmarks so they never touch a real profile).
 
 All options apply at startup. Unknown keys are ignored (in release builds).
 
+## Overriding configuration
+
+Besides the options below, `profile.yaml` can contain any option from [options.md](options.md)
+(except application-only ones such as `watch_config`); its values are merged over the application
+config for this profile. Maps merge, values and lists replace, and a key ending in `+` appends a
+list. Details and what reloads live: [Layers and reloading](README.md#layers-and-reloading).
+
+```yaml
+search_url: "https://www.google.com/search?q={query}"   # this profile uses another search engine
+input:
+  touchpad_speed: 8.0                                    # only this option changes in `input`
+chromium:
+  flags+: ["--force-dark-mode"]                          # appended to the application's flags
+```
+
 ## Options
 
 | Key | Type | Default | Description |

@@ -5,9 +5,10 @@ mod latency;
 mod nav;
 mod selftest;
 mod view;
+mod watch;
 
 use crate::cli::{Mode, Options};
-use crate::config::Config;
+use crate::config::{self, Config};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, OnceCell, RefCell};
@@ -74,8 +75,9 @@ pub struct Shell {
     tabs: RefCell<Vec<Rc<Tab>>>,
     mode: Cell<Mode>,
     backing: bool,
-    frame_rate: i32,
-    search_url: String,
+    frame_rate: Cell<i32>,
+    search_url: RefCell<String>,
+    toasts: adw::ToastOverlay,
     /// The user has typed in the address bar and not yet committed or cancelled.
     editing: Cell<bool>,
     /// Set while the shell itself changes the entry text, so that is not mistaken for typing.
@@ -98,6 +100,24 @@ fn tab_title(s: &State) -> String {
 }
 
 impl Shell {
+    /// Show a short message over the page.
+    pub fn toast(&self, text: &str) {
+        self.toasts.add_toast(adw::Toast::new(text));
+    }
+
+    /// Apply the options that can change while running (see `config::changes`): search engine,
+    /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
+    pub fn apply_config(&self, cfg: &Config) {
+        input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed, cfg.input.touchpad_acceleration);
+        *self.search_url.borrow_mut() = cfg.search_url.clone();
+        if self.frame_rate.get() != cfg.rendering.frame_rate {
+            self.frame_rate.set(cfg.rendering.frame_rate);
+            for t in self.tabs.borrow().iter() {
+                t.view().set_frame_rate(cfg.rendering.frame_rate);
+            }
+        }
+    }
+
     /// The selected tab.
     pub fn current(&self) -> Option<Rc<Tab>> {
         let page = self.tab_view.selected_page()?;
@@ -125,7 +145,7 @@ impl Shell {
     pub fn go(&self, text: &str) {
         self.editing.set(false);
         if let Some(t) = self.current() {
-            let url = nav::resolve(text, &self.search_url);
+            let url = nav::resolve(text, &self.search_url.borrow());
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: address bar {text:?} -> {url:?}");
             }
@@ -179,7 +199,7 @@ impl Shell {
     /// Create a view for a tab, wired to deliver its events to `tab`.
     fn make_view(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>, url: &str) -> Rc<BrowserView> {
         let on_event = self.event_closure(cell);
-        BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate, url, on_event)
+        BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), url, on_event)
     }
 
     /// Open a tab on `url`. Background tabs start hidden (not rendering) until selected.
@@ -416,7 +436,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
     toolbar.add_top_bar(&header);
     toolbar.add_top_bar(&tab_bar);
     toolbar.set_content(Some(&tab_view));
-    window.set_content(Some(&toolbar));
+    let toasts = adw::ToastOverlay::new();
+    toasts.set_child(Some(&toolbar));
+    window.set_content(Some(&toasts));
 
     let back_action = gio::SimpleAction::new("back", None);
     let forward_action = gio::SimpleAction::new("forward", None);
@@ -438,8 +460,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         tabs: RefCell::new(Vec::new()),
         mode: Cell::new(opts.mode.unwrap_or(cfg.rendering.mode.mode())),
         backing: opts.backing.unwrap_or(cfg.rendering.device_resolution),
-        frame_rate: cfg.rendering.frame_rate,
-        search_url: cfg.search_url.clone(),
+        frame_rate: Cell::new(cfg.rendering.frame_rate),
+        search_url: RefCell::new(cfg.search_url.clone()),
+        toasts: toasts.clone(),
         editing: Cell::new(false),
         programmatic: Cell::new(false),
     });
@@ -618,20 +641,23 @@ pub fn resolve_address(text: &str, search_url: &str) -> String {
 
 /// Run the browser in this process, which owns its profile's application id. `app` is already
 /// registered (see `main`). Returns the process exit code.
-pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crate::profile::Profile) -> i32 {
-    input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed, cfg.input.touchpad_acceleration);
+pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
+    let cfg0 = loaded.config;
+    input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);
     let exit = Rc::new(Cell::new(0));
-    let cfg = Rc::new(cfg);
+    // The live configuration: replaced when a config file changes (see `watch`).
+    let cfg = Rc::new(RefCell::new(cfg0));
     let shell: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
+    let watcher: Rc<RefCell<Option<watch::ConfigWatch>>> = Rc::new(RefCell::new(None));
 
     // The first window, on `start`. Later calls (another launch of this profile) raise it.
     let make_shell = {
-        let (shell, opts, cfg, exit) = (shell.clone(), opts.clone(), cfg.clone(), exit.clone());
+        let (shell, opts, cfg, exit, watcher, profile) = (shell.clone(), opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
         move |app: &adw::Application, start: &str| -> Rc<Shell> {
             if let Some(s) = shell.borrow().as_ref() {
                 return s.clone();
             }
-            let s = build(app, &opts, &cfg, start);
+            let s = build(app, &opts, &cfg.borrow(), start);
             // Everything the window's widgets call back into holds the shell weakly, so something
             // must own it for as long as the window lives. (Without this the address bar, buttons
             // and shortcuts silently did nothing once start-up ended.)
@@ -643,12 +669,26 @@ pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crat
             });
             s.window.present();
             if opts.latency {
-                latency::spawn(app.clone(), s.clone(), cfg.rendering.frame_rate);
+                latency::spawn(app.clone(), s.clone(), cfg.borrow().rendering.frame_rate);
             }
             if opts.selftest {
-                selftest::spawn(app.clone(), s.clone(), exit.clone(), opts.mode.unwrap_or(cfg.rendering.mode.mode()) == Mode::Accel);
+                selftest::spawn(app.clone(), s.clone(), exit.clone(), opts.mode.unwrap_or(cfg.borrow().rendering.mode.mode()) == Mode::Accel);
             }
             *shell.borrow_mut() = Some(s.clone());
+
+            // Reload configuration when its files change (unless switched off).
+            let watching = cfg.borrow().watch_config && !opts.no_watch && !opts.selftest && !opts.latency;
+            if watching {
+                let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+                let profile_file = profile.dir.join("profile.yaml");
+                let startup = Rc::new(cfg.borrow().clone());
+                let (cfg, shell_w, watcher2) = (cfg.clone(), Rc::downgrade(&s), watcher.clone());
+                let (app_file2, profile_file2) = (app_file.clone(), profile_file.clone());
+                *watcher.borrow_mut() = Some(watch::ConfigWatch::start(&[app_file, profile_file], move || {
+                    let Some(s) = shell_w.upgrade() else { return };
+                    reload(&s, &cfg, &startup, &app_file2, &profile_file2, &watcher2);
+                }));
+            }
             s
         }
     };
@@ -665,7 +705,8 @@ pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crat
             } else if opts.latency {
                 latency::start_url()
             } else {
-                nav::resolve(opts.url.as_deref().unwrap_or(&cfg.home_page), &cfg.search_url)
+                let c = cfg.borrow();
+                nav::resolve(opts.url.as_deref().unwrap_or(&c.home_page), &c.search_url)
             };
             make_shell(app, &start);
         }
@@ -676,7 +717,8 @@ pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crat
     app.connect_open({
         let (cfg, shell, make_shell) = (cfg.clone(), shell.clone(), make_shell);
         move |app, files, _hint| {
-            let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &cfg.search_url)).collect();
+            let search = cfg.borrow().search_url.clone();
+            let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &search)).collect();
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: asked to open {urls:?}");
             }
@@ -691,4 +733,43 @@ pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crat
 
     app.run_with_args::<&str>(&[]);
     exit.get()
+}
+
+/// A config file changed: load the effective configuration again and apply what can change live.
+/// An invalid file is reported and the running configuration kept.
+fn reload(shell: &Rc<Shell>, cfg: &Rc<RefCell<Config>>, startup: &Config, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
+    match config::load_effective(app_file, Some(profile_file)) {
+        Err(e) => {
+            eprintln!("config: {e}; keeping the current settings");
+            shell.toast("Configuration has an error; keeping the current settings");
+        }
+        Ok(loaded) => {
+            let new = loaded.config;
+            let changes = config::changes(&cfg.borrow(), &new);
+            if changes == config::Changes::default() {
+                return; // saved without a relevant change
+            }
+            // Options fixed at start-up are judged against what this process started with, so the
+            // message stays right when a restart-only option is edited back.
+            let pending_restart = config::changes(startup, &new).restart;
+            for w in &loaded.warnings {
+                eprintln!("config: {w}");
+            }
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: config reloaded: live {:?}, restart needed {:?}", changes.live, pending_restart);
+            }
+            shell.apply_config(&new);
+            let stop = !new.watch_config;
+            *cfg.borrow_mut() = new;
+            let mut msg = String::from("Configuration reloaded");
+            if !pending_restart.is_empty() {
+                msg.push_str(&format!(" (restart needed for {})", pending_restart.join(", ")));
+            }
+            if stop {
+                *watcher.borrow_mut() = None;
+                msg.push_str("; watching is now off");
+            }
+            shell.toast(&msg);
+        }
+    }
 }

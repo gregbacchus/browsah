@@ -5,14 +5,14 @@
 //! directions, and load the example with unknown keys rejected.
 
 use crate::cli::Mode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const DEFAULT_HOME_PAGE: &str = "https://duckduckgo.com/";
 pub const DEFAULT_SEARCH_URL: &str = "https://duckduckgo.com/?q={query}";
 
 /// Which rendering path to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RenderMode {
     /// dmabuf frames, no copy (`OnAcceleratedPaint`).
@@ -30,10 +30,12 @@ impl RenderMode {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct Config {
+    /// Reload the config files when they change (application-only: a profile cannot set it).
+    pub watch_config: bool,
     pub home_page: String,
     pub search_url: String,
     pub window: WindowConfig,
@@ -43,7 +45,7 @@ pub struct Config {
     pub input: InputConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct WindowConfig {
@@ -51,7 +53,7 @@ pub struct WindowConfig {
     pub height: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct RenderingConfig {
@@ -60,21 +62,21 @@ pub struct RenderingConfig {
     pub device_resolution: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct ChromiumConfig {
     pub flags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct GpuConfig {
     pub workarounds: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct InputConfig {
@@ -92,6 +94,7 @@ impl Default for InputConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            watch_config: true,
             home_page: DEFAULT_HOME_PAGE.into(),
             search_url: DEFAULT_SEARCH_URL.into(),
             window: WindowConfig::default(),
@@ -124,6 +127,7 @@ impl Default for GpuConfig {
 impl Config {
     /// Parse YAML text. Unknown keys are ignored in release builds so old and new files keep
     /// loading; test builds reject them.
+    #[cfg(test)]
     pub fn parse(text: &str) -> Result<Config, serde_yaml_ng::Error> {
         if text.trim().is_empty() {
             return Ok(Config::default());
@@ -156,24 +160,177 @@ pub fn default_path() -> PathBuf {
     gtk::glib::user_config_dir().join("browsah").join("config.yaml")
 }
 
-/// Load the config. A missing file gives the defaults; an unreadable or invalid file is reported
-/// on stderr and also gives the defaults, so the browser still starts.
-pub fn load(path: Option<&str>) -> Config {
-    let path = path.map(PathBuf::from).unwrap_or_else(default_path);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => match Config::parse(&text) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("config: {}: {e}; using defaults", path.display());
-                Config::default()
+// ---- layers -----------------------------------------------------------------------------------
+//
+// The effective configuration is the application file (`config.yaml`) with the profile's file
+// (`profile.yaml`) merged over it. Rules, the same at every level:
+// - maps merge key by key, recursively;
+// - a scalar or a list in the upper layer replaces the lower one;
+// - a key ending in `+` (`flags+:`) appends the upper list to the lower one instead;
+// - application-only options (`APP_ONLY`) are ignored, with a warning, in a profile.
+//
+// Process-wide options (`chromium`, `gpu`, rendering mode) can be set per profile because a
+// profile is its own process.
+
+use serde_yaml_ng::Value;
+
+/// Options a profile cannot set.
+pub const APP_ONLY: &[&str] = &["watch_config"];
+
+/// Keys of `profile.yaml` that describe the profile itself and are not configuration.
+pub const PROFILE_IDENTITY_KEYS: &[&str] = &["name", "color"];
+
+/// Merge `over` onto `base` using the rules above.
+pub fn merge(base: &mut Value, over: &Value) {
+    match (base, over) {
+        (Value::Mapping(b), Value::Mapping(o)) => {
+            for (k, v) in o {
+                let key = k.as_str().unwrap_or("");
+                if let Some(plain) = key.strip_suffix('+') {
+                    let plain = Value::String(plain.to_owned());
+                    match (b.get_mut(&plain), v) {
+                        (Some(Value::Sequence(bs)), Value::Sequence(vs)) => bs.extend(vs.iter().cloned()),
+                        _ => {
+                            b.insert(plain, v.clone());
+                        }
+                    }
+                } else if let Some(existing) = b.get_mut(k) {
+                    merge(existing, v);
+                } else {
+                    b.insert(k.clone(), v.clone());
+                }
             }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => {
-            eprintln!("config: cannot read {}: {e}; using defaults", path.display());
-            Config::default()
+        }
+        (b, o) => *b = o.clone(),
+    }
+}
+
+/// The paths (`rendering.frame_rate`) of every leaf in a mapping; a list is one leaf.
+pub fn leaf_paths(v: &Value) -> Vec<String> {
+    fn walk(prefix: &str, v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Mapping(m) => {
+                for (k, v) in m {
+                    let k = k.as_str().unwrap_or("?").trim_end_matches('+');
+                    walk(&if prefix.is_empty() { k.to_owned() } else { format!("{prefix}.{k}") }, v, out);
+                }
+            }
+            _ => out.push(prefix.to_owned()),
         }
     }
+    let mut out = Vec::new();
+    walk("", v, &mut out);
+    out.sort();
+    out
+}
+
+/// A configuration together with where it came from.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    pub config: Config,
+    /// Options the profile file set (dotted paths).
+    pub profile_overrides: Vec<String>,
+    /// Things worth telling the user (ignored options).
+    pub warnings: Vec<String>,
+}
+
+fn read_yaml(path: &std::path::Path) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => Ok(Value::Mapping(Default::default())),
+        Ok(text) => {
+            let v: Value = serde_yaml_ng::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            if v.is_mapping() || v.is_null() {
+                Ok(if v.is_null() { Value::Mapping(Default::default()) } else { v })
+            } else {
+                Err(format!("{}: expected a mapping of options", path.display()))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Mapping(Default::default())),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Build the effective configuration from the application file and (optionally) a profile file.
+/// A missing file is empty. An invalid file is an error naming it (the caller decides whether to
+/// fall back to defaults or keep what it has).
+pub fn load_effective(app_file: &std::path::Path, profile_file: Option<&std::path::Path>) -> Result<Loaded, String> {
+    let mut merged = read_yaml(app_file)?;
+    let mut overrides = Vec::new();
+    let mut warnings = Vec::new();
+    if let Some(pf) = profile_file {
+        let mut over = read_yaml(pf)?;
+        if let Value::Mapping(m) = &mut over {
+            for k in PROFILE_IDENTITY_KEYS {
+                m.remove(*k);
+            }
+            for k in APP_ONLY {
+                if m.remove(*k).is_some() {
+                    warnings.push(format!("{}: `{k}` can only be set in the application config; ignored", pf.display()));
+                }
+            }
+        }
+        overrides = leaf_paths(&over);
+        merge(&mut merged, &over);
+    }
+    let mut config: Config = serde_yaml_ng::from_value(merged).map_err(|e| format!("{}: {e}", profile_file.filter(|_| !overrides.is_empty()).unwrap_or(app_file).display()))?;
+    config.sanitize();
+    Ok(Loaded { config, profile_overrides: overrides, warnings })
+}
+
+/// `load_effective` for start-up: problems are reported and defaults used, so a typo never
+/// leaves the browser unable to start.
+pub fn load_for_startup(app_file: &std::path::Path, profile_file: Option<&std::path::Path>) -> Loaded {
+    match load_effective(app_file, profile_file) {
+        Ok(l) => {
+            for w in &l.warnings {
+                eprintln!("config: {w}");
+            }
+            l
+        }
+        Err(e) => {
+            eprintln!("config: {e}; using defaults");
+            Loaded { config: Config::default(), profile_overrides: Vec::new(), warnings: Vec::new() }
+        }
+    }
+}
+
+/// What a reload changes, by dotted option path.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// Options that take effect immediately.
+    pub live: Vec<String>,
+    /// Options that only take effect at the next start.
+    pub restart: Vec<String>,
+}
+
+/// Options that are fixed when the process or a window starts.
+const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "rendering.mode", "rendering.device_resolution", "window."];
+
+pub fn changes(old: &Config, new: &Config) -> Changes {
+    let flat = |c: &Config| -> std::collections::BTreeMap<String, Value> {
+        let v = serde_yaml_ng::to_value(c).unwrap_or(Value::Null);
+        let mut out = std::collections::BTreeMap::new();
+        for path in leaf_paths(&v) {
+            let mut cur = &v;
+            for part in path.split('.') {
+                cur = cur.get(part).unwrap_or(&Value::Null);
+            }
+            out.insert(path, cur.clone());
+        }
+        out
+    };
+    let (a, b) = (flat(old), flat(new));
+    let mut ch = Changes::default();
+    for (k, v) in &b {
+        if a.get(k) != Some(v) {
+            if RESTART_REQUIRED.iter().any(|r| k == r || (r.ends_with('.') && k.starts_with(r))) {
+                ch.restart.push(k.clone());
+            } else {
+                ch.live.push(k.clone());
+            }
+        }
+    }
+    ch
 }
 
 #[cfg(test)]
@@ -236,7 +393,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
+        let roots = ["watch_config", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -284,5 +441,94 @@ mod tests {
         assert_eq!(c.rendering.mode.mode(), Mode::Paint);
         assert_eq!(Config::default().rendering.mode.mode(), Mode::Accel);
         assert!(Config::parse("rendering: { mode: bogus }").is_err());
+    }
+
+    // ---- layers ----
+
+    fn yaml(t: &str) -> Value {
+        serde_yaml_ng::from_str(t).unwrap()
+    }
+
+    #[test]
+    fn merge_rules() {
+        let mut base = yaml("a: 1\nm: { x: 1, y: 2 }\nl: [1, 2]\nk: [1]\n");
+        merge(&mut base, &yaml("a: 5\nm: { y: 9, z: 3 }\nl: [7]\nk+: [2, 3]\nnew+: [4]\n"));
+        assert_eq!(base, yaml("a: 5\nm: { x: 1, y: 9, z: 3 }\nl: [7]\nk: [1, 2, 3]\nnew: [4]\n"));
+        // A scalar replaces a map and vice versa.
+        let mut b = yaml("a: { x: 1 }");
+        merge(&mut b, &yaml("a: 2"));
+        assert_eq!(b, yaml("a: 2"));
+    }
+
+    #[test]
+    fn leaf_paths_of_overrides() {
+        assert_eq!(leaf_paths(&yaml("a: 1\nm: { x: 1, y: { z: 2 } }\nl+: [1]\n")), ["a", "l", "m.x", "m.y.z"]);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("browsah-cfg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn profile_overrides_application_config() {
+        let d = temp_dir("layers");
+        let (app, prof) = (d.join("config.yaml"), d.join("profile.yaml"));
+        std::fs::write(&app, "search_url: 'https://a/?q={query}'\ninput: { touchpad_speed: 4.0 }\nchromium: { flags: ['--one'] }\nwatch_config: true\n").unwrap();
+        std::fs::write(&prof, "name: Work\ncolor: '#123456'\nsearch_url: 'https://b/?q={query}'\ninput: { wheel_notch: 80 }\nchromium: { 'flags+': ['--two'] }\nwatch_config: false\n").unwrap();
+        let l = load_effective(&app, Some(&prof)).unwrap();
+        assert_eq!(l.config.search_url, "https://b/?q={query}"); // profile wins
+        assert_eq!(l.config.input.touchpad_speed, 4.0); // application value kept
+        assert_eq!(l.config.input.wheel_notch, 80.0); // profile adds
+        assert_eq!(l.config.chromium.flags, ["--one", "--two"]); // appended
+        assert!(l.config.watch_config, "application-only option cannot be set by a profile");
+        assert!(l.warnings.iter().any(|w| w.contains("watch_config")));
+        assert_eq!(l.profile_overrides, ["chromium.flags", "input.wheel_notch", "search_url"]);
+        // Identity keys are not configuration (they would be unknown options).
+        assert!(!l.profile_overrides.iter().any(|p| p == "name" || p == "color"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn missing_files_are_empty_and_invalid_files_are_errors() {
+        let d = temp_dir("invalid");
+        let l = load_effective(&d.join("nope.yaml"), Some(&d.join("nope2.yaml"))).unwrap();
+        assert_eq!(l.config.home_page, DEFAULT_HOME_PAGE);
+        std::fs::write(d.join("bad.yaml"), "rendering: { frame_rate: fast }\n").unwrap();
+        let e = load_effective(&d.join("bad.yaml"), None).unwrap_err();
+        assert!(e.contains("bad.yaml"), "{e}");
+        std::fs::write(d.join("p.yaml"), "input: { wheel_notch: [] }\n").unwrap();
+        let e = load_effective(&d.join("nope.yaml"), Some(&d.join("p.yaml"))).unwrap_err();
+        assert!(e.contains("p.yaml"), "error names the profile file: {e}");
+        std::fs::write(d.join("list.yaml"), "- a\n- b\n").unwrap();
+        assert!(load_effective(&d.join("list.yaml"), None).is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn reload_changes_are_classified() {
+        let a = Config::default();
+        assert_eq!(changes(&a, &a.clone()), Changes::default());
+        let mut b = a.clone();
+        b.search_url = "https://x/?q={query}".into();
+        b.input.touchpad_speed = 9.0;
+        b.rendering.frame_rate = 30;
+        b.chromium.flags.push("--x".into());
+        b.rendering.mode = RenderMode::Readback;
+        b.window.width = 900;
+        b.gpu.workarounds = false;
+        let c = changes(&a, &b);
+        assert_eq!(c.live, ["input.touchpad_speed", "rendering.frame_rate", "search_url"]);
+        assert_eq!(c.restart, ["chromium.flags", "gpu.workarounds", "rendering.mode", "window.width"]);
+    }
+
+    #[test]
+    fn example_profile_overrides_apply() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let l = load_effective(&root.join("examples/config.yaml"), Some(&root.join("examples/profile.yaml"))).unwrap();
+        assert!(!l.profile_overrides.is_empty(), "examples/profile.yaml should show overrides");
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
     }
 }

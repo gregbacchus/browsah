@@ -120,7 +120,7 @@ discarding (the research shows ~42 MB per tab is recoverable) and a settings fil
 **Done so far (2026-11-17):** profile directories, `browsah profile add|list|remove`, per-profile
 `.desktop` entry and icon, per-profile Chromium data directory, one unique process per profile with
 link and activation hand-off (a second launch exits in about 35 ms), `selftest` profile isolation.
-Not yet: the layered application/profile config merge, routing, workspaces, web apps, history.
+Layered config (application, then profile) with file watching and live reload is built; see the design note. Not yet: routing, workspaces and web apps (and their config layers), history.
 
 Designed in [research/profiles-workspaces-design.md](research/profiles-workspaces-design.md), after
 a set of spikes (per-window Wayland app id, manifest read, popup with opener, cookie filter, link
