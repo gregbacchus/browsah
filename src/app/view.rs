@@ -98,6 +98,8 @@ pub enum ViewEvent {
     Address(String),
     Title(String),
     Loading { loading: bool, can_back: bool, can_forward: bool },
+    /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
+    Route { action: crate::router::Action, url: String },
     /// A main-frame navigation left the view's scope and was cancelled (see `set_scope`): open it elsewhere.
     OutOfScope(String),
     /// A popup that keeps its opener (`window.open` with a user gesture): adopt it as a tab.
@@ -163,6 +165,8 @@ struct Shared {
     deferred_url: Mutex<Option<String>>,
     /// Where the view may navigate (patterns of `workspace::scope_matches`); empty: anywhere.
     scope: Mutex<Vec<String>>,
+    /// The workspace this view's tab is in (`None`: an ephemeral window); the router's source.
+    workspace: Mutex<Option<String>>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -184,6 +188,7 @@ impl Shared {
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
             deferred_url: Mutex::new(None),
             scope: Mutex::new(Vec::new()),
+            workspace: Mutex::new(None),
             accel,
             frame_rate,
         })
@@ -447,9 +452,9 @@ wrap_life_span_handler! {
             _b: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             _popup_id: ::std::os::raw::c_int,
-            _target_url: Option<&CefString>,
+            target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
-            _disposition: WindowOpenDisposition,
+            disposition: WindowOpenDisposition,
             user_gesture: ::std::os::raw::c_int,
             _features: Option<&PopupFeatures>,
             window_info: Option<&mut WindowInfo>,
@@ -461,6 +466,16 @@ wrap_life_span_handler! {
             let (Some(window_info), Some(client), Some(settings)) = (window_info, client, settings) else { return 1 };
             if user_gesture == 0 {
                 return 1;
+            }
+            // `target=_blank` links, and `window.open(url)` without window features, ask for a tab:
+            // those are routed. A sized popup (`NEW_POPUP`, `NEW_WINDOW`) is the kind that sign-in and
+            // payment pages rely on: it is never re-routed, so it keeps its opener.
+            if matches!(disposition, WindowOpenDisposition::NEW_FOREGROUND_TAB | WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+                if let Some(url) = target_url.map(|u| u.to_string()).filter(|u| !u.is_empty()) {
+                    if routed_elsewhere(&self.shared, &url, crate::router::Kind::Link, crate::router::Target::NewTab) {
+                        return 1;
+                    }
+                }
             }
             let opener = &self.shared;
             let backing = opener.view.lock().unwrap().backing;
@@ -644,6 +659,24 @@ wrap_resource_request_handler! {
     }
 }
 
+/// Ask the router about a link from a view. If it says anything but "carry on", report the
+/// decision to the shell and return true: the navigation must be cancelled.
+fn routed_elsewhere(shared: &Shared, url: &str, kind: crate::router::Kind, target: crate::router::Target) -> bool {
+    use crate::router::{route, Action, Request, Source};
+    let source = Source::Tab(shared.workspace.lock().unwrap().clone());
+    let ws = if let Source::Tab(w) = &source { w.clone() } else { None };
+    let decision = route(&Request { url: url.to_owned(), source, kind, target });
+    match decision.action {
+        Action::Allow => false,
+        // Already where it is told to go.
+        Action::Workspace(ref w) if ws.as_deref() == Some(w.as_str()) => false,
+        action => {
+            send(shared.id, ViewEvent::Route { action, url: url.to_owned() });
+            true
+        }
+    }
+}
+
 wrap_request_handler! {
     struct ViewRequest { shared: Arc<Shared> }
 
@@ -659,6 +692,20 @@ wrap_request_handler! {
             send(self.shared.id, ViewEvent::Crashed(why));
         }
 
+        // A link opened in a new tab (`target=_blank`, middle click, Ctrl+click): ask the router
+        // before CEF creates the tab. Script popups (`window.open`) do not come here.
+        fn on_open_urlfrom_tab(
+            &self,
+            _b: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            target_url: Option<&CefString>,
+            _disposition: WindowOpenDisposition,
+            user_gesture: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let Some(url) = target_url.map(|u| u.to_string()).filter(|_| user_gesture != 0) else { return 0 };
+            routed_elsewhere(&self.shared, &url, crate::router::Kind::Link, crate::router::Target::NewTab) as _
+        }
+
         // A pinned tab limited to a scope: a navigation from inside the scope to somewhere outside
         // it is cancelled and reported, to be opened as another tab. Not restricted: redirects, and
         // pages that are already outside the scope (reached by a redirect, as in a sign-in flow).
@@ -667,19 +714,36 @@ wrap_request_handler! {
             _b: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             request: Option<&mut Request>,
-            _user_gesture: ::std::os::raw::c_int,
+            user_gesture: ::std::os::raw::c_int,
             is_redirect: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
-            let scope = self.shared.scope.lock().unwrap().clone();
-            if scope.is_empty() || is_redirect != 0 {
-                return 0;
-            }
             let (Some(frame), Some(request)) = (frame, request) else { return 0 };
-            if frame.is_main() == 0 {
+            if frame.is_main() == 0 || is_redirect != 0 {
                 return 0;
             }
             let target = CefString::from(&request.url()).to_string();
             let current = CefString::from(&frame.url()).to_string();
+            // The router: a clicked link (a user gesture on a GET) or any other navigation of a
+            // page that is already showing something. A tab's own first load is never routed.
+            if !current.is_empty() && current != "about:blank" && target != "about:blank" {
+                let method = CefString::from(&request.method()).to_string();
+                let kind = if user_gesture != 0 && method.eq_ignore_ascii_case("GET") {
+                    Some(crate::router::Kind::Link)
+                } else if user_gesture == 0 {
+                    Some(crate::router::Kind::Typed)
+                } else {
+                    None // a form post: not routed
+                };
+                if let Some(kind) = kind {
+                    if routed_elsewhere(&self.shared, &target, kind, crate::router::Target::SameTab) {
+                        return 1;
+                    }
+                }
+            }
+            let scope = self.shared.scope.lock().unwrap().clone();
+            if scope.is_empty() {
+                return 0;
+            }
             let outside = |u: &str| !crate::workspace::in_scope(&scope, u);
             if target == "about:blank" || !outside(&target) {
                 return 0;
@@ -825,6 +889,11 @@ impl BrowserView {
         let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
         let mut client = make_client(shared.clone());
         browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+    }
+
+    /// Tell the view which workspace it is in (the router's idea of where a link came from).
+    pub fn set_workspace(&self, workspace: Option<String>) {
+        *self.shared.workspace.lock().unwrap() = workspace;
     }
 
     /// Limit where this view may navigate (see `workspace::scope_matches`); empty means anywhere.

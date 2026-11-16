@@ -678,6 +678,7 @@ impl Shell {
 
     /// Put a view in a new tab.
     fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool, uid: u64) -> Rc<Tab> {
+        view.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
         let sad = adw::StatusPage::builder()
@@ -781,6 +782,7 @@ impl Shell {
         });
         if let Some(tab) = tab {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
+            tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
             self.tabs.borrow_mut().push(tab);
             if self.tab_view.selected_page().as_ref() == Some(page) {
                 self.on_selected();
@@ -863,6 +865,7 @@ impl Shell {
                     self.adopt_tab(spec);
                 }
             }
+            ViewEvent::Route { action, url } => perform_route(&action, &url, Some(self)),
             ViewEvent::OutOfScope(url) => {
                 if self.allow_new_tabs {
                     self.open_tab(&url, true);
@@ -1435,6 +1438,10 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     };
 
     PROFILE.with(|p| *p.borrow_mut() = Some(profile.clone()));
+    {
+        let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+        install_router(&app_file, &profile);
+    }
 
     // Lets a locked workspace (no new tabs) send a link or a popup to an ephemeral window.
     NEW_EPHEMERAL.with(|f| {
@@ -1517,9 +1524,28 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         let (cfg, new_window, open_workspace) = (cfg.clone(), new_window, open_workspace);
         move |app, files, hint| {
             let search = cfg.borrow().search_url.clone();
-            let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &search)).collect();
+            let mut urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &search)).collect();
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: asked to open {urls:?} (workspace hint {hint:?})");
+            }
+            // Links from other applications go through the router (a workspace named on the command
+            // line is an explicit choice and skips it).
+            if hint.is_empty() {
+                urls.retain(|url| {
+                    let decision = crate::router::route(&crate::router::Request { url: url.clone(), source: crate::router::Source::External, kind: crate::router::Kind::External, target: crate::router::Target::SameTab });
+                    if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                        eprintln!("browsah: router: {url} -> {:?} ({:?})", decision.action, decision.rule);
+                    }
+                    if decision.action == crate::router::Action::Allow {
+                        return true;
+                    }
+                    let origin = windows().into_iter().next();
+                    perform_route(&decision.action, url, origin.as_deref());
+                    false
+                });
+                if urls.is_empty() {
+                    return;
+                }
             }
             if !hint.is_empty() {
                 for (i, url) in urls.iter().enumerate() {
@@ -1567,6 +1593,54 @@ fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> S
     )
 }
 
+/// Carry out the router's decision for a link. `origin` is the window the link came from (for
+/// messages), if any. `Allow` is not handled here: it means "carry on as usual".
+fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shell>) {
+    use crate::router::Action;
+    let say = |text: &str| {
+        if let Some(s) = origin {
+            s.toast(text);
+        }
+    };
+    match action {
+        Action::Allow => {}
+        Action::Block => say(&format!("Blocked a link to {}", url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url))),
+        Action::Ephemeral => {
+            if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                f(url);
+            }
+        }
+        Action::Workspace(id) => match OPEN_WORKSPACE.with(|f| f.borrow().clone()).map(|f| f(id, url)) {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => say(&e),
+            None => {}
+        },
+        Action::System => {
+            // A web address would come straight back here, so the desktop is only asked for other schemes.
+            if url.starts_with("http://") || url.starts_with("https://") {
+                if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    f(url);
+                }
+            } else if let Err(e) = gio::AppInfo::launch_default_for_uri(url, gio::AppLaunchContext::NONE) {
+                say(&format!("Cannot open {url}: {e}"));
+            }
+        }
+        Action::Profile { profile, workspace } => {
+            // The other profile's process takes the link (it is started if it is not running).
+            let Ok(exe) = std::env::current_exe() else { return };
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg(format!("--profile={profile}"));
+            if let Some(w) = workspace {
+                cmd.arg(format!("--workspace={w}"));
+            }
+            cmd.arg(url);
+            if let Err(e) = cmd.spawn() {
+                say(&format!("Cannot start profile {profile}: {e}"));
+            }
+        }
+    }
+}
+
 /// The shell of a window.
 fn shell_of(window: &adw::ApplicationWindow) -> Option<Rc<Shell>> {
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).cloned())
@@ -1598,11 +1672,29 @@ fn remember_workspace(profile: &crate::profile::Profile, id: &str, open: bool) {
     profile.save_state(&state);
 }
 
+/// Load the routing rules (application, profile and its workspaces) and install them.
+fn install_router(app_file: &std::path::Path, profile: &crate::profile::Profile) {
+    let router = crate::router::Router::load(app_file, Some(profile));
+    for w in &router.warnings {
+        eprintln!("routing: {w}");
+    }
+    let known: Vec<String> = crate::workspace::Workspace::list(profile).into_iter().map(|w| w.id).collect();
+    for w in router.referenced_workspaces() {
+        if !known.contains(&w) {
+            eprintln!("routing: a rule opens workspace {w:?}, which does not exist in this profile");
+        }
+    }
+    crate::router::install(router);
+}
+
 /// A config file changed: load each window's effective configuration again and apply what can
 /// change live. An invalid file is reported and the running configuration kept.
 fn reload(cfg: &Rc<RefCell<Config>>, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
     let shells = windows();
     let debug = std::env::var_os("BROWSAH_DEBUG").is_some();
+    if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
+        install_router(app_file, &profile); // routing rules reload with the rest
+    }
     let process = match config::load_effective(app_file, Some(profile_file)) {
         Ok(l) => l,
         Err(e) => {

@@ -20,12 +20,14 @@ What counts as a request:
 |---|---|
 | `external` | another application gave the browser a link |
 | `link` | a link clicked in a page (a user action, not a form post, not a redirect) |
-| `typed` | an address typed in the address bar, or opened from a bookmark; not matched unless a rule lists it |
+| `typed` | an address typed in the address bar or opened from a bookmark, or any other navigation the browser or a page's script starts on its own; not matched unless a rule lists it |
 
 A link can ask to open `same_tab` (an ordinary link) or `new_tab` (`target="_blank"`, a middle click,
-`Ctrl`+click). **Not routed:** redirects (so sign-in flows work), form submissions, reloads and
-back/forward, pages inside frames, and **popups opened by a page's script** (`window.open`), which stay
-with their opener so the page keeps working.
+`Ctrl`+click). A script's `window.open(url)` with no window features asks for a tab too, so it is
+treated like `target="_blank"`. **Not routed:** redirects (so sign-in flows work), form submissions,
+reloads and back/forward, pages inside frames, a tab's own first load, and **popups opened with window
+features** (a size, as sign-in and payment pages do), which stay with their opener so the page keeps
+working. A link a rule sends elsewhere is cancelled in the tab it came from.
 
 Try rules without a browser: `browsah route test <url> [--profile ID] [--from SOURCE] [--kind KIND]
 [--target TARGET] [--explain]`. Without `--profile` only the application's rules apply, which is how a

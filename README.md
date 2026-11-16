@@ -52,7 +52,8 @@ browsah workspace add mail --profile=work --name "Mail" --color "#2a6f97 #61a5c2
 browsah --profile=work --workspace=mail
 ```
 
-Options: [docs/config/workspace.md](docs/config/workspace.md). Right-click a tab to send it to another workspace. `Ctrl+Shift+N` opens an ephemeral window
+Options: [docs/config/workspace.md](docs/config/workspace.md). Where links go (from other applications and from
+pages) is set by routing rules, tried without a browser by `browsah route test`: [docs/config/routing.md](docs/config/routing.md). Right-click a tab to send it to another workspace. `Ctrl+Shift+N` opens an ephemeral window
 (not remembered), `Ctrl+D` bookmarks the page in a workspace window.
 
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key

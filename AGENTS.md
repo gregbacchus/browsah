@@ -54,6 +54,7 @@ take minutes.
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
+| `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
 | `src/cli.rs` | Command-line options |
 | `src/bench/` | `--bench=single|tabs|fps`, kept as a regression check for the rendering path |
@@ -89,6 +90,13 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **Routing:** `router::route` is called from CEF's thread (`routed_elsewhere` in `view.rs`:
+  `on_before_browse` for same-tab links and typed navigations, `on_open_urlfrom_tab` for Ctrl/middle
+  clicks, `on_before_popup` for `target=_blank` and plain `window.open`) and from the `open` handler for
+  links from other applications. A non-Allow decision cancels the navigation and sends a `Route` event;
+  the shell carries it out (`perform_route`). Redirects, form posts and sized popups are never routed.
+  `routing:` is stripped from the option layers (`strip_routing`) and read only by the router; the
+  router and its docs test live in `router.rs` / `docs/config/routing.md`.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the

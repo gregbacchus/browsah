@@ -275,6 +275,37 @@ profile processes (each profile has its own file); upgrade of the database schem
 signals). Pinned tabs are not restored (they load fresh); the screenshot of a tab that was never left
 until the window closed is taken at close.
 
+## Status: routing (2026-11-17)
+
+Built: `routing:` rules in the application, profile and workspace files (workspace rules judge links from
+their own tabs, then the profile's, then the application's; first match wins), the actions `allow`,
+`block`, `ephemeral`, `system`, `workspace:<id>`, `profile:<id>[/workspace:<id>]`, `routing.external`
+as the default for links from other applications, and `browsah route test` (`--profile` omitted: only
+the application's rules, which is how an external link is first judged; `--explain` shows every rule).
+A tab's right-click menu can send it to another workspace or a new window (the live page moves).
+
+Decisions made while building, not discussed before:
+- **What is routed.** Same-tab link clicks (a user gesture on a GET), Ctrl/middle-click links,
+  `target=_blank` and plain `window.open(url)` (all asking for a tab), typed navigations only if a rule
+  lists `typed`, and links from other applications. Never routed: redirects, form posts, reloads,
+  frames, a tab's first load, and popups opened with window features, which keep their opener.
+- **Why those popups are exempt.** Chromium reports `window.open(url)` and `target=_blank` the same
+  way (a tab), so a rule that names a sign-in domain *will* reroute a plain `window.open`; a sized popup
+  is the sign-in/payment kind and is left alone. No popup policy (modal, tab, deny) exists yet.
+- **Source of an external link.** Not used: rules can match `from: external` but not which application
+  sent it (see spike 5).
+- **Cross-profile.** `profile:<id>` starts a new `browsah --profile=<id> [--workspace=<id>] URL`, which
+  hands the link to that profile's process (or starts it).
+- The router lives in a process-wide `RwLock<Arc<Router>>` so CEF's thread can call it; it is
+  reinstalled when a configuration file changes.
+
+Measured: 11 unit tests of matching; the self-test routes a clicked link, a new-tab link, an external
+link by an application rule, a blocked link, and a command-line workspace (skipping the router), against a
+local server using two host names. **Not verified:** a Ctrl-click or middle-click (the self-test uses a
+`target=_blank` link); `system` and `profile:` actions (not exercised); rules from a real application's
+links; many rules (no performance test; the router runs on every navigation); the toast messages.
+Regular expressions and a "which application" selector are not offered.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

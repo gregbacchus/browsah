@@ -233,6 +233,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_locked(shell, r).await;
     run_bookmarks(shell, r).await;
     run_send_to_workspace(shell, r).await;
+    run_routing(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -837,7 +838,7 @@ fn start_test_server() -> u16 {
                 "/scope.html" => (
                     "200 OK",
                     String::new(),
-                    format!("<!doctype html><title>Scope test</title><a href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">out of scope</a>"),
+                    format!("<!doctype html><title>Scope test</title><a href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">out of scope</a><a target=\"_blank\" href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">in a new tab</a>"),
                 ),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
@@ -1056,6 +1057,90 @@ async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
     }
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     for id in ["s1", "s2"] {
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// Links go through the router: a clicked link and a new-tab link, from a workspace whose rules send
+/// them elsewhere, and links from other applications (the application's rules).
+async fn run_routing(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::{ActionGroupExt, ApplicationExt};
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    for id in ["ra", "rb", "rc"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+    }
+    // ra: links to 127.0.0.1 from its tabs go to workspace rb.
+    std::fs::write(
+        profile.workspaces_dir().join("ra/workspace.yaml"),
+        format!("name: A\nhome_page: 'http://localhost:{port}/scope.html'\nrouting:\n  rules:\n    - name: to b\n      match: {{ url: ['127.0.0.1'] }}\n      open: workspace:rb\n"),
+    )
+    .expect("ra");
+    std::fs::write(profile.workspaces_dir().join("rb/workspace.yaml"), "name: B\n").expect("rb");
+    std::fs::write(profile.workspaces_dir().join("rc/workspace.yaml"), "name: C\n").expect("rc");
+    // The application's rules, from a throwaway file: localhost links from other applications go to rc, one host is blocked.
+    let app_rules = std::env::temp_dir().join(format!("browsah-routing-{}.yaml", std::process::id()));
+    std::fs::write(&app_rules, "routing:\n  rules:\n    - match: { url: ['localhost'] }\n      open: workspace:rc\n    - match: { url: ['blocked.invalid'] }\n      open: block\n").expect("rules");
+    let router = crate::router::Router::load(&app_rules, Some(&profile));
+    r.check("the routing rules load without warnings", router.warnings.is_empty(), || format!("{:?}", router.warnings));
+    crate::router::install(router);
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"ra".to_variant()));
+    let ok = wait_until(15_000, || find("ra").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && t.view().has_frame()))).await;
+    r.check("workspace A opens on its home page", ok, || "not open".into());
+    let Some(ra) = find("ra") else { return };
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let d = Driver { shell: &ra };
+
+    // A clicked link: routed to workspace rb; the tab in ra stays where it was.
+    d.click(40.0, 45.0);
+    let ok = wait_until(15_000, || find("rb").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B"))).await;
+    r.check("a clicked link is routed to another workspace", ok, || format!("{:?}", find("rb").map(|s| s.tab_count())));
+    r.check("the clicked tab did not navigate and no tab was added to its window", ra.tab_count() == 1 && ra.current().is_some_and(|t| t.state.borrow().title == "Scope test"), || format!("tabs={} {:?}", ra.tab_count(), ra.current().map(|t| t.state.borrow().title.clone())));
+
+    // A link that asks for a new tab goes the same way.
+    let Some(rb) = find("rb") else { return };
+    let before = rb.tab_count();
+    d.click(40.0, 110.0);
+    let ok = wait_until(15_000, || rb.tab_count() == before + 1).await;
+    r.check("a new-tab link is routed too (and does not open a tab in its own window)", ok && ra.tab_count() == 1, || format!("rb tabs {} (was {before}), ra tabs {}", rb.tab_count(), ra.tab_count()));
+
+    // Links from other applications: the application's rules.
+    let windows_before = super::windows().len();
+    app.open(&[gio::File::for_uri(&format!("http://localhost:{port}/b.html"))], "");
+    let ok = wait_until(15_000, || find("rc").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B"))).await;
+    r.check("an external link matching an application rule opens in that workspace", ok, || "workspace rc did not open".into());
+    let n = super::windows().len();
+    app.open(&[gio::File::for_uri("http://blocked.invalid/x")], "");
+    glib::timeout_future(Duration::from_millis(800)).await;
+    r.check("a blocked external link opens nothing", super::windows().len() == n && n == windows_before + 1, || format!("{} windows (was {windows_before}+1)", super::windows().len()));
+
+    // A workspace named on the command line is an explicit choice: no routing.
+    let rc_tabs = find("rc").map(|s| s.tab_count()).unwrap_or(0);
+    app.open(&[gio::File::for_uri(&format!("http://localhost:{port}/b.html"))], "rb");
+    let ok = wait_until(15_000, || rb.tab_count() == before + 2).await;
+    r.check("--workspace with a link skips the router", ok && find("rc").map(|s| s.tab_count()).unwrap_or(0) == rc_tabs, || format!("rb {} rc {}", rb.tab_count(), find("rc").map(|s| s.tab_count()).unwrap_or(0)));
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    crate::router::install(crate::router::Router::default());
+    let _ = std::fs::remove_file(&app_rules);
+    for id in ["ra", "rb", "rc"] {
         if let Ok(s) = crate::store::Store::open(&db) {
             let _ = s.delete_workspace(id);
         }
