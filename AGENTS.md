@@ -72,7 +72,7 @@ take minutes.
 - **Licence:** browsah is MIT. Do not add a dependency whose licence is not permissive
   (MIT, Apache-2.0, BSD, ISC, Unicode, Zlib) without asking.
 - **One process per profile.** Chromium locks its cache directory, so a profile (`src/profile.rs`)
-  is one process with its own `GApplication` id (`nz.co.bacchus.browsah.<id>`). `main` registers
+  is one process with its own `GApplication` id (`be.geee.browsah.<id>`). `main` registers
   the application *before* starting CEF; if the profile is already running it forwards the URL
   (`open`) or `activate` and exits. `--selftest`, `--latency` and benchmarks use the `selftest`
   profile so they never touch a real profile or collide with a running browser. Profile config

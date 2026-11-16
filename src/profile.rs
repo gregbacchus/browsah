@@ -15,7 +15,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Application id of every profile is this prefix, a dot and the profile id.
-pub const APP_ID_PREFIX: &str = "nz.co.bacchus.browsah";
+pub const APP_ID_PREFIX: &str = "be.geee.browsah";
 
 /// Profiles that exist without being created: the one used when none is named, and the one the
 /// self-test and benchmarks use so that they never touch (or collide with) a real profile.
@@ -504,7 +504,7 @@ mod tests {
     fn resolve_and_list() {
         let root = temp("resolve");
         // Implicit profiles exist without a directory; others do not.
-        assert_eq!(Profile::resolve_in(&root, DEFAULT_ID).unwrap().app_id(), "nz.co.bacchus.browsah.default");
+        assert_eq!(Profile::resolve_in(&root, DEFAULT_ID).unwrap().app_id(), "be.geee.browsah.default");
         assert!(Profile::resolve_in(&root, TEST_ID).is_ok());
         assert!(Profile::resolve_in(&root, "work").unwrap_err().contains("browsah profile add work"));
         assert!(Profile::resolve_in(&root, "Bad Id").is_err());
@@ -532,7 +532,7 @@ mod tests {
         };
         let d = desktop_entry(&p, Path::new("/opt/my apps/browsah"), Path::new("/opt/my apps"));
         assert!(d.contains("Name=Browsah (Work)"));
-        assert!(d.contains("StartupWMClass=nz.co.bacchus.browsah.work"));
+        assert!(d.contains("StartupWMClass=be.geee.browsah.work"));
         assert!(d.contains("--profile=work %U"));
         assert!(d.contains("x-scheme-handler/https;"));
         assert!(d.contains("\"/opt/my apps/browsah\""), "paths with spaces are quoted: {d}");

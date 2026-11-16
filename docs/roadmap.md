@@ -131,7 +131,7 @@ Password-manager integration (1Password) is a separate investigation.
 
 ## Still open
 
-- **Name, repo layout:** the repo is `browsah`; the app id is `nz.co.bacchus.browsah`.
+- **Name, repo layout:** the repo is `browsah`; the app id is `be.geee.browsah`.
 - **Other hardware:** Intel and NVIDIA need testing (the Mesa workaround is GPU-specific).
 - **Update cadence:** how quickly to follow new CEF/Chromium releases.
 - **Dev ergonomics:** `libcef.so` is found via `LD_LIBRARY_PATH`; an rpath (`$ORIGIN`) in the build

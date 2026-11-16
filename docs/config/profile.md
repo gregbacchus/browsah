@@ -18,7 +18,7 @@ browsah --profile=work [URL]                 # run a profile, or hand it a link 
 ```
 
 `add` also writes a `.desktop` entry and an icon, so the profile appears in GNOME as its own
-application (application id `nz.co.bacchus.browsah.<id>`) and can be chosen as the default
+application (application id `be.geee.browsah.<id>`) and can be chosen as the default
 browser. A profile is one process: launching it again, or opening a link with it, hands the work
 to the running process. The ids `default` and `selftest` exist without being created (`selftest`
 is used by `--selftest` and the benchmarks so they never touch a real profile).

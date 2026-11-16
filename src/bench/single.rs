@@ -324,7 +324,7 @@ pub fn run(opts: Rc<Options>) {
         let page = std::env::current_dir().unwrap().join("bench/scroll.html");
         format!("file://{}", page.display())
     });
-    let app = gtk::Application::builder().application_id("nz.co.bacchus.browsah.bench").build();
+    let app = gtk::Application::builder().application_id("be.geee.browsah.bench").build();
     app.connect_activate(move |app| {
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Fill)

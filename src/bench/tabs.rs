@@ -788,7 +788,7 @@ pub fn run(app: gtk::Application, window: gtk::ApplicationWindow, picture: gtk::
 
 /// Entry point for `--bench=tabs` and `--bench=fps`: a plain GTK window with one `GtkPicture`.
 pub fn start(opts: Rc<Options>) {
-    let app = gtk::Application::builder().application_id("nz.co.bacchus.browsah.bench").build();
+    let app = gtk::Application::builder().application_id("be.geee.browsah.bench").build();
     app.connect_activate(move |app| {
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Fill)
