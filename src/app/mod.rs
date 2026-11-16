@@ -125,7 +125,11 @@ impl Shell {
     pub fn go(&self, text: &str) {
         self.editing.set(false);
         if let Some(t) = self.current() {
-            t.view().navigate(&nav::resolve(text, &self.search_url));
+            let url = nav::resolve(text, &self.search_url);
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: address bar {text:?} -> {url:?}");
+            }
+            t.view().navigate(&url);
         }
     }
 

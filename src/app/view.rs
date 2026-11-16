@@ -695,6 +695,10 @@ impl BrowserView {
                     changed
                 };
                 if changed {
+                    if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                        let k = view.shared.view.lock().unwrap().k();
+                        eprintln!("browsah: view {pw}x{ph} logical, surface scale {scale}, render scale {k}, page zoom level {:.3}", if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 });
+                    }
                     if let Some(h) = view.shared.host.lock().unwrap().as_ref() {
                         h.0.was_resized();
                     }
