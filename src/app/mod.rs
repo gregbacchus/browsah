@@ -2,6 +2,7 @@
 
 mod input;
 mod latency;
+mod modal;
 mod nav;
 mod selftest;
 mod view;
@@ -18,7 +19,7 @@ use crate::store::{Store, TabRecord};
 use view::{BrowserView, ViewEvent};
 
 /// What the page last told the shell. Kept so the UI (and the self-test) can read it back.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct State {
     pub ready: bool,
     pub address: String,
@@ -135,6 +136,10 @@ pub struct Shell {
     /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
+    /// Modals open over this window, how they look, and what a script popup becomes.
+    modals: RefCell<Vec<Rc<modal::Modal>>>,
+    modal_style: crate::workspace::ModalStyle,
+    popup_policy: crate::workspace::PopupPolicy,
     /// The tab context menu (rebuilt each time it opens) and the page it was opened on.
     tab_menu: gio::Menu,
     menu_page: RefCell<Option<adw::TabPage>>,
@@ -637,6 +642,15 @@ impl Shell {
         self.stop.set_visible(s.loading && self.nav.reload);
     }
 
+    /// Take over a running view (a modal's page moving to this window) as a new selected tab.
+    fn adopt_live_view(self: &Rc<Self>, view: Rc<BrowserView>, state: State) -> Rc<Tab> {
+        let (cell, state) = (Rc::new(OnceCell::new()), Rc::new(RefCell::new(state)));
+        view.set_event_handler(Rc::new(self.event_closure(&cell)));
+        let tab = self.add_tab(view, cell, state, true, new_uid());
+        tab.page.set_title(&tab_title(&tab.state.borrow()));
+        tab
+    }
+
     /// Show a popup browser (one that keeps its opener) as a new selected tab.
     fn adopt_tab(self: &Rc<Self>, spec: view::PopupSpec) -> Rc<Tab> {
         let (cell, state) = (Rc::new(OnceCell::new()), Rc::new(RefCell::new(State::default())));
@@ -679,6 +693,7 @@ impl Shell {
     /// Put a view in a new tab.
     fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool, uid: u64) -> Rc<Tab> {
         view.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
+        view.set_popup_policy(self.popup_policy);
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
         let sad = adw::StatusPage::builder()
@@ -783,6 +798,7 @@ impl Shell {
         if let Some(tab) = tab {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
             tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
+            tab.view().set_popup_policy(self.popup_policy);
             self.tabs.borrow_mut().push(tab);
             if self.tab_view.selected_page().as_ref() == Some(page) {
                 self.on_selected();
@@ -856,7 +872,9 @@ impl Shell {
                 tab.view().show_context_menu(req);
             }
             ViewEvent::Popup(spec) => {
-                if self.allow_new_tabs {
+                if self.popup_policy == crate::workspace::PopupPolicy::Modal {
+                    self.open_modal_popup(spec);
+                } else if self.allow_new_tabs {
                     self.adopt_tab(spec);
                 } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
                     // Tabs cannot be opened here: the popup goes to a window of its own, still attached to its opener.
@@ -1051,6 +1069,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
+        modals: RefCell::new(Vec::new()),
+        modal_style: ws_config.modals.style,
+        popup_policy: ws_config.tabs.popups,
         tab_menu: tab_menu.clone(),
         menu_page: RefCell::new(None),
         bookmark_bar: bookmark_bar.clone(),
@@ -1562,7 +1583,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                         return true;
                     }
                     let origin = windows().into_iter().next();
-                    let opened = perform_route(&decision.action, url, origin.as_deref());
+                    let opened = perform_route(&decision.action, url, origin.as_ref());
                     // The window a sign-in opens may hand its result to the application that started it.
                     if let (Some(s), Some(scheme)) = (opened, crate::router::sign_in_callback_scheme(url)) {
                         if crate::router::looks_like_app_sign_in(url) {
@@ -1625,7 +1646,7 @@ fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> S
 
 /// Carry out the router's decision for a link. `origin` is the window the link came from (for
 /// messages), if any. `Allow` is not handled here: it means "carry on as usual".
-fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shell>) -> Option<Rc<Shell>> {
+fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Rc<Shell>>) -> Option<Rc<Shell>> {
     use crate::router::Action;
     let say = |text: &str| {
         if let Some(s) = origin {
@@ -1634,6 +1655,14 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shel
     };
     match action {
         Action::Allow => {}
+        Action::Modal => match origin {
+            Some(shell) => shell.open_modal(url),
+            None => {
+                if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    return Some(f(url));
+                }
+            }
+        },
         Action::Block => say(&format!("Blocked a link to {}", url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url))),
         Action::Ephemeral => {
             if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {

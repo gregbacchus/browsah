@@ -9,6 +9,38 @@ use crate::profile::{valid_id, ColorPair, Profile};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// What a page's script popup (`window.open` with window features) becomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PopupPolicy {
+    /// A tab of the window (a window of its own if `tabs.allow_new` is false).
+    #[default]
+    Tab,
+    /// A modal over the window.
+    Modal,
+    /// Not opened.
+    Block,
+}
+
+/// How a modal is presented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModalStyle {
+    /// Over the window's content (the default).
+    #[default]
+    Overlay,
+    /// A separate window that stays above its workspace's window.
+    Window,
+}
+
+/// How modals look (`modals:` in `workspace.yaml`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct ModalsConfig {
+    pub style: ModalStyle,
+}
+
 /// The contents of `workspace.yaml` that describe the workspace itself. (The file can also hold
 /// configuration overrides; see `config::load_effective`.)
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -23,6 +55,8 @@ pub struct WorkspaceConfig {
     pub nav: NavConfig,
     /// Rules for the window's tabs.
     pub tabs: TabsConfig,
+    /// How modals (a page opened to be viewed and closed) are shown.
+    pub modals: ModalsConfig,
 }
 
 /// How the address bar behaves.
@@ -67,13 +101,15 @@ pub struct TabsConfig {
     /// Whether tabs can be opened from the window itself. When false, tabs only arrive by being
     /// sent to the workspace, and pages that open windows get an ephemeral window instead.
     pub allow_new: bool,
+    /// What a popup opened by a page's script becomes (`tab`, `modal` or `block`).
+    pub popups: PopupPolicy,
     /// Tabs that are always present, first, and cannot be closed.
     pub pinned: Vec<PinnedTab>,
 }
 
 impl Default for TabsConfig {
     fn default() -> Self {
-        Self { allow_new: true, pinned: Vec::new() }
+        Self { allow_new: true, popups: PopupPolicy::Tab, pinned: Vec::new() }
     }
 }
 
@@ -151,7 +187,7 @@ pub fn in_scope(patterns: &[String], url: &str) -> bool {
 }
 
 /// The keys of `workspace.yaml` that are not configuration overrides.
-pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs"];
+pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs", "modals"];
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -423,6 +459,18 @@ mod tests {
     }
 
     #[test]
+    fn popups_and_modals_parse() {
+        let c = parse_config("tabs: { popups: modal }\nmodals: { style: window }\n").unwrap();
+        assert_eq!(c.tabs.popups, PopupPolicy::Modal);
+        assert_eq!(c.modals.style, ModalStyle::Window);
+        let d = parse_config("").unwrap();
+        assert_eq!((d.tabs.popups, d.modals.style), (PopupPolicy::Tab, ModalStyle::Overlay));
+        assert_eq!(parse_config("tabs: { popups: block }").unwrap().tabs.popups, PopupPolicy::Block);
+        assert!(parse_config("tabs: { popups: sometimes }").is_err());
+        assert!(parse_config("modals: { style: sideways }").is_err());
+    }
+
+    #[test]
     fn nav_and_tabs_parse() {
         let c = parse_config("nav: { back: false, address_bar: readonly, tab_bar: false }\ntabs:\n  allow_new: false\n  pinned:\n    - url: https://a.example/\n      scope: [a.example]\n    - url: https://b.example/\n").unwrap();
         assert!(!c.nav.back && c.nav.forward && c.nav.reload && c.nav.new_tab_button && !c.nav.tab_bar);
@@ -447,8 +495,9 @@ mod tests {
         let mut paths: Vec<String> = fields::<WorkspaceConfig>();
         paths.extend(fields::<NavConfig>().into_iter().map(|f| format!("nav.{f}")));
         paths.extend(fields::<TabsConfig>().into_iter().map(|f| format!("tabs.{f}")));
+        paths.extend(fields::<ModalsConfig>().into_iter().map(|f| format!("modals.{f}")));
         paths.extend(fields::<PinnedTab>().into_iter().map(|f| format!("tabs.pinned[].{f}")));
-        assert!(paths.len() >= 14, "{paths:?}");
+        assert!(paths.len() >= 17, "{paths:?}");
         for p in paths {
             assert!(docs.contains(&format!("| `{p}`")), "workspace option {p} is not documented in docs/config/workspace.md");
         }

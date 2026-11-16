@@ -171,6 +171,8 @@ struct Shared {
     workspace: Mutex<Option<String>>,
     /// URL schemes this view may hand to the desktop (see `on_protocol_execution`).
     allowed_schemes: Mutex<Vec<String>>,
+    /// What a script popup from this view becomes.
+    popup_policy: Mutex<crate::workspace::PopupPolicy>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -194,6 +196,7 @@ impl Shared {
             scope: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
             allowed_schemes: Mutex::new(Vec::new()),
+            popup_policy: Mutex::new(crate::workspace::PopupPolicy::Tab),
             accel,
             frame_rate,
         })
@@ -481,6 +484,9 @@ wrap_life_span_handler! {
                         return 1;
                     }
                 }
+            }
+            if *self.shared.popup_policy.lock().unwrap() == crate::workspace::PopupPolicy::Block {
+                return 1; // this workspace does not open popups
             }
             let opener = &self.shared;
             let backing = opener.view.lock().unwrap().backing;
@@ -918,6 +924,16 @@ impl BrowserView {
         let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
         let mut client = make_client(shared.clone());
         browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+    }
+
+    /// What a script popup from this view becomes (`block` cancels it before it is created).
+    pub fn set_popup_policy(&self, policy: crate::workspace::PopupPolicy) {
+        *self.shared.popup_policy.lock().unwrap() = policy;
+    }
+
+    /// Replace the function that receives this view's events (a view moving to another owner).
+    pub fn set_event_handler(&self, on_event: Rc<dyn Fn(ViewEvent)>) {
+        with_side(self.shared.id, |s| s.on_event = on_event);
     }
 
     /// Allow this view to hand addresses with `scheme` to the desktop (a sign-in's callback).

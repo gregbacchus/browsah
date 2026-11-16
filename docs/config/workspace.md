@@ -64,6 +64,9 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `nav.bookmarks_bar` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a bar under the tabs lists the bookmarks (it is shown only when there are some). Bookmarks belong to the workspace; ephemeral windows have none. |
 | `tabs` | map | see below | Rules for the window's tabs. |
 | `tabs.allow_new` | bool | `true` | When `false`, tabs cannot be opened from the window (no `Ctrl+T`, no "+" button, links that would open a tab open in an ephemeral window instead); tabs can only be sent to the workspace. |
+| `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |
+| `modals` | map | overlay | How modals are shown. |
+| `modals.style` | `overlay` or `window` | `overlay` | `overlay`: over the window's content. `window`: a separate window kept above the workspace's window. |
 | `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Each is a map with the keys below. They load fresh each time the workspace opens. |
 | `tabs.pinned[].url` | text | required | The address the tab opens on. |
 | `tabs.pinned[].title` | text | the page's title | Label shown until the page gives its own title. |

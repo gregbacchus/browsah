@@ -351,6 +351,36 @@ desktop's settings, or links arriving from real applications through it. Not bui
 choice per site (an application routing rule does that, written by hand), and offering the selector's
 list as desktop actions.
 
+## Status: modals and popup policy (2026-11-17)
+
+Built: the routing action `modal`; a modal is a browser view in an `adw::Dialog` over the window (or an
+`adw::Window` above it with `modals.style: window`), with a read-only address bar, a *Move to workspace*
+button and a menu of workspaces; `tabs.popups: tab | modal | block` per workspace for popups a page's
+script opens with window features (the kind that keeps its opener).
+
+Decisions made while building, not discussed before:
+- **Move.** The page keeps running: its view leaves the dialog and becomes a tab (the view's event handler is
+  replaced). *Move to workspace* asks the router where the link would go with modal rules skipped
+  (`route_ignoring_modal`); if no rule applies it becomes a tab of the window the modal was over. Actions that
+  hand an address to another profile or the desktop close the modal and send the address (the running page is
+  not carried over).
+- **Links in a modal** are routed like links from its window (a rule can open them as another modal or
+  elsewhere); a popup of a modal becomes a tab of the window under it.
+- **Popup policy applies after routing**, so a plain `window.open(url)` or `target=_blank` link (a tab request)
+  is routed by rules first, and `tabs.popups: block` blocks only sized popups. A modal popup keeps its opener.
+- **A whitelist or blacklist of what opens as a modal** is the order of routing rules (docs/config/routing.md).
+- **Options.** `modals.style` and `tabs.popups` are workspace-only; ephemeral windows use overlays and allow popups
+  as tabs.
+
+Measured (scripted, this machine, 14 new self-test checks): a clicked link whose rule says modal opens a
+modal that is an overlay with a read-only address bar while the tab under it stays; *move* sends the live page to
+the workspace the router names and it keeps updating its new tab; closing removes it; a script popup opens as a
+modal under `popups: modal` and not at all under `block`; `modals.style: window` makes a window; a window
+screenshot of an overlay modal looked right (dimmed window, header with the buttons). **Not verified:** the
+workspace menu's items by clicking, `Esc` to close (libadwaita's own), narrow windows (the dialog turns into a
+bottom sheet; not looked at), several modals at once, a modal opened while the window is not active, a modal's
+own popups, keyboard focus handling in the modal.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

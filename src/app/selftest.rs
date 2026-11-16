@@ -234,6 +234,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_bookmarks(shell, r).await;
     run_send_to_workspace(shell, r).await;
     run_routing(shell, r).await;
+    run_modals(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1154,6 +1155,127 @@ async fn run_routing(shell: &Rc<Shell>, r: &mut Report) {
     crate::router::install(crate::router::Router::default());
     let _ = std::fs::remove_file(&app_rules);
     for id in ["ra", "rb", "rc"] {
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// Modals: a routing rule opens a link as one, the move button asks the router where the page really
+/// belongs, and workspaces decide what a script popup becomes.
+async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let ids = ["ma", "mb", "mp", "mq", "mw"];
+    for id in ids {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+    }
+    let wd = |id: &str| profile.workspaces_dir().join(id).join("workspace.yaml");
+    let scope = format!("http://localhost:{port}/scope.html");
+    let modal_rules = "routing:\n  rules:\n    - match: { url: ['127.0.0.1'] }\n      open: modal\n    - match: { url: ['127.0.0.1'] }\n      open: workspace:mb\n";
+    std::fs::write(wd("ma"), format!("name: A\nhome_page: '{scope}'\n{modal_rules}")).expect("ma");
+    std::fs::write(wd("mb"), "name: B\n").expect("mb");
+    std::fs::write(wd("mp"), format!("name: P\nhome_page: '{}'\ntabs: {{ popups: modal }}\n", page("popup.html"))).expect("mp");
+    std::fs::write(wd("mq"), format!("name: Q\nhome_page: '{}'\ntabs: {{ popups: block }}\n", page("popup.html"))).expect("mq");
+    std::fs::write(wd("mw"), format!("name: W\nhome_page: '{scope}'\nmodals: {{ style: window }}\n{modal_rules}")).expect("mw");
+    crate::router::install(crate::router::Router::load(&std::env::temp_dir().join("browsah-no-such-config.yaml"), Some(&profile)));
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let open = |id: &str| ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+
+    // A routing rule opens a link as a modal.
+    open("ma");
+    let ok = wait_until(15_000, || find("ma").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && t.view().has_frame()))).await;
+    r.check("workspace A opens on its home page", ok, || "not open".into());
+    let Some(ma) = find("ma") else { return };
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let d = Driver { shell: &ma };
+    d.click(40.0, 45.0);
+    let ok = wait_until(15_000, || ma.modal_list().len() == 1 && ma.modal_list()[0].state.borrow().title == "Page B").await;
+    r.check("a link whose rule says modal opens in a modal over the window", ok, || format!("{} modals", ma.modal_list().len()));
+    let Some(modal) = ma.modal_list().first().cloned() else { return };
+    r.check("the modal's address bar is read-only and shows the address", !modal.entry.is_editable() && modal.entry.text().contains("127.0.0.1"), || format!("editable={} text={:?}", modal.entry.is_editable(), modal.entry.text()));
+    r.check("the tab under the modal did not move and the modal is an overlay", ma.tab_count() == 1 && ma.current().is_some_and(|t| t.state.borrow().title == "Scope test") && modal.dialog.is_some(), || "tab changed".into());
+
+    if let Ok(path) = std::env::var("BROWSAH_SCREENSHOT") {
+        glib::timeout_future(Duration::from_millis(1200)).await;
+        println!("screenshot {path}.modal.png: {}", if screenshot(&ma.window, &format!("{path}.modal.png")) { "saved" } else { "failed" });
+    }
+
+    // Move: the router (skipping the modal rule) names workspace B.
+    modal.move_via_router();
+    let ok = wait_until(15_000, || find("mb").is_some_and(|s| s.tab_count() == 1 && s.current().is_some_and(|t| t.page.title() == "Page B"))).await;
+    r.check("moving a modal sends its page to the workspace the router names", ok, || format!("{:?}", find("mb").map(|s| s.tab_count())));
+    let ok = wait_until(5_000, || ma.modal_list().is_empty() && find("mb").and_then(|s| s.current()).is_some_and(|t| !t.view().is_dormant() && t.view().has_frame())).await;
+    r.check("the modal is gone and the page kept running as a tab", ok, || format!("modals {} live {:?}", ma.modal_list().len(), find("mb").and_then(|s| s.current()).map(|t| (t.view().is_dormant(), t.view().has_frame()))));
+    if let Some(t) = find("mb").and_then(|s| s.current()) {
+        t.view().navigate(&page("popup.html"));
+        let ok = wait_until(15_000, || t.page.title() == "Popup test").await;
+        r.check("the moved page is wired to its new window (it updates its tab)", ok, || format!("{:?}", t.page.title()));
+    }
+
+    // Closing a modal closes its page.
+    d.click(40.0, 45.0);
+    let ok = wait_until(15_000, || ma.modal_list().len() == 1).await;
+    if ok {
+        ma.modal_list()[0].close();
+    }
+    let ok2 = wait_until(5_000, || ma.modal_list().is_empty()).await;
+    r.check("closing a modal removes it", ok && ok2, || format!("{} modals", ma.modal_list().len()));
+
+    // Popup policy: modal.
+    open("mp");
+    let ok = wait_until(15_000, || find("mp").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Popup test" && t.view().has_frame()))).await;
+    r.check("workspace P (popups as modals) opens", ok, || "not open".into());
+    if let Some(mp) = find("mp") {
+        glib::timeout_future(Duration::from_millis(600)).await;
+        Driver { shell: &mp }.click(80.0, 40.0);
+        let ok = wait_until(15_000, || mp.modal_list().len() == 1 && mp.modal_list()[0].state.borrow().title == "Page B").await;
+        r.check("a script popup opens as a modal when the workspace says so", ok && mp.tab_count() == 1, || format!("{} modals, {} tabs", mp.modal_list().len(), mp.tab_count()));
+    }
+
+    // Popup policy: block.
+    open("mq");
+    let ok = wait_until(15_000, || find("mq").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Popup test" && t.view().has_frame()))).await;
+    r.check("workspace Q (popups blocked) opens", ok, || "not open".into());
+    if let Some(mq) = find("mq") {
+        glib::timeout_future(Duration::from_millis(600)).await;
+        let windows = super::windows().len();
+        Driver { shell: &mq }.click(80.0, 40.0);
+        glib::timeout_future(Duration::from_millis(2500)).await;
+        r.check("a script popup is not opened when the workspace blocks them", mq.tab_count() == 1 && mq.modal_list().is_empty() && super::windows().len() == windows, || format!("{} tabs, {} modals, {} windows (was {windows})", mq.tab_count(), mq.modal_list().len(), super::windows().len()));
+    }
+
+    // Modal style: window.
+    open("mw");
+    let ok = wait_until(15_000, || find("mw").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && t.view().has_frame()))).await;
+    r.check("workspace W (modals as windows) opens", ok, || "not open".into());
+    if let Some(mw) = find("mw") {
+        glib::timeout_future(Duration::from_millis(800)).await;
+        Driver { shell: &mw }.click(40.0, 45.0);
+        let ok = wait_until(15_000, || mw.modal_list().len() == 1).await;
+        r.check("with modals.style window a modal is a window of its own", ok && mw.modal_list()[0].window.is_some() && mw.modal_list()[0].dialog.is_none(), || "not a window".into());
+        if let Some(m) = mw.modal_list().first() {
+            m.close();
+        }
+    }
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    crate::router::install(crate::router::Router::default());
+    for id in ids {
         if let Ok(s) = crate::store::Store::open(&db) {
             let _ = s.delete_workspace(id);
         }

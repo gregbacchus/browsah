@@ -91,6 +91,12 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **Modals** (`app/modal.rs`) are a browser view in an `adw::Dialog` (or an `adw::Window`) over a window;
+  *Move* takes the live view out of the dialog and into a tab of the destination (`Shell::adopt_live_view`,
+  which swaps the view's event handler with `BrowserView::set_event_handler`). The router's
+  `route_ignoring_modal` says where the page belongs. A workspace's `tabs.popups` is the popup policy:
+  `block` cancels the popup in `on_before_popup` (CEF's thread, `Shared::popup_policy`), `modal` adopts it
+  into a modal.
 - **Routing:** `router::route` is called from CEF's thread (`routed_elsewhere` in `view.rs`:
   `on_before_browse` for same-tab links and typed navigations, `on_open_urlfrom_tab` for Ctrl/middle
   clicks, `on_before_popup` for `target=_blank` and plain `window.open`) and from the `open` handler for

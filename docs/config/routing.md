@@ -74,6 +74,7 @@ link from another application is first judged. `--from` is `external` (the defau
 | `allow` (or `current`) | carry on as usual: a clicked link goes where it was going, an external link opens as a tab in the active window |
 | `workspace:<id>` | open in that workspace's window, as a new tab (the window is opened if needed). From a tab already in that workspace this is the same as `allow` |
 | `ephemeral` | open in a window with no workspace |
+| `modal` | open as a [modal](#modals) over the window the link came from (the active window for a link from another application) |
 | `system` | hand to the desktop's handler. Only for schemes other than `http` and `https`; for a web address it acts like `allow` (the desktop would send it straight back here) |
 | `profile:<id>` or `profile:<id>/workspace:<id>` | hand to another profile (which is started if it is not running), optionally into one of its workspaces |
 | `block` | do nothing; a short message says the link was blocked |
@@ -95,3 +96,30 @@ routing:
       match: { url: ["*.bank.example"], target: [new_tab] }
       open: profile:personal
 ```
+
+## Modals
+
+A modal is a page you want to look at and close, not keep: a link in an email or a chat message, say.
+It opens over the window (or in a window of its own: `modals.style: window` in the
+[workspace file](workspace.md)), with a read-only address bar, a **Move to workspace** button, and a
+menu to pick a workspace yourself. *Move to workspace* asks the router where the link would go if it
+were not a modal (rules that open a modal are skipped), so the same rules that name the right
+workspace do the moving; if none applies, the page becomes a tab of the window it was opened over. The
+page keeps running when it moves. Closing the modal (the close button or `Esc`) closes the page.
+
+Choose what opens as a modal with rules, so a list of sites (a whitelist) or everything except some
+sites (a blacklist) is a matter of rule order:
+
+```yaml
+routing:
+  rules:
+    - name: Corporate sites open in their workspace
+      match: { url: ["*.example.com"] }
+      open: workspace:work
+    - name: Everything else I am sent just gets looked at
+      match: { from: [external, "workspace:mail", "workspace:chat"] }
+      open: modal
+```
+
+Popups opened by a page's script with window features follow the workspace's `tabs.popups` instead
+(`tab`, `modal` or `block`), not these rules.

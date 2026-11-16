@@ -61,6 +61,11 @@ a link from another application (it does not load Chromium, so it appears at onc
 question with `default_profile` or a routing rule); then choose it as the default web browser in your
 desktop's settings. See [docs/config/selector.md](docs/config/selector.md).
 
+Modals and popups: a routing rule can open a link as a **modal** (a page to look at and close, over the
+window, with a read-only address bar and a *Move to workspace* button), and a workspace decides whether a
+page's script popup becomes a tab, a modal or nothing (`tabs.popups`). See
+[docs/config/routing.md](docs/config/routing.md#modals) and [docs/config/workspace.md](docs/config/workspace.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

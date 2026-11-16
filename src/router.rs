@@ -77,6 +77,9 @@ pub enum Action {
     /// link would come straight back here).
     System,
     Workspace(String),
+    /// A modal over the window the link came from (the active window for an external link): a page to
+    /// view and close, with a button to move it to the workspace the router would choose.
+    Modal,
     /// Another profile (and optionally one of its workspaces).
     Profile { profile: String, workspace: Option<String> },
 }
@@ -89,6 +92,7 @@ impl Action {
             "allow" | "current" => Ok(Action::Allow),
             "block" => Ok(Action::Block),
             "ephemeral" => Ok(Action::Ephemeral),
+            "modal" => Ok(Action::Modal),
             "system" => Ok(Action::System),
             _ => {
                 if let Some(id) = t.strip_prefix("workspace:") {
@@ -105,7 +109,7 @@ impl Action {
                         return Ok(Action::Profile { profile: profile.to_owned(), workspace: workspace.map(str::to_owned) });
                     }
                 }
-                Err(format!("unknown action {text:?} (use allow, block, ephemeral, system, workspace:<id>, profile:<id> or profile:<id>/workspace:<id>)"))
+                Err(format!("unknown action {text:?} (use allow, block, ephemeral, modal, system, workspace:<id>, profile:<id> or profile:<id>/workspace:<id>)"))
             }
         }
     }
@@ -115,6 +119,7 @@ impl Action {
             Action::Allow => "carry on as usual (allow)".into(),
             Action::Block => "block".into(),
             Action::Ephemeral => "open in an ephemeral window".into(),
+            Action::Modal => "open as a modal".into(),
             Action::System => "hand to the desktop".into(),
             Action::Workspace(w) => format!("open in workspace {w:?}"),
             Action::Profile { profile, workspace: None } => format!("open in profile {profile:?}"),
@@ -440,6 +445,16 @@ impl Router {
 
     /// Decide, and list how every rule fared (layer, position, name, `matched` or the reason it did not).
     pub fn explain(&self, req: &Request) -> (Decision, Vec<(String, usize, Option<String>, String)>) {
+        self.explain_inner(req, false)
+    }
+
+    /// Where the link would go if modals did not exist: what the "move to workspace" button of a modal
+    /// asks. Rules that open a modal are skipped.
+    pub fn route_ignoring_modal(&self, req: &Request) -> Decision {
+        self.explain_inner(req, true).0
+    }
+
+    fn explain_inner(&self, req: &Request, skip_modal: bool) -> (Decision, Vec<(String, usize, Option<String>, String)>) {
         let mut trace = Vec::new();
         let mut layers: Vec<(String, &[Rule])> = Vec::new();
         if let Source::Tab(Some(w)) = &req.source {
@@ -453,6 +468,10 @@ impl Router {
         let mut decision = None;
         for (layer, rules) in layers {
             for (i, rule) in rules.iter().enumerate() {
+                if skip_modal && rule.action == Action::Modal {
+                    trace.push((layer.clone(), i + 1, rule.name.clone(), "skipped (modal)".to_owned()));
+                    continue;
+                }
                 let outcome = match rule.mismatch(req) {
                     None => "matched".to_owned(),
                     Some(why) => format!("no ({why})"),
@@ -465,12 +484,14 @@ impl Router {
             }
         }
         // A sign-in another application started: its own window, unless told otherwise.
-        let sign_in_action = self.sign_in.clone().unwrap_or(Action::Ephemeral);
+        let not_modal = |a: Option<Action>| a.filter(|a| !(skip_modal && *a == Action::Modal));
+        let sign_in_action = not_modal(self.sign_in.clone().or(Some(Action::Ephemeral))).unwrap_or(Action::Allow);
         let decision = decision.or_else(|| {
             (req.kind == Kind::External && sign_in_action != Action::Allow && looks_like_app_sign_in(&req.url))
                 .then(|| Decision { action: sign_in_action.clone(), rule: Some(("routing.app_sign_in".into(), 0, None)) })
         });
-        let decision = decision.unwrap_or_else(|| match (&req.kind, &self.external) {
+        let external = not_modal(self.external.clone());
+        let decision = decision.unwrap_or_else(|| match (&req.kind, &external) {
             (Kind::External, Some(a)) => Decision { action: a.clone(), rule: Some(("routing.external".into(), 0, None)) },
             _ => Decision { action: Action::Allow, rule: None },
         });
@@ -505,6 +526,15 @@ static CURRENT: RwLock<Option<Arc<Router>>> = RwLock::new(None);
 pub fn install(router: Router) {
     if let Ok(mut g) = CURRENT.write() {
         *g = Some(Arc::new(router));
+    }
+}
+
+/// Like `route`, with modal rules skipped (see `Router::route_ignoring_modal`).
+pub fn route_ignoring_modal(req: &Request) -> Decision {
+    let router = CURRENT.read().ok().and_then(|g| g.clone());
+    match router {
+        Some(r) => r.route_ignoring_modal(req),
+        None => Decision { action: Action::Allow, rule: None },
     }
 }
 
@@ -800,6 +830,22 @@ mod tests {
         assert_eq!(r.route(&ext("https://x.com/")).action, Action::Workspace("profilewide".into()), "workspace rules only judge their own tabs' links");
         let (_, trace) = r.explain(&click("https://x.com/", "chat"));
         assert_eq!(trace[0].0, "workspace chat");
+    }
+
+    #[test]
+    fn modal_rules_and_the_move_button() {
+        let r = rules("rules:\n  - name: modal first\n    match: { url: ['chat.example.com'] }\n    open: modal\n  - name: then a workspace\n    match: { url: ['chat.example.com'] }\n    open: workspace:chat\n  - match: { url: ['only-modal.example'] }\n    open: modal\n");
+        let url = "https://chat.example.com/room";
+        assert_eq!(r.route(&click(url, "w")).action, Action::Modal);
+        // What the modal's move button asks: the first rule that is not a modal one.
+        assert_eq!(r.route_ignoring_modal(&click(url, "w")).action, Action::Workspace("chat".into()));
+        // Nothing else matches: carry on (a tab where the modal was opened).
+        assert_eq!(r.route_ignoring_modal(&click("https://only-modal.example/", "w")).action, Action::Allow);
+        // A default of `modal` for external links is skipped too.
+        let d = rules("external: modal\n");
+        assert_eq!(d.route(&ext("https://x.net/")).action, Action::Modal);
+        assert_eq!(d.route_ignoring_modal(&ext("https://x.net/")).action, Action::Allow);
+        assert_eq!(Action::parse("modal").unwrap(), Action::Modal);
     }
 
     #[test]
