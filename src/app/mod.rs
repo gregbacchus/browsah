@@ -128,6 +128,10 @@ pub struct Shell {
     /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
+    /// Bookmarks: the bar's container and the star button (workspace windows only).
+    bookmark_bar: gtk::Box,
+    bookmark_revealer: gtk::Revealer,
+    star: gtk::Button,
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
     /// Where this window's tabs are remembered (workspace windows only).
@@ -178,6 +182,145 @@ impl Shell {
         }
         adw::StyleManager::default().connect_dark_notify(move |_| apply());
         *self.color_css.borrow_mut() = Some(provider);
+    }
+
+    // ---- bookmarks ------------------------------------------------------------------------------
+
+    fn bookmark_workspace(&self) -> Option<&str> {
+        self.workspace.as_ref().filter(|_| self.nav.bookmarks_bar).map(|w| w.id.as_str())
+    }
+
+    /// The address and title to bookmark for the selected tab (not blank pages).
+    fn bookmarkable(&self) -> Option<(String, String)> {
+        let tab = self.current()?;
+        let st = tab.state.borrow();
+        if st.address.is_empty() || st.address == "about:blank" {
+            return None;
+        }
+        Some((st.address.clone(), if st.title.is_empty() { st.address.clone() } else { st.title.clone() }))
+    }
+
+    /// Bookmark the selected tab's page, or remove the bookmark if it is already there.
+    fn toggle_bookmark(&self) {
+        let (Some(ws), Some(store), Some((url, title))) = (self.bookmark_workspace(), store(), self.bookmarkable()) else { return };
+        let result = if store.has_bookmark(ws, &url) { store.remove_bookmark(ws, &url) } else { store.add_bookmark(ws, &url, &title) };
+        if let Err(e) = result {
+            eprintln!("browsah: cannot change bookmarks: {e}");
+        }
+        self.rebuild_bookmarks();
+        self.update_star();
+    }
+
+    /// The star shows whether the selected page is bookmarked.
+    fn update_star(&self) {
+        let (Some(ws), Some(store)) = (self.bookmark_workspace(), store()) else { return };
+        let marked = self.bookmarkable().is_some_and(|(url, _)| store.has_bookmark(ws, &url));
+        self.star.set_icon_name(if marked { "starred-symbolic" } else { "non-starred-symbolic" });
+        self.star.set_tooltip_text(Some(if marked { "Remove bookmark (Ctrl+D)" } else { "Bookmark this page (Ctrl+D)" }));
+    }
+
+    /// Show the workspace's bookmarks in the bar (hidden when there are none).
+    fn rebuild_bookmarks(&self) {
+        let (Some(ws), Some(store)) = (self.bookmark_workspace(), store()) else { return };
+        while let Some(child) = self.bookmark_bar.first_child() {
+            self.bookmark_bar.remove(&child);
+        }
+        let marks = store.bookmarks(ws);
+        let window = self.window.downgrade();
+        for b in &marks {
+            let label = gtk::Label::builder().label(b.title.as_str()).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build();
+            let button = gtk::Button::builder().child(&label).has_frame(false).tooltip_text(b.url.as_str()).build();
+            button.add_css_class("bookmark");
+            let url = b.url.clone();
+            // Click: open here. Middle click or Ctrl+click: a new tab. Right click: a small menu.
+            button.connect_clicked({
+                let (window, url) = (window.clone(), url.clone());
+                move |_| {
+                    if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
+                        s.open_bookmark(&url, false);
+                    }
+                }
+            });
+            let gesture = gtk::GestureClick::builder().button(0).build();
+            gesture.connect_pressed({
+                let (window, url, button) = (window.clone(), url.clone(), button.clone());
+                move |g, _, _, _| {
+                    let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
+                    match g.current_button() {
+                        2 => {
+                            g.set_state(gtk::EventSequenceState::Claimed);
+                            s.open_bookmark(&url, true);
+                        }
+                        3 => {
+                            g.set_state(gtk::EventSequenceState::Claimed);
+                            s.bookmark_menu(&button, &url);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            button.add_controller(gesture);
+            self.bookmark_bar.append(&button);
+        }
+        self.bookmark_revealer.set_reveal_child(!marks.is_empty());
+    }
+
+    /// A bookmark was activated: open it in the selected tab, or in a new tab if asked (and allowed).
+    fn open_bookmark(self: &Rc<Self>, url: &str, new_tab: bool) {
+        if new_tab && self.allow_new_tabs {
+            self.open_tab(url, true);
+        } else if let Some(t) = self.current() {
+            t.view().navigate(url);
+        }
+    }
+
+    fn bookmark_menu(self: &Rc<Self>, button: &gtk::Button, url: &str) {
+        let popover = gtk::Popover::new();
+        popover.set_parent(button);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let mut entries: Vec<(&str, bool)> = Vec::new();
+        if self.allow_new_tabs {
+            entries.push(("Open in new tab", false));
+        }
+        entries.push(("Remove bookmark", true));
+        for (label, remove) in entries {
+            let b = gtk::Button::builder().label(label).has_frame(false).build();
+            b.connect_clicked({
+                let (window, url, popover) = (self.window.downgrade(), url.to_owned(), popover.downgrade());
+                move |_| {
+                    if let Some(p) = popover.upgrade() {
+                        p.popdown();
+                    }
+                    let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
+                    if remove {
+                        if let (Some(ws), Some(store)) = (s.bookmark_workspace(), store()) {
+                            let _ = store.remove_bookmark(ws, &url);
+                            s.rebuild_bookmarks();
+                            s.update_star();
+                        }
+                    } else {
+                        s.open_tab(&url, true);
+                    }
+                }
+            });
+            list.append(&b);
+        }
+        popover.set_child(Some(&list));
+        popover.connect_closed(|p| p.unparent());
+        popover.popup();
+    }
+
+    /// The bookmark buttons currently in the bar (for the self-test).
+    pub fn bookmark_buttons(&self) -> Vec<gtk::Button> {
+        let mut out = Vec::new();
+        let mut child = self.bookmark_bar.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            if let Ok(b) = c.downcast::<gtk::Button>() {
+                out.push(b);
+            }
+        }
+        out
     }
 
     /// Open a workspace's pinned tabs: always present, first, not closable, and limited to their scope.
@@ -419,6 +562,9 @@ impl Shell {
             Some(w) => format!("{page_title} \u{2014} {}", w.display_name()),
             None => page_title,
         }));
+        drop(s);
+        self.update_star();
+        let s = tab.state.borrow();
         self.back_action.set_enabled(s.can_back && self.nav.back);
         self.forward_action.set_enabled(s.can_forward && self.nav.forward);
         self.reload.set_visible(!s.loading && self.nav.reload);
@@ -751,6 +897,15 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         crate::workspace::AddressBar::Hidden => {}
     }
 
+    // Bookmarks (workspace windows with `nav.bookmarks_bar`): a star in the header and a bar under the tabs.
+    let bookmarks_on = workspace.is_some() && nav.bookmarks_bar;
+    let star = icon_button("non-starred-symbolic", "Bookmark this page (Ctrl+D)", "win.bookmark-page");
+    star.set_visible(bookmarks_on);
+    header.pack_end(&star);
+    let bookmark_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).margin_start(6).margin_end(6).margin_top(2).margin_bottom(2).build();
+    let bookmark_scroll = gtk::ScrolledWindow::builder().child(&bookmark_bar).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::Automatic).build();
+    let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
+
     let tab_view = adw::TabView::new();
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
@@ -761,6 +916,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.add_top_bar(&tab_bar);
+    toolbar.add_top_bar(&bookmark_revealer);
     toolbar.set_content(Some(&tab_view));
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&toolbar));
@@ -793,6 +949,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
+        bookmark_bar: bookmark_bar.clone(),
+        bookmark_revealer: bookmark_revealer.clone(),
+        star: star.clone(),
         color_css: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
         save_pending: Cell::new(false),
@@ -842,6 +1001,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     new_tab_action.set_enabled(ws_config.tabs.allow_new);
+    add_action(&window, "bookmark-page", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.toggle_bookmark();
+            }
+        }
+    });
     add_action(&window, "close-tab", {
         let weak = weak.clone();
         move || {
@@ -913,6 +1080,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.reload", &["<Ctrl>R", "F5"]);
     app.set_accels_for_action("win.focus-address", &["<Ctrl>L", "F6"]);
     app.set_accels_for_action("win.new-tab", &["<Ctrl>T"]);
+    app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.close-tab", &["<Ctrl>W"]);
     app.set_accels_for_action("win.next-tab", &["<Ctrl>Tab", "<Ctrl>Page_Down"]);
     app.set_accels_for_action("win.prev-tab", &["<Ctrl><Shift>Tab", "<Ctrl>ISO_Left_Tab", "<Ctrl>Page_Up"]);
@@ -990,6 +1158,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
+    shell.rebuild_bookmarks();
 
     // A workspace's pinned tabs come first.
     let pinned = ws_config.tabs.pinned.clone();

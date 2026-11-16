@@ -11,6 +11,7 @@ nav:                        # which controls the window shows
   address_bar: readonly     # editable (default), readonly or hidden
   forward: false
   new_tab_button: false
+  bookmarks_bar: true       # star button, Ctrl+D, and a bar of this workspace's bookmarks
 tabs:
   allow_new: false          # tabs only arrive by being sent here
   pinned:                   # always present, first, cannot be closed

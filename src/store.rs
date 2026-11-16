@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +19,13 @@ pub struct TabRecord {
     pub title: String,
     pub pinned: bool,
     pub selected: bool,
+}
+
+/// A bookmark: one per address in a workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    pub url: String,
+    pub title: String,
 }
 
 pub struct Store {
@@ -60,7 +67,52 @@ impl Store {
                 );",
             )?;
         }
+        if version < 2 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS bookmarks (
+                    workspace TEXT NOT NULL,
+                    position  INTEGER NOT NULL,
+                    url       TEXT NOT NULL,
+                    title     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (workspace, position)
+                );",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    }
+
+    /// A workspace's bookmarks, in the order they were added.
+    pub fn bookmarks(&self, workspace: &str) -> Vec<Bookmark> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT url, title FROM bookmarks WHERE workspace = ?1 ORDER BY position") else {
+            return Vec::new();
+        };
+        match stmt.query_map(params![workspace], |r| Ok(Bookmark { url: r.get(0)?, title: r.get(1)? })) {
+            Ok(rows) => rows.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn has_bookmark(&self, workspace: &str, url: &str) -> bool {
+        self.conn
+            .query_row("SELECT 1 FROM bookmarks WHERE workspace = ?1 AND url = ?2", params![workspace, url], |_| Ok(()))
+            .is_ok()
+    }
+
+    /// Add a bookmark at the end (a no-op if the address is already bookmarked).
+    pub fn add_bookmark(&self, workspace: &str, url: &str, title: &str) -> rusqlite::Result<()> {
+        if self.has_bookmark(workspace, url) {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO bookmarks (workspace, position, url, title) VALUES (?1, (SELECT COALESCE(MAX(position) + 1, 0) FROM bookmarks WHERE workspace = ?1), ?2, ?3)",
+            params![workspace, url, title],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_bookmark(&self, workspace: &str, url: &str) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1 AND url = ?2", params![workspace, url])?;
+        Ok(())
     }
 
     /// Replace a workspace's remembered tabs.
@@ -93,6 +145,7 @@ impl Store {
     /// Forget everything stored for a workspace.
     pub fn delete_workspace(&self, workspace: &str) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM tabs WHERE workspace = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1", params![workspace])?;
         Ok(())
     }
 }
@@ -120,6 +173,24 @@ mod tests {
         s.save_tabs("mail", &[]).unwrap();
         assert!(s.load_tabs("mail").is_empty());
         assert_eq!(s.load_tabs("docs").len(), 1);
+    }
+
+    #[test]
+    fn bookmarks_are_per_workspace_ordered_and_unique() {
+        let s = Store::open_memory();
+        s.add_bookmark("a", "https://one", "One").unwrap();
+        s.add_bookmark("a", "https://two", "Two").unwrap();
+        s.add_bookmark("a", "https://one", "One again").unwrap(); // already there
+        s.add_bookmark("b", "https://one", "Other workspace").unwrap();
+        let a = s.bookmarks("a");
+        assert_eq!(a.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["One", "Two"]);
+        assert!(s.has_bookmark("a", "https://two") && !s.has_bookmark("b", "https://two"));
+        s.remove_bookmark("a", "https://one").unwrap();
+        s.add_bookmark("a", "https://three", "Three").unwrap();
+        assert_eq!(s.bookmarks("a").iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["Two", "Three"]);
+        assert_eq!(s.bookmarks("b").len(), 1);
+        s.delete_workspace("a").unwrap();
+        assert!(s.bookmarks("a").is_empty() && s.bookmarks("b").len() == 1);
     }
 
     #[test]

@@ -49,11 +49,13 @@ pub struct NavConfig {
     pub address_bar: AddressBar,
     pub new_tab_button: bool,
     pub tab_bar: bool,
+    /// Bookmarks: the star button, `Ctrl+D`, and the bar (shown when there are bookmarks).
+    pub bookmarks_bar: bool,
 }
 
 impl Default for NavConfig {
     fn default() -> Self {
-        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true }
+        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true, bookmarks_bar: true }
     }
 }
 

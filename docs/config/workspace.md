@@ -50,6 +50,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead. |
 | `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. |
 | `nav.tab_bar` | bool | `true` | Show the tab bar. Hide it for a window with a single pinned tab. |
+| `nav.bookmarks_bar` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a bar under the tabs lists the bookmarks (it is shown only when there are some). Bookmarks belong to the workspace; ephemeral windows have none. |
 | `tabs` | map | see below | Rules for the window's tabs. |
 | `tabs.allow_new` | bool | `true` | When `false`, tabs cannot be opened from the window (no `Ctrl+T`, no "+" button, links that would open a tab open in an ephemeral window instead); tabs can only be sent to the workspace. |
 | `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Each is a map with the keys below. They load fresh each time the workspace opens. |

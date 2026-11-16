@@ -231,6 +231,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_windows(shell, r).await;
     run_restore(shell, r).await;
     run_locked(shell, r).await;
+    run_bookmarks(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -919,5 +920,74 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
 
     w.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = std::fs::remove_dir_all(&ws_dir);
+}
+
+/// Bookmarks belong to a workspace: the star and Ctrl+D toggle them, the bar lists them, clicking
+/// one opens it, and they are still there when the workspace reopens.
+async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let ws_dir = profile.workspaces_dir().join("bm");
+    let db = profile.dir.join("data.sqlite");
+    let _ = std::fs::remove_dir_all(&ws_dir);
+    std::fs::create_dir_all(&ws_dir).expect("workspace dir");
+    std::fs::write(ws_dir.join("workspace.yaml"), "name: Bookmarks\n").expect("workspace.yaml");
+    if let Ok(s) = crate::store::Store::open(&db) {
+        let _ = s.delete_workspace("bm");
+    }
+    let marks = || crate::store::Store::open(&db).map(|s| s.bookmarks("bm")).unwrap_or_default();
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "bm"));
+
+    r.check("an ephemeral window has no bookmark star", !shell.star.is_visible(), || "star visible".into());
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"bm".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().ready))).await;
+    r.check("the bookmarks workspace opens", ok, || "not open".into());
+    let Some(w) = find() else { return };
+    r.check("a workspace window shows the star and no bar yet", w.star.is_visible() && !w.bookmark_revealer.reveals_child(), || format!("star={} bar={}", w.star.is_visible(), w.bookmark_revealer.reveals_child()));
+
+    let tab = w.current().expect("tab");
+    tab.view().navigate(&page("b.html"));
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some("non-starred-symbolic")).await;
+    r.check("a page that is not bookmarked shows an empty star", ok, || format!("{:?}", w.star.icon_name()));
+    let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
+    let ok = wait_until(5_000, || marks().len() == 1).await;
+    r.check("the star bookmarks the page with its title", ok && marks()[0].title == "Page B" && marks()[0].url.ends_with("/b.html"), || format!("{:?}", marks()));
+    r.check("the star fills and the bar appears with the bookmark", w.star.icon_name().as_deref() == Some("starred-symbolic") && w.bookmark_revealer.reveals_child() && w.bookmark_buttons().len() == 1, || {
+        format!("{:?} bar={} buttons={}", w.star.icon_name(), w.bookmark_revealer.reveals_child(), w.bookmark_buttons().len())
+    });
+
+    // Leave the page, then use the bookmark.
+    tab.view().navigate(&page("a.html"));
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page A" && w.star.icon_name().as_deref() == Some("non-starred-symbolic")).await;
+    r.check("another page shows an empty star again", ok, || format!("{:?}", w.star.icon_name()));
+    if let Some(b) = w.bookmark_buttons().first() {
+        b.emit_clicked();
+    }
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B").await;
+    r.check("clicking a bookmark opens it in the current tab", ok, || format!("{:?}", tab.state.borrow().title));
+
+    // Still there after closing and reopening.
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"bm".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.bookmark_buttons().len() == 1 && s.bookmark_revealer.reveals_child())).await;
+    r.check("bookmarks are still there when the workspace reopens", ok, || "bar empty".into());
+    let Some(w) = find() else { return };
+
+    // Ctrl+D on a bookmarked page removes the bookmark and hides the empty bar.
+    let tab = w.current().expect("tab");
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some("starred-symbolic")).await;
+    r.check("the restored bookmarked page shows a filled star", ok, || format!("{:?} {:?}", tab.state.borrow().title, w.star.icon_name()));
+    let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
+    let ok = wait_until(5_000, || marks().is_empty() && !w.bookmark_revealer.reveals_child()).await;
+    r.check("the star removes the bookmark and hides the empty bar", ok, || format!("{:?} bar={}", marks(), w.bookmark_revealer.reveals_child()));
+
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    if let Ok(s) = crate::store::Store::open(&db) {
+        let _ = s.delete_workspace("bm");
+    }
     let _ = std::fs::remove_dir_all(&ws_dir);
 }
