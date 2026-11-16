@@ -150,7 +150,7 @@ pub fn is_shell_shortcut(key: Key, state: ModifierType) -> bool {
     let ctrl = state.contains(ModifierType::CONTROL_MASK);
     let alt = state.contains(ModifierType::ALT_MASK);
     match key {
-        Key::l | Key::L | Key::r | Key::R | Key::t | Key::T | Key::w | Key::W => ctrl,
+        Key::l | Key::L | Key::r | Key::R | Key::t | Key::T | Key::w | Key::W | Key::d | Key::D | Key::h | Key::H => ctrl,
         Key::Tab | Key::ISO_Left_Tab | Key::Page_Up | Key::Page_Down => ctrl,
         Key::_1 | Key::_2 | Key::_3 | Key::_4 | Key::_5 | Key::_6 | Key::_7 | Key::_8 | Key::_9 | Key::_0 => alt,
         Key::F5 | Key::F6 => true,
@@ -332,6 +332,7 @@ mod tests {
         assert!(is_shell_shortcut(Key::Left, ModifierType::ALT_MASK));
         // Tab shortcuts.
         assert!(is_shell_shortcut(Key::t, ctrl));
+        assert!(is_shell_shortcut(Key::d, ctrl) && is_shell_shortcut(Key::H, ctrl), "bookmark and history");
         assert!(is_shell_shortcut(Key::W, ctrl));
         assert!(is_shell_shortcut(Key::Tab, ctrl));
         assert!(is_shell_shortcut(Key::Page_Down, ctrl));

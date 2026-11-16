@@ -381,6 +381,34 @@ workspace menu's items by clicking, `Esc` to close (libadwaita's own), narrow wi
 bottom sheet; not looked at), several modals at once, a modal opened while the window is not active, a modal's
 own popups, keyboard focus handling in the modal.
 
+## Status: history (2026-11-17)
+
+Built: per-profile history in `data.sqlite` (schema version 3: `visits`, `closed_tabs`), workspace aware
+(`None` for ephemeral windows), recorded when a page finishes loading (a reload of the same address in a tab is
+not a new visit), plus tabs closed by the user (reason `user`) and the tabs of an ephemeral window closed with
+tabs open (reason `window`, one group per window). `Ctrl+H` opens a history window (search; this workspace or all;
+open here or in a new tab; *Recently closed* lists tabs and ephemeral windows), `Ctrl+Shift+T` reopens the last
+closed tab of the workspace or, in an ephemeral window, the last closed window. Options (cascading, so per
+workspace too): `history.enabled`, `history.retention_days` (purged at start-up), `history.exclude`.
+`browsah history [QUERY]` and `history clear`.
+
+Decisions made while building, not discussed before:
+- **Private sign-ins.** Windows opened for another application's sign-in are never recorded (their addresses
+  carry one-time codes). Everything else in ephemeral windows *is* recorded, so they are recoverable as asked.
+- **Only web pages** (`http`, `https`) are recorded; `file:`, `about:` and `chrome:` are not.
+- **Sweeping will reuse `closed_tabs`**: the `reason` column is where `sweep:<rule>` goes, which is how a swept
+  tab is told apart from one the user closed.
+- **Ctrl+D and Ctrl+H** were being swallowed by the page (the shell-shortcut list did not include them): added.
+
+Measured (scripted, 17 new self-test checks and 4 unit tests): visits recorded with workspace and title;
+reload not duplicated; excluded address and history-off workspace not recorded; sign-in window not recorded;
+the history window lists, searches and opens a visit; a closed tab is kept with its reason and reopens once; a
+closed ephemeral window returns with both tabs. **Not verified:** the window's appearance and large histories
+(search is a `LIKE` scan; no index on text; `visits` has one on time and workspace only), retention purge in a
+running browser (unit-tested at the store level), clearing history from the command line against a real
+database, history across two workspaces' windows at once, titles that change after load (the title at load end is
+stored). Not built: address-bar suggestions from history, per-visit deletion, import.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

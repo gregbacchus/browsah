@@ -29,6 +29,11 @@ rendering:
 chromium:
   flags: []                # extra Chromium switches, e.g. ["--disable-features=Foo"]
 
+history:
+  enabled: true            # remember visited pages and closed tabs
+  retention_days: 365      # delete older history at start-up (0 keeps everything)
+  exclude: []              # addresses never remembered, e.g. ["*.bank.example"]
+
 input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000
   touchpad_acceleration: 0.025 # extra scaling for fast swipes, 0 to 1; 0 = linear

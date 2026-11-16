@@ -45,6 +45,7 @@ pub struct Config {
     pub chromium: ChromiumConfig,
     pub gpu: GpuConfig,
     pub input: InputConfig,
+    pub history: HistoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -87,6 +88,21 @@ pub struct InputConfig {
     pub touchpad_acceleration: f64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct HistoryConfig {
+    pub enabled: bool,
+    pub retention_days: u32,
+    pub exclude: Vec<String>,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self { enabled: true, retention_days: 365, exclude: Vec::new() }
+    }
+}
+
 impl Default for InputConfig {
     fn default() -> Self {
         Self { wheel_notch: 100.0, touchpad_speed: 6.0, touchpad_acceleration: 0.025 }
@@ -105,6 +121,7 @@ impl Default for Config {
             chromium: ChromiumConfig::default(),
             gpu: GpuConfig::default(),
             input: InputConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 }
@@ -451,6 +468,7 @@ mod tests {
         add("chromium", field_names::<ChromiumConfig>());
         add("gpu", field_names::<GpuConfig>());
         add("input", field_names::<InputConfig>());
+        add("history", field_names::<HistoryConfig>());
         out
     }
 
@@ -481,7 +499,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
+        let roots = ["watch_config", "default_profile", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

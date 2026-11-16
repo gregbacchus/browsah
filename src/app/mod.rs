@@ -1,6 +1,7 @@
 //! The browser application: one window with a navigation bar and one page.
 
 mod input;
+mod history;
 mod latency;
 mod modal;
 mod nav;
@@ -52,6 +53,8 @@ pub struct Tab {
     owner: RefCell<Weak<Shell>>,
     /// Stable id; names the tab's screenshot and its row in the database.
     pub uid: u64,
+    /// The address last written to the history (a reload is not a new visit).
+    last_recorded: RefCell<String>,
 }
 
 thread_local! {
@@ -136,6 +139,10 @@ pub struct Shell {
     /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
+    /// Nothing in this window is remembered (a sign-in another application started).
+    pub private: Cell<bool>,
+    /// The history window, while it is open.
+    history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Modals open over this window, how they look, and what a script popup becomes.
     modals: RefCell<Vec<Rc<modal::Modal>>>,
     modal_style: crate::workspace::ModalStyle,
@@ -197,6 +204,90 @@ impl Shell {
         }
         adw::StyleManager::default().connect_dark_notify(move |_| apply());
         *self.color_css.borrow_mut() = Some(provider);
+    }
+
+    // ---- history ----------------------------------------------------------------------------------
+
+    /// Whether a page may be remembered: history is on for this window, the window is not private,
+    /// the address is a web page and not excluded.
+    fn remembers(&self, url: &str) -> bool {
+        if self.private.get() || !(url.starts_with("http://") || url.starts_with("https://")) {
+            return false;
+        }
+        let h = self.settings.borrow();
+        h.history.enabled && !h.history.exclude.iter().any(|p| crate::workspace::scope_matches(p, url))
+    }
+
+    /// The window's workspace id (None: an ephemeral window).
+    fn workspace_id(&self) -> Option<&str> {
+        self.workspace.as_ref().map(|w| w.id.as_str())
+    }
+
+    fn record_visit(&self, tab: &Rc<Tab>) {
+        let (url, title) = {
+            let s = tab.state.borrow();
+            (s.address.clone(), s.title.clone())
+        };
+        if !self.remembers(&url) || *tab.last_recorded.borrow() == url {
+            return;
+        }
+        if let Some(store) = store() {
+            if let Err(e) = store.record_visit(self.workspace_id(), &url, &title, now_secs()) {
+                eprintln!("browsah: cannot record history: {e}");
+            }
+        }
+        *tab.last_recorded.borrow_mut() = url;
+    }
+
+    /// Keep a closed tab so it can be reopened. `group` ties the tabs of one ephemeral window together.
+    fn record_closed(&self, tab: &Rc<Tab>, reason: &str, group: Option<i64>) {
+        let (url, title) = {
+            let s = tab.state.borrow();
+            (s.address.clone(), s.title.clone())
+        };
+        if !self.remembers(&url) {
+            return;
+        }
+        if let Some(store) = store() {
+            let _ = store.record_closed(self.workspace_id(), &url, &title, now_secs(), reason, group);
+        }
+    }
+
+    /// An ephemeral window is closing with its tabs open: keep them together so the window can come back.
+    fn record_window_closed(&self) {
+        if self.workspace.is_some() {
+            return; // a workspace's tabs are remembered as they are
+        }
+        let group = now_micros();
+        for tab in self.tabs.borrow().iter() {
+            self.record_closed(tab, "window", Some(group));
+        }
+    }
+
+    /// Reopen the last closed tab (of this workspace; in an ephemeral window, the last closed window).
+    pub fn reopen_closed(self: &Rc<Self>) {
+        let Some(store) = store() else { return };
+        match self.workspace_id() {
+            Some(ws) => match store.closed_tabs(crate::store::Scope::Workspace(ws), 1).first().and_then(|t| store.take_closed(t.id)) {
+                Some(t) => {
+                    self.open_tab(&t.url, true);
+                }
+                None => self.toast("No closed tab to reopen"),
+            },
+            None => {
+                let tabs = store.take_last_closed_window();
+                let Some((first, rest)) = tabs.split_first() else {
+                    self.toast("No closed window to reopen");
+                    return;
+                };
+                if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    let shell = f(&first.url);
+                    for t in rest {
+                        shell.open_tab(&t.url, false);
+                    }
+                }
+            }
+        }
     }
 
     // ---- the tab context menu -------------------------------------------------------------------
@@ -707,7 +798,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, last_recorded: RefCell::new(String::new()) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -813,6 +904,7 @@ impl Shell {
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
+            self.record_closed(&tab, "user", None);
             tab.view().close();
         }
         self.schedule_save();
@@ -944,6 +1036,7 @@ impl Shell {
                 }
                 if !loading {
                     tab.view().apply_zoom();
+                    self.record_visit(tab);
                 }
             }
         }
@@ -1069,6 +1162,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
+        private: Cell::new(false),
+        history: RefCell::new(None),
         modals: RefCell::new(Vec::new()),
         modal_style: ws_config.modals.style,
         popup_policy: ws_config.tabs.popups,
@@ -1155,6 +1250,22 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    add_action(&window, "history", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.open_history();
+            }
+        }
+    });
+    add_action(&window, "reopen-tab", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.reopen_closed();
+            }
+        }
+    });
     add_action(&window, "bookmark-page", {
         let weak = weak.clone();
         move || {
@@ -1235,6 +1346,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.focus-address", &["<Ctrl>L", "F6"]);
     app.set_accels_for_action("win.new-tab", &["<Ctrl>T"]);
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
+    app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
+    app.set_accels_for_action("win.history", &["<Ctrl>H"]);
     app.set_accels_for_action("win.close-tab", &["<Ctrl>W"]);
     app.set_accels_for_action("win.next-tab", &["<Ctrl>Tab", "<Ctrl>Page_Down"]);
     app.set_accels_for_action("win.prev-tab", &["<Ctrl><Shift>Tab", "<Ctrl>ISO_Left_Tab", "<Ctrl>Page_Up"]);
@@ -1289,6 +1402,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let shell = Rc::downgrade(&shell);
         move |_| {
             if let Some(s) = shell.upgrade() {
+                s.record_window_closed();
                 s.save_on_close(); // before the browsers close
                 s.close_all();
             }
@@ -1356,6 +1470,12 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     match Store::open(&profile.dir.join("data.sqlite")) {
         Ok(s) => STORE.with(|st| *st.borrow_mut() = Some(Rc::new(s))),
         Err(e) => eprintln!("browsah: cannot open the profile database ({e}); tabs will not be remembered"),
+    }
+    // Old history is deleted when the browser starts.
+    if let (Some(store), days) = (store(), cfg0.history.retention_days) {
+        if days > 0 {
+            let _ = store.clear_history(Some(now_secs() - i64::from(days) * 86_400));
+        }
     }
     // Restored tabs that are still asleep are shown blurred.
     app.connect_startup(|_| {
@@ -1584,10 +1704,12 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                     }
                     let origin = windows().into_iter().next();
                     let opened = perform_route(&decision.action, url, origin.as_ref());
-                    // The window a sign-in opens may hand its result to the application that started it.
-                    if let (Some(s), Some(scheme)) = (opened, crate::router::sign_in_callback_scheme(url)) {
+                    // A sign-in another application started: nothing from its window is remembered, and
+                    // it may hand its result to that application through the application's own scheme.
+                    if let Some(s) = opened {
                         if crate::router::looks_like_app_sign_in(url) {
-                            if let Some(t) = s.tabs().last() {
+                            s.private.set(true);
+                            if let (Some(scheme), Some(t)) = (crate::router::sign_in_callback_scheme(url), s.tabs().last()) {
                                 t.view().allow_scheme(&scheme);
                             }
                         }
@@ -1699,6 +1821,14 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Rc<S
         }
     }
     None
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+fn now_micros() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0)
 }
 
 /// The shell of a window.

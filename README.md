@@ -66,6 +66,11 @@ window, with a read-only address bar and a *Move to workspace* button), and a wo
 page's script popup becomes a tab, a modal or nothing (`tabs.popups`). See
 [docs/config/routing.md](docs/config/routing.md#modals) and [docs/config/workspace.md](docs/config/workspace.md).
 
+History: each profile remembers the pages visited (with the workspace) and the tabs closed. `Ctrl+H` opens
+the history window, `Ctrl+Shift+T` reopens the last closed tab (in an ephemeral window: the last closed
+window, so ephemeral windows are recoverable). `browsah history` lists and clears it from the command line.
+See [docs/config/history.md](docs/config/history.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

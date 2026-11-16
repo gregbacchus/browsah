@@ -53,6 +53,7 @@ take minutes.
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
+| `src/history.rs` | History helpers and the `browsah history` command line |
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
@@ -91,6 +92,11 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **History** lives in the profile database (`Store::record_visit`, `record_closed`, `Scope`), written by
+  `Shell::record_visit` (on load end, deduped per tab), `record_closed` (user close) and
+  `record_window_closed` (an ephemeral window's tabs, as a group). `Shell::private` (sign-in windows) and
+  `history.exclude` / `history.enabled` decide what is remembered (`Shell::remembers`). The history window is
+  `app/history.rs`. Closed tabs carry a `reason` (`user`, `window`; sweeping will add `sweep:<rule>`).
 - **Modals** (`app/modal.rs`) are a browser view in an `adw::Dialog` (or an `adw::Window`) over a window;
   *Move* takes the live view out of the dialog and into a tab of the destination (`Shell::adopt_live_view`,
   which swaps the view's event handler with `BrowserView::set_event_handler`). The router's

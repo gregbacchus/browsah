@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,52 @@ pub struct TabRecord {
 pub struct Bookmark {
     pub url: String,
     pub title: String,
+}
+
+/// A page visit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Visit {
+    pub id: i64,
+    /// The workspace's id; `None` for an ephemeral window.
+    pub workspace: Option<String>,
+    pub url: String,
+    pub title: String,
+    /// Unix time, seconds.
+    pub at: i64,
+}
+
+/// A tab that was closed, kept so it can be reopened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedTab {
+    pub id: i64,
+    pub workspace: Option<String>,
+    pub url: String,
+    pub title: String,
+    pub at: i64,
+    /// Why it closed: `user`, `window` (an ephemeral window closed with it open), later `sweep:<rule>`.
+    pub reason: String,
+    /// Tabs closed together with an ephemeral window share a group.
+    pub group: Option<i64>,
+}
+
+/// Which workspaces' history to look at.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope<'a> {
+    All,
+    Workspace(&'a str),
+    /// Windows with no workspace.
+    Ephemeral,
+}
+
+impl Scope<'_> {
+    /// The SQL condition and its parameter (the placeholder is `?N`).
+    fn clause(&self, n: usize) -> (String, Option<String>) {
+        match self {
+            Scope::All => ("1".into(), None),
+            Scope::Workspace(w) => (format!("workspace = ?{n}"), Some((*w).to_owned())),
+            Scope::Ephemeral => ("workspace IS NULL".into(), None),
+        }
+    }
 }
 
 pub struct Store {
@@ -76,6 +122,29 @@ impl Store {
                     title     TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (workspace, position)
                 );",
+            )?;
+        }
+        if version < 3 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS visits (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace TEXT,
+                    url       TEXT NOT NULL,
+                    title     TEXT NOT NULL DEFAULT '',
+                    at        INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS visits_at ON visits (at);
+                CREATE INDEX IF NOT EXISTS visits_workspace ON visits (workspace, at);
+                CREATE TABLE IF NOT EXISTS closed_tabs (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace TEXT,
+                    url       TEXT NOT NULL,
+                    title     TEXT NOT NULL DEFAULT '',
+                    at        INTEGER NOT NULL,
+                    reason    TEXT NOT NULL,
+                    grp       INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS closed_at ON closed_tabs (at);",
             )?;
         }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -142,10 +211,83 @@ impl Store {
         }
     }
 
+    // ---- history -----------------------------------------------------------------------------
+
+    pub fn record_visit(&self, workspace: Option<&str>, url: &str, title: &str, at: i64) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO visits (workspace, url, title, at) VALUES (?1, ?2, ?3, ?4)", params![workspace, url, title, at])?;
+        Ok(())
+    }
+
+    /// Visits, newest first, whose address or title contains `query` (case-insensitive).
+    pub fn search_visits(&self, query: &str, scope: Scope, limit: usize) -> Vec<Visit> {
+        let (clause, param) = scope.clause(2);
+        let sql = format!("SELECT id, workspace, url, title, at FROM visits WHERE (url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\') AND {clause} ORDER BY at DESC, id DESC LIMIT {limit}");
+        let like = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let Ok(mut stmt) = self.conn.prepare(&sql) else { return Vec::new() };
+        let map = |r: &rusqlite::Row| Ok(Visit { id: r.get(0)?, workspace: r.get(1)?, url: r.get(2)?, title: r.get(3)?, at: r.get(4)? });
+        let rows = match &param {
+            Some(p) => stmt.query_map(params![like, p], map),
+            None => stmt.query_map(params![like], map),
+        };
+        rows.map(|r| r.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Delete visits (and closed tabs) older than `before` (unix seconds), or all of them with `None`.
+    pub fn clear_history(&self, before: Option<i64>) -> rusqlite::Result<usize> {
+        let cutoff = before.unwrap_or(i64::MAX);
+        let n = self.conn.execute("DELETE FROM visits WHERE at < ?1", params![cutoff])?;
+        self.conn.execute("DELETE FROM closed_tabs WHERE at < ?1", params![cutoff])?;
+        Ok(n)
+    }
+
+    pub fn record_closed(&self, workspace: Option<&str>, url: &str, title: &str, at: i64, reason: &str, group: Option<i64>) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO closed_tabs (workspace, url, title, at, reason, grp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![workspace, url, title, at, reason, group])?;
+        Ok(())
+    }
+
+    /// Closed tabs, newest first.
+    pub fn closed_tabs(&self, scope: Scope, limit: usize) -> Vec<ClosedTab> {
+        let (clause, param) = scope.clause(1);
+        let sql = format!("SELECT id, workspace, url, title, at, reason, grp FROM closed_tabs WHERE {clause} ORDER BY at DESC, id DESC LIMIT {limit}");
+        let Ok(mut stmt) = self.conn.prepare(&sql) else { return Vec::new() };
+        let map = |r: &rusqlite::Row| Ok(ClosedTab { id: r.get(0)?, workspace: r.get(1)?, url: r.get(2)?, title: r.get(3)?, at: r.get(4)?, reason: r.get(5)?, group: r.get(6)? });
+        let rows = match &param {
+            Some(p) => stmt.query_map(params![p], map),
+            None => stmt.query_map([], map),
+        };
+        rows.map(|r| r.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Remove a closed tab from the list (it was reopened). Returns it if it was there.
+    pub fn take_closed(&self, id: i64) -> Option<ClosedTab> {
+        let tab = self.closed_tabs(Scope::All, 10_000).into_iter().find(|t| t.id == id)?;
+        self.conn.execute("DELETE FROM closed_tabs WHERE id = ?1", params![id]).ok()?;
+        Some(tab)
+    }
+
+    /// Remove and return the tabs of the most recently closed ephemeral window, in the order they were
+    /// open. Tabs closed on their own (no group) count as a window of one.
+    pub fn take_last_closed_window(&self) -> Vec<ClosedTab> {
+        let mut recent = self.closed_tabs(Scope::Ephemeral, 200);
+        let Some(first) = recent.first().cloned() else { return Vec::new() };
+        let tabs: Vec<ClosedTab> = match first.group {
+            Some(g) => recent.drain(..).filter(|t| t.group == Some(g)).collect(),
+            None => vec![first],
+        };
+        for t in &tabs {
+            let _ = self.conn.execute("DELETE FROM closed_tabs WHERE id = ?1", params![t.id]);
+        }
+        let mut tabs = tabs;
+        tabs.sort_by_key(|t| t.id);
+        tabs
+    }
+
     /// Forget everything stored for a workspace.
     pub fn delete_workspace(&self, workspace: &str) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM tabs WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM visits WHERE workspace = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM closed_tabs WHERE workspace = ?1", params![workspace])?;
         Ok(())
     }
 }
@@ -191,6 +333,62 @@ mod tests {
         assert_eq!(s.bookmarks("b").len(), 1);
         s.delete_workspace("a").unwrap();
         assert!(s.bookmarks("a").is_empty() && s.bookmarks("b").len() == 1);
+    }
+
+    #[test]
+    fn visits_are_searchable_by_workspace_and_text() {
+        let s = Store::open_memory();
+        s.record_visit(Some("mail"), "https://mail.example.com/inbox", "Inbox", 100).unwrap();
+        s.record_visit(Some("docs"), "https://docs.example.com/a_b", "Spec 100%", 200).unwrap();
+        s.record_visit(None, "https://news.net/", "News", 300).unwrap();
+        let all = s.search_visits("", Scope::All, 10);
+        assert_eq!(all.iter().map(|v| v.at).collect::<Vec<_>>(), [300, 200, 100], "newest first");
+        assert_eq!(s.search_visits("EXAMPLE", Scope::All, 10).len(), 2, "case-insensitive, address");
+        assert_eq!(s.search_visits("inbox", Scope::All, 10).len(), 1, "title");
+        assert_eq!(s.search_visits("", Scope::Workspace("docs"), 10).len(), 1);
+        assert_eq!(s.search_visits("", Scope::Ephemeral, 10)[0].url, "https://news.net/");
+        // Wildcard characters in the query are literal.
+        assert_eq!(s.search_visits("100%", Scope::All, 10).len(), 1);
+        assert_eq!(s.search_visits("%", Scope::All, 10).len(), 1);
+        assert_eq!(s.search_visits("a_b", Scope::All, 10).len(), 1);
+        assert_eq!(s.search_visits("a\\b", Scope::All, 10).len(), 0);
+        assert_eq!(s.search_visits("", Scope::All, 2).len(), 2, "limit");
+    }
+
+    #[test]
+    fn clearing_and_retention() {
+        let s = Store::open_memory();
+        for (i, at) in [10, 20, 30].iter().enumerate() {
+            s.record_visit(Some("w"), &format!("https://x/{i}"), "", *at).unwrap();
+            s.record_closed(Some("w"), &format!("https://c/{i}"), "", *at, "user", None).unwrap();
+        }
+        assert_eq!(s.clear_history(Some(25)).unwrap(), 2);
+        assert_eq!(s.search_visits("", Scope::All, 10).len(), 1);
+        assert_eq!(s.closed_tabs(Scope::All, 10).len(), 1, "closed tabs follow the same retention");
+        s.clear_history(None).unwrap();
+        assert!(s.search_visits("", Scope::All, 10).is_empty() && s.closed_tabs(Scope::All, 10).is_empty());
+    }
+
+    #[test]
+    fn closed_tabs_can_be_reopened_once_and_ephemeral_windows_come_back_whole() {
+        let s = Store::open_memory();
+        s.record_closed(Some("w"), "https://one", "One", 10, "user", None).unwrap();
+        s.record_closed(Some("w"), "https://two", "Two", 20, "sweep:old", None).unwrap();
+        s.record_closed(Some("other"), "https://three", "Three", 30, "user", None).unwrap();
+        let mine = s.closed_tabs(Scope::Workspace("w"), 10);
+        assert_eq!(mine.iter().map(|t| t.reason.as_str()).collect::<Vec<_>>(), ["sweep:old", "user"], "the reason is kept");
+        let taken = s.take_closed(mine[0].id).unwrap();
+        assert_eq!(taken.url, "https://two");
+        assert!(s.take_closed(mine[0].id).is_none(), "a closed tab is reopened once");
+        assert_eq!(s.closed_tabs(Scope::Workspace("w"), 10).len(), 1);
+        // An ephemeral window's tabs share a group and return together, in order.
+        s.record_closed(None, "https://e1", "E1", 40, "window", Some(7)).unwrap();
+        s.record_closed(None, "https://e2", "E2", 40, "window", Some(7)).unwrap();
+        s.record_closed(None, "https://old", "Old", 5, "window", Some(3)).unwrap();
+        let w = s.take_last_closed_window();
+        assert_eq!(w.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://e1", "https://e2"]);
+        assert_eq!(s.take_last_closed_window().len(), 1, "then the older window");
+        assert!(s.take_last_closed_window().is_empty());
     }
 
     #[test]

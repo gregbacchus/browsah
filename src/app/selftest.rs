@@ -235,6 +235,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_send_to_workspace(shell, r).await;
     run_routing(shell, r).await;
     run_modals(shell, r).await;
+    run_history(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1279,6 +1280,123 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
         if let Ok(s) = crate::store::Store::open(&db) {
             let _ = s.delete_workspace(id);
         }
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// History: visits are recorded per workspace (not reloads, excluded addresses, disabled workspaces or
+/// sign-in windows), the history window lists and searches them, closed tabs can be reopened, and a
+/// closed ephemeral window comes back whole.
+async fn run_history(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::store::Scope;
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let store = || crate::store::Store::open(&db).expect("store");
+    let _ = store().clear_history(None);
+    for id in ["hw", "hn"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = store().delete_workspace(id);
+    }
+    let home = format!("http://localhost:{port}/scope.html");
+    std::fs::write(profile.workspaces_dir().join("hw/workspace.yaml"), format!("name: History\nhome_page: '{home}'\nhistory: {{ exclude: ['127.0.0.1'] }}\n")).expect("hw");
+    std::fs::write(profile.workspaces_dir().join("hn/workspace.yaml"), format!("name: NoHistory\nhome_page: '{home}'\nhistory: {{ enabled: false }}\n")).expect("hn");
+    crate::router::install(crate::router::Router::default());
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let visits = |ws: &str| store().search_visits("", Scope::Workspace(ws), 100);
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"hw".to_variant()));
+    let ok = wait_until(15_000, || find("hw").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    r.check("a workspace opens for the history test", ok, || "not open".into());
+    let Some(hw) = find("hw") else { return };
+    let tab = hw.current().expect("tab");
+    let ok = wait_until(5_000, || visits("hw").len() == 1).await;
+    r.check("a page visit is recorded with its workspace and title", ok && visits("hw")[0].title == "Scope test" && visits("hw")[0].url == home, || format!("{:?}", visits("hw")));
+    tab.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && visits("hw").len() == 2).await;
+    r.check("a second page is a second visit", ok, || format!("{:?}", visits("hw")));
+    tab.view().reload();
+    glib::timeout_future(Duration::from_millis(2500)).await;
+    r.check("reloading is not a new visit", visits("hw").len() == 2, || format!("{} visits", visits("hw").len()));
+    tab.view().navigate(&format!("http://127.0.0.1:{port}/b.html"));
+    let ok = wait_until(15_000, || tab.state.borrow().address.contains("127.0.0.1") && !tab.state.borrow().loading).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    r.check("an excluded address is not recorded", ok && visits("hw").len() == 2, || format!("{:?}", visits("hw")));
+    tab.view().navigate(&format!("http://localhost:{port}/b.html?again=1"));
+    let _ = wait_until(15_000, || visits("hw").len() == 3).await;
+
+    // The history window.
+    let _ = WidgetExt::activate_action(&hw.window, "win.history", None);
+    let ok = wait_until(5_000, || hw.history.borrow().is_some()).await;
+    r.check("Ctrl+H opens the history window", ok, || "not open".into());
+    let Some(hv) = hw.history.borrow().clone() else { return };
+    let count = |l: &gtk::ListBox| (0..).take_while(|i| l.row_at_index(*i).is_some()).count();
+    r.check("it lists this workspace's visits", count(&hv.visits) == 3, || format!("{} rows", count(&hv.visits)));
+    hv.search.set_text("again");
+    let ok = wait_until(5_000, || count(&hv.visits) == 1).await;
+    r.check("searching narrows the list", ok, || format!("{} rows", count(&hv.visits)));
+    hv.search.set_text("");
+    hv.visits.row_at_index(count(&hv.visits).saturating_sub(1) as i32).map(|row| row.emit_by_name::<()>("activate", &[]));
+    let ok = wait_until(15_000, || tab.state.borrow().address == home).await;
+    r.check("activating a visit opens it in the current tab", ok, || format!("{:?}", tab.state.borrow().address));
+    hw.close_history();
+
+    // Closed tabs.
+    let extra = hw.open_tab(&format!("http://localhost:{port}/b.html?extra=1"), true);
+    let _ = wait_until(15_000, || extra.state.borrow().title == "Page B" && !extra.state.borrow().loading).await;
+    let _ = WidgetExt::activate_action(&hw.window, "win.close-tab", None);
+    let ok = wait_until(5_000, || store().closed_tabs(Scope::Workspace("hw"), 10).len() == 1).await;
+    let closed = store().closed_tabs(Scope::Workspace("hw"), 10);
+    r.check("a tab closed by the user is kept with its reason", ok && closed[0].reason == "user" && closed[0].url.contains("extra=1"), || format!("{closed:?}"));
+    let before = hw.tab_count();
+    let _ = WidgetExt::activate_action(&hw.window, "win.reopen-tab", None);
+    let ok = wait_until(15_000, || hw.tab_count() == before + 1 && hw.current().is_some_and(|t| t.state.borrow().address.contains("extra=1"))).await;
+    r.check("Ctrl+Shift+T reopens it, once", ok && store().closed_tabs(Scope::Workspace("hw"), 10).is_empty(), || format!("{} tabs (was {before})", hw.tab_count()));
+
+    // Not recorded: history turned off for a workspace; a sign-in another application started.
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"hn".to_variant()));
+    let ok = wait_until(15_000, || find("hn").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    r.check("a workspace with history off records nothing", ok && visits("hn").is_empty(), || format!("{:?}", visits("hn")));
+    let n = super::windows().len();
+    app.open(&[gio::File::for_uri(&format!("http://localhost:{port}/b.html?client_id=cli&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A9%2Fcb"))], "");
+    let ok = wait_until(15_000, || super::windows().len() == n + 1).await;
+    glib::timeout_future(Duration::from_millis(2500)).await;
+    r.check("a sign-in window for another application is never recorded", ok && store().search_visits("response_type", Scope::All, 10).is_empty(), || format!("{:?}", store().search_visits("response_type", Scope::All, 10)));
+
+    // An ephemeral window closed with tabs open can be reopened whole.
+    ActionGroupExt::activate_action(&app, "new-window", None);
+    let find_eph = || super::windows().into_iter().rev().find(|s| s.workspace.is_none() && !Rc::ptr_eq(s, shell) && !s.private.get());
+    let ok = wait_until(15_000, || find_eph().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().ready))).await;
+    r.check("an ephemeral window opens", ok, || "not open".into());
+    if let Some(e) = find_eph() {
+        let first = e.current().expect("tab");
+        first.view().navigate(&format!("http://localhost:{port}/b.html?eph=1"));
+        let _ = wait_until(15_000, || first.state.borrow().title == "Page B" && !first.state.borrow().loading).await;
+        let second = e.open_tab(&format!("http://localhost:{port}/b.html?eph=2"), true);
+        let _ = wait_until(15_000, || second.state.borrow().title == "Page B" && !second.state.borrow().loading).await;
+        e.window.close();
+        let ok = wait_until(5_000, || store().closed_tabs(Scope::Ephemeral, 10).iter().filter(|t| t.reason == "window").count() >= 2).await;
+        r.check("closing an ephemeral window keeps its tabs as a group", ok, || format!("{:?}", store().closed_tabs(Scope::Ephemeral, 10)));
+        let windows = super::windows().len();
+        let _ = WidgetExt::activate_action(&shell.window, "win.reopen-tab", None);
+        let ok = wait_until(15_000, || super::windows().len() == windows + 1 && find_eph().is_some_and(|s| s.tab_count() == 2)).await;
+        r.check("Ctrl+Shift+T in an ephemeral window reopens the last closed window with its tabs", ok, || format!("{} windows (was {windows})", super::windows().len()));
+    }
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = store().clear_history(None);
+    for id in ["hw", "hn"] {
+        let _ = store().delete_workspace(id);
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }
 }

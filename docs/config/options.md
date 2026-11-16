@@ -84,6 +84,23 @@ input:
   touchpad_acceleration: 0.025
 ```
 
+## `history`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `history.enabled` | bool | `true` | Remember the pages visited (per profile, with the workspace they were visited in) and the tabs that were closed, so they can be found in the history window (`Ctrl+H`) and reopened (`Ctrl+Shift+T`). `false` turns recording off (existing history stays until cleared). Can differ per workspace. |
+| `history.retention_days` | whole number | `365` | History older than this many days is deleted when the browser starts. `0` keeps everything. |
+| `history.exclude` | list of text | none | Addresses that are never remembered: patterns as for a pinned tab's scope (`host` or `host/path`, `*.example.com`). Use `key+:` in a profile or workspace to add to the application's list. |
+
+Sign-in windows opened for another application are never recorded. See [History](history.md).
+
+```yaml
+history:
+  enabled: true
+  retention_days: 365
+  exclude: ["*.bank.example", "intranet.example.com/hr/*"]
+```
+
 ## `gpu`
 
 | Key | Type | Default | Description |

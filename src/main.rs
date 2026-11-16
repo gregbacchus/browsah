@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod frames;
 mod gpu;
+mod history;
 mod profile;
 mod router;
 mod selector;
@@ -45,6 +46,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("selector") {
         std::process::exit(selector::selector_cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("history") {
+        std::process::exit(history::cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
