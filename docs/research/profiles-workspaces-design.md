@@ -148,14 +148,12 @@ Widevine (DRM) is a separate question, not measured.
 
 ### Source application of an external link
 
-*(from knowledge, untested)* When an application hands a URL to the default browser (`xdg-open`,
-GIO, the OpenURI portal), the receiving application gets the URL and, with D-Bus activation, the
-sender's process id at best; there is no portable "which app" field. A Wayland activation token
-does not name its source to us. Possible best effort: read the D-Bus sender's pid and walk its
-parents, which is fragile (short-lived helpers such as `xdg-open`). Better: make the source known by
-design. A link clicked inside a browsah web app is known; an application that supports a custom
-browser command can launch `browsah open --source <name>`. **To verify:** log what a D-Bus
-activation reveals for links opened from a few real applications.
+There is no portable "which app" field in the request (`platform_data` was empty), but the sender
+process can be identified: read its pid from the bus while the call is in flight, then use the
+`app-<desktop id>-<n>.scope` cgroup of the first ancestor that has one (spike 5, below). Sandboxed
+applications arrive through the portal and cannot be identified this way. Making the source known by
+design remains the reliable option: a link clicked inside a browsah web app is known, and an
+application with a custom browser command can launch `browsah open --source <name>`.
 
 ## Risks to look at early
 
