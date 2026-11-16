@@ -183,6 +183,18 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     r.check("text being typed survives a page navigation", shell.entry.text() == "half-typed", || shell.entry.text().to_string());
 
     run_input(shell, r).await;
+    run_scroll(shell, r).await;
+    if let Ok(text) = std::env::var("BROWSAH_NET_TEST") {
+        // Optional: type this into the address bar and report where the page ends up (needs network).
+        let st = shell.state();
+        shell.entry.set_text(&text);
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        let ok = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.address != "" && !s.address.starts_with("file:") }).await;
+        r.check("address-bar text loads a real site", ok, || format!("{:?}", st.borrow()));
+        glib::timeout_future(Duration::from_millis(2500)).await;
+        println!("net screenshot: {}", screenshot(&shell.window, "/tmp/net.png"));
+        println!("net test: {:?} -> address {:?} title {:?}", text, st.borrow().address, st.borrow().title);
+    }
     run_tabs(shell, r).await;
 }
 
@@ -567,4 +579,30 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     .await;
     r.check("loading an address again recovers the crashed tab", ok && !cur.sad_visible() && cur.view().widget.is_visible(), || format!("{:?}", cur.state.borrow()));
     let _ = wait_until(5_000, || cur.view().has_frame()).await;
+}
+
+/// Wheel scrolling must cover the distance asked for, however fast the notches arrive (a cap
+/// or lagging animation would show as a shortfall).
+async fn run_scroll(shell: &Rc<Shell>, r: &mut Report) {
+    let st = shell.state();
+    let v = shell.view();
+    shell.entry.set_text(&page("tall.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || !st.borrow().loading && st.borrow().title.starts_with("y:")).await;
+    r.check("scroll test page loads", ok, || format!("{:?}", st.borrow()));
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let y = || st.borrow().title.trim_start_matches("y:").parse::<f64>().unwrap_or(0.0);
+    let d = Driver { shell };
+    d.mv(300.0, 300.0);
+    println!("scroll unit for emitted signals: {:?}", shell.view().controllers.scroll.unit());
+    let t0 = std::time::Instant::now();
+    for _ in 0..20 {
+        d.scroll(1.0); // one wheel notch (100 px)
+        glib::timeout_future(Duration::from_millis(10)).await;
+    }
+    let _ = wait_until(5_000, || y() >= 1990.0).await;
+    let took = t0.elapsed().as_millis();
+    r.check("20 fast wheel notches scroll 2000 px (no speed cap)", (y() - 2000.0).abs() <= 20.0, || format!("scrollY={} after {took} ms", y()));
+    println!("scroll: 20 notches reached y={} in {took} ms", y());
+    let _ = &v;
 }

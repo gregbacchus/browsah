@@ -576,12 +576,28 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         }
     });
 
+    if std::env::var_os("BROWSAH_DEBUG").is_some() {
+        // Log every key press with the widget that has focus, to see where typing goes.
+        let log = gtk::EventControllerKey::new();
+        log.set_propagation_phase(gtk::PropagationPhase::Capture);
+        log.connect_key_pressed({
+            let window = window.clone();
+            move |_, key, _, state| {
+                let focus = gtk::prelude::GtkWindowExt::focus(&window).map(|w| w.type_().name().to_owned());
+                eprintln!("browsah: key {:?} {:?} focus={:?}", key.name(), state, focus);
+                glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(log);
+    }
+
     shell.open_tab(start_url, true);
     shell
 }
 
 /// Run the browser. Returns the process exit code.
 pub fn run(opts: Rc<Options>, cfg: Config) -> i32 {
+    input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed);
     let app = adw::Application::builder()
         .application_id("nz.co.bacchus.browsah")
         // Each launch is its own browser for now (no single-instance forwarding).

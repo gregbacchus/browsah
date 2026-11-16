@@ -955,6 +955,9 @@ impl BrowserView {
         c.scroll.connect_scroll({
             let w = weak.clone();
             move |ctrl, dx, dy| {
+                if ignore_pointer(ctrl.current_event()) {
+                    return glib::Propagation::Stop;
+                }
                 let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
                 v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
                 let k = v.k();

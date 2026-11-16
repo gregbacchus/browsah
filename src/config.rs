@@ -40,6 +40,7 @@ pub struct Config {
     pub rendering: RenderingConfig,
     pub chromium: ChromiumConfig,
     pub gpu: GpuConfig,
+    pub input: InputConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +74,20 @@ pub struct GpuConfig {
     pub workarounds: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct InputConfig {
+    pub wheel_notch: f64,
+    pub touchpad_speed: f64,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self { wheel_notch: 100.0, touchpad_speed: 3.0 }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -82,6 +97,7 @@ impl Default for Config {
             rendering: RenderingConfig::default(),
             chromium: ChromiumConfig::default(),
             gpu: GpuConfig::default(),
+            input: InputConfig::default(),
         }
     }
 }
@@ -121,6 +137,8 @@ impl Config {
         self.window.width = self.window.width.clamp(400, 16384);
         self.window.height = self.window.height.clamp(300, 16384);
         self.rendering.frame_rate = self.rendering.frame_rate.clamp(1, 120);
+        self.input.wheel_notch = self.input.wheel_notch.clamp(10.0, 1000.0);
+        self.input.touchpad_speed = self.input.touchpad_speed.clamp(0.1, 20.0);
         if !self.search_url.contains("{query}") {
             eprintln!("config: search_url has no {{query}} placeholder; using the default");
             self.search_url = DEFAULT_SEARCH_URL.into();
@@ -185,6 +203,7 @@ mod tests {
         add("rendering", field_names::<RenderingConfig>());
         add("chromium", field_names::<ChromiumConfig>());
         add("gpu", field_names::<GpuConfig>());
+        add("input", field_names::<InputConfig>());
         out
     }
 
@@ -215,7 +234,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["home_page", "search_url", "window", "rendering", "chromium", "gpu"];
+        let roots = ["home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

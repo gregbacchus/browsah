@@ -25,6 +25,7 @@ implemented yet.)
 | `window` | [Options](options.md#window) |
 | `rendering` | [Options](options.md#rendering) |
 | `chromium` | [Options](options.md#chromium) |
+| `input` | [Options](options.md#input) |
 | `gpu` | [Options](options.md#gpu) |
 
 Command-line flags override the matching config options: `--mode=paint|accel`

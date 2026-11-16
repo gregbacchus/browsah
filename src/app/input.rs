@@ -5,6 +5,7 @@
 //! uses on every platform. The punctuation mapping assumes a US-style layout; other layouts get
 //! the right text (CEF takes it from `character`) but may report a different `KeyboardEvent.code`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use cef::CursorType;
 use gtk::gdk::{self, Key, ModifierType};
 
@@ -159,21 +160,31 @@ pub fn is_shell_shortcut(key: Key, state: ModifierType) -> bool {
 }
 
 /// Pixels to scroll for one GTK scroll delta. A mouse wheel notch is `1.0` in `Wheel` units
-/// (`WHEEL_NOTCH` px); touchpads report `Surface` units, already pixels. The sign is
+/// (`input.wheel_notch` px); touchpads report `Surface` units, already pixels. The sign is
 /// flipped because CEF counts wheel-up as positive. `k` is the render scale: the page is zoomed
 /// by it, so the same logical distance is `k` times as many view pixels.
-/// CSS pixels per mouse-wheel notch (Chrome on Linux scrolls about 100; 53 felt too slow).
-const WHEEL_NOTCH: f64 = 100.0;
+/// Scroll tuning (`input.*` in the config), stored as f64 bits so it can be set once at start-up.
+static WHEEL_NOTCH_BITS: AtomicU64 = AtomicU64::new(0);
+static TOUCHPAD_GAIN_BITS: AtomicU64 = AtomicU64::new(0);
 
-/// Touchpad scrolling is multiplied by this: GTK reports finger travel in logical pixels, which
-/// feels slow next to other browsers (a guess, not measured against a real device).
-const TOUCHPAD_GAIN: f64 = 2.0;
+pub fn set_scroll_tuning(wheel_notch: f64, touchpad_speed: f64) {
+    WHEEL_NOTCH_BITS.store(wheel_notch.to_bits(), Ordering::Relaxed);
+    TOUCHPAD_GAIN_BITS.store(touchpad_speed.to_bits(), Ordering::Relaxed);
+}
+
+/// A tuning value, or `default` while none has been set (unit tests).
+fn tuning(bits: &AtomicU64, default: f64) -> f64 {
+    match bits.load(Ordering::Relaxed) {
+        0 => default,
+        b => f64::from_bits(b),
+    }
+}
 
 /// View pixels to scroll for one GTK scroll delta (fractional; the caller keeps the remainder).
 pub fn wheel_delta_f(delta: f64, unit: gdk::ScrollUnit, k: f32) -> f64 {
     let px = match unit {
-        gdk::ScrollUnit::Wheel => delta * WHEEL_NOTCH,
-        _ => delta * TOUCHPAD_GAIN,
+        gdk::ScrollUnit::Wheel => delta * tuning(&WHEEL_NOTCH_BITS, 100.0),
+        _ => delta * tuning(&TOUCHPAD_GAIN_BITS, 2.0),
     };
     -px * k as f64
 }

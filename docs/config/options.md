@@ -56,6 +56,19 @@ chromium:
   flags: []
 ```
 
+## `input`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `input.wheel_notch` | number | `100` | CSS pixels scrolled by one mouse-wheel notch, 10 to 1000. Applies at startup. |
+| `input.touchpad_speed` | number | `3.0` | Multiplier on touchpad scrolling distance (and on the coasting after a flick), 0.1 to 20. Raise it if scrolling feels slow compared with other browsers. Applies at startup. |
+
+```yaml
+input:
+  wheel_notch: 100
+  touchpad_speed: 3.0
+```
+
 ## `gpu`
 
 | Key | Type | Default | Description |
