@@ -17,6 +17,13 @@ when it last ran (closing windows one at a time forgets them, except the last), 
 `default_workspace`, else a window with no workspace. Such an **ephemeral window** (also made with
 `Ctrl+Shift+N`) is not remembered. All options apply at startup unless stated otherwise.
 
+**What a workspace remembers.** When its window closes, the workspace's tabs (address, title,
+selection) are saved in the profile's database (`data.sqlite`), with a screenshot of each page. The
+next time it opens, the tabs come back: the selected one loads at once, and the others stay asleep
+(no browser process) behind a blurred screenshot until you first show them. Blank tabs are not
+remembered, and pinned tabs come from this file each time. Bookmarks are stored there too, per
+workspace. Deleting a workspace (`browsah workspace remove`) deletes its tabs and bookmarks.
+
 ## Overriding configuration
 
 `workspace.yaml` can also contain options from [options.md](options.md); they are merged over the

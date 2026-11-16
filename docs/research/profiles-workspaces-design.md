@@ -237,6 +237,44 @@ on an existing tab, a symlinked config file, a config directory that does not ex
 Not built: workspace and web app layers, list items with provenance beyond option paths, a config
 reference for what is application-only beyond `watch_config`.
 
+## Status: workspaces (2026-11-17)
+
+Built as described in the model section, in six stages (window registry; workspace model and CLI;
+config layer; SQLite and restore; controls, colour, locking and pinned tabs; bookmarks). Decisions made
+while building, not discussed before:
+
+- **Windows.** One `Shell` per window in a registry; a window with no workspace is ephemeral. A plain
+  start reopens the workspaces that were open at the last exit (closing windows one at a time forgets
+  them, except the last), else `default_workspace`, else an ephemeral window. `--workspace=` against a
+  running profile goes through an application action (`open-workspace`) or the `open` hint for links.
+- **Tab dragging between windows** works (the tab's owner is looked up per event and updated from the
+  tab view's attach and detach signals); verified with `transfer_page`, not with a real drag.
+- **Config.** `nav` and `tabs` are workspace-only options (not cascading); every other option can be
+  overridden per workspace except the process-wide ones, which are ignored with a warning. Scrolling
+  options apply while a window is the active one (they are process-wide statics).
+- **Storage.** `data.sqlite` in the profile directory (rusqlite with bundled SQLite, MIT; all new
+  dependencies are permissive). Tabs are replaced as a whole per workspace; bookmarks are keyed by
+  workspace and address.
+- **Restore.** A remembered tab is a view without a browser (a *dormant* tab) showing its screenshot
+  behind a CSS blur; the selected one wakes at once. Screenshots must be copied out of the GPU buffer
+  when the tab is left: a later PNG save failed intermittently, and a page left before its first frame
+  has no screenshot (measured: a static page's first frame arrived about 300 ms after its title).
+- **Locking.** `tabs.allow_new: false` disables new tabs; a link out of a pinned tab's scope, or a popup,
+  goes to an ephemeral window. Scope is checked on CEF's thread in `on_before_browse`; it exempts
+  redirects and pages already outside the scope so single sign-on works. Not a security boundary.
+
+Measured here (this machine, scripted, 122 self-test checks, two or three runs each of the new ones):
+opening and closing workspace windows, a second window, tab transfer, restore with sleeping tabs and a
+wake on first show, pinned tab behaviour including a redirect out of scope, bookmarks across a reopen,
+and live reload of workspace files. **Not verified:** a real drag of a tab between windows; the look of
+the blurred placeholder (the CSS parses, but the window screenshot of a restored window failed);
+colour contrast beyond the light/dark pair in one screenshot (the header tint was seen in dark mode
+only); behaviour with many tabs or large pages (screenshot size, restore time); the database with two
+profile processes (each profile has its own file); upgrade of the database schema on a real older file;
+`Ctrl+D` and the bookmark bar with a real keyboard and mouse (the checks activate actions and emit
+signals). Pinned tabs are not restored (they load fresh); the screenshot of a tab that was never left
+until the window closed is taken at close.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

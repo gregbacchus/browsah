@@ -43,6 +43,18 @@ in GNOME's settings and links from other applications open in that profile. Deta
 configuration option, and config files are reloaded when they change (`watch_config`, `--no-watch`);
 see [docs/config/README.md](docs/config/README.md#layers-and-reloading).
 
+Workspaces: a workspace is a named window of tabs inside a profile, with its own colour, optional
+locked-down controls, pinned tabs limited to certain sites, bookmarks, and its tabs remembered between
+runs (sleeping behind a blurred screenshot until shown).
+
+```bash
+browsah workspace add mail --profile=work --name "Mail" --color "#2a6f97 #61a5c2"
+browsah --profile=work --workspace=mail
+```
+
+Options: [docs/config/workspace.md](docs/config/workspace.md). `Ctrl+Shift+N` opens an ephemeral window
+(not remembered), `Ctrl+D` bookmarks the page in a workspace window.
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

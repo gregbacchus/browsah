@@ -52,6 +52,8 @@ take minutes.
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
+| `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
+| `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
 | `src/cli.rs` | Command-line options |
 | `src/bench/` | `--bench=single|tabs|fps`, kept as a regression check for the rendering path |
@@ -78,6 +80,15 @@ take minutes.
   profile so they never touch a real profile or collide with a running browser. Profile config
   (`profile.yaml`) has its own docs and example, with tests that check both (see
   `docs/config/profile.md`, `examples/profile.yaml`).
+- **Workspaces** are windows of the profile's process (`Shell` per window, registry in `app/mod.rs`:
+  `windows()`; a tab's owner window changes when it is dragged, see `Tab::owner`). A workspace window
+  saves its tabs (`Shell::save_now`, debounced by `schedule_save`, and in the close handler before
+  browsers close) and restores them as *dormant* views: `BrowserView::new_dormant` builds the widgets
+  and shows the screenshot, `wake()` creates the browser on first show. Screenshots are copied out of
+  the GPU buffer at once on deselect (`capture`, a later download failed intermittently) and encoded
+  when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
+  redirects and pages already outside the scope are exempt. Schema changes to the database need a
+  migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the
