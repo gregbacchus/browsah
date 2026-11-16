@@ -188,7 +188,7 @@ fn tuning(bits: &AtomicU64, default: f64) -> f64 {
 /// are amplified so they cover much more than slow ones.
 pub fn touchpad_acceleration(delta: f64) -> f64 {
     let a = match TOUCHPAD_ACCEL_BITS.load(Ordering::Relaxed) {
-        0 => 1.05,
+        0 => 1.025,
         b => f64::from_bits(b),
     };
     1.0 + (a - 1.0) * delta.abs()
@@ -198,7 +198,7 @@ pub fn touchpad_acceleration(delta: f64) -> f64 {
 pub fn wheel_delta_f(delta: f64, unit: gdk::ScrollUnit, k: f32) -> f64 {
     let px = match unit {
         gdk::ScrollUnit::Wheel => delta * tuning(&WHEEL_NOTCH_BITS, 100.0),
-        _ => delta * tuning(&TOUCHPAD_GAIN_BITS, 2.0),
+        _ => delta * tuning(&TOUCHPAD_GAIN_BITS, 6.0),
     };
     -px * k as f64
 }
@@ -353,7 +353,7 @@ mod tests {
         // The render scale multiplies it.
         assert_eq!(wheel_delta(1.0, gdk::ScrollUnit::Wheel, 2.0), -200);
         // Touchpad deltas are pixels, with a gain.
-        assert_eq!(wheel_delta(10.0, gdk::ScrollUnit::Surface, 1.0), -20);
+        assert_eq!(wheel_delta(10.0, gdk::ScrollUnit::Surface, 1.0), -60);
         let mut acc = 2.7;
         assert_eq!(take_whole(&mut acc), 2);
         assert!((acc - 0.7).abs() < 1e-9);
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn fast_swipes_are_amplified() {
         assert_eq!(touchpad_acceleration(0.0), 1.0);
-        assert!(touchpad_acceleration(40.0) > 2.5 * touchpad_acceleration(5.0).max(1.0) * 0.9);
+        assert!((touchpad_acceleration(40.0) - 2.0).abs() < 1e-9 && touchpad_acceleration(40.0) > touchpad_acceleration(5.0));
         assert_eq!(touchpad_acceleration(-10.0), touchpad_acceleration(10.0));
     }
 

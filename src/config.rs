@@ -85,7 +85,7 @@ pub struct InputConfig {
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { wheel_notch: 100.0, touchpad_speed: 3.0, touchpad_acceleration: 0.05 }
+        Self { wheel_notch: 100.0, touchpad_speed: 6.0, touchpad_acceleration: 0.025 }
     }
 }
 
