@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 use view::{BrowserView, ViewEvent};
 
 /// What the page last told the shell. Kept so the UI (and the self-test) can read it back.
@@ -28,14 +29,29 @@ pub struct State {
     /// Labels of the last context menu shown, and how many have been shown.
     pub menu: Vec<String>,
     pub menus: u32,
+    /// The view was replaced by a readback one because no accelerated frame arrived.
+    pub fell_back: bool,
 }
 
 /// One tab: a browser view, what it last told the shell, and its page in the tab bar.
 pub struct Tab {
-    pub view: Rc<BrowserView>,
+    /// The browser view. Replaced if the accelerated path produces no frames (see `fall_back`).
+    view: RefCell<Rc<BrowserView>>,
+    /// The page's child in the tab view; holds whichever view is current.
+    holder: gtk::Box,
     pub state: Rc<RefCell<State>>,
     pub page: adw::TabPage,
 }
+
+impl Tab {
+    pub fn view(&self) -> Rc<BrowserView> {
+        self.view.borrow().clone()
+    }
+}
+
+/// How long a view may take to deliver its first accelerated frame before the shell gives up on
+/// the dmabuf path and uses readback instead.
+const FIRST_FRAME_WATCHDOG: Duration = Duration::from_secs(3);
 
 pub struct Shell {
     pub window: adw::ApplicationWindow,
@@ -48,7 +64,7 @@ pub struct Shell {
     back_action: gio::SimpleAction,
     forward_action: gio::SimpleAction,
     tabs: RefCell<Vec<Rc<Tab>>>,
-    mode: Mode,
+    mode: Cell<Mode>,
     backing: bool,
     frame_rate: i32,
     search_url: String,
@@ -82,7 +98,7 @@ impl Shell {
 
     /// The selected tab's view and state. Panic if there is no tab (the self-test only).
     pub fn view(&self) -> Rc<BrowserView> {
-        self.current().expect("a tab").view.clone()
+        self.current().expect("a tab").view()
     }
 
     pub fn state(&self) -> Rc<RefCell<State>> {
@@ -101,7 +117,7 @@ impl Shell {
     pub fn go(&self, text: &str) {
         self.editing.set(false);
         if let Some(t) = self.current() {
-            t.view.navigate(&nav::resolve(text, &self.search_url));
+            t.view().navigate(&nav::resolve(text, &self.search_url));
         }
     }
 
@@ -129,10 +145,8 @@ impl Shell {
         self.stop.set_visible(s.loading);
     }
 
-    /// Open a tab on `url`. Background tabs start hidden (not rendering) until selected.
-    pub fn open_tab(self: &Rc<Self>, url: &str, select: bool) -> Rc<Tab> {
-        let state = Rc::new(RefCell::new(State::default()));
-        let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
+    /// Create a view for a tab, wired to deliver its events to `tab`.
+    fn make_view(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>, url: &str) -> Rc<BrowserView> {
         let on_event = {
             let shell = Rc::downgrade(self);
             let cell = cell.clone();
@@ -142,10 +156,19 @@ impl Shell {
                 }
             }
         };
-        let view = BrowserView::new(WidgetExt::display(&self.window), self.mode, self.backing, self.frame_rate, url, on_event);
-        let page = self.tab_view.append(&view.widget);
+        BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate, url, on_event)
+    }
+
+    /// Open a tab on `url`. Background tabs start hidden (not rendering) until selected.
+    pub fn open_tab(self: &Rc<Self>, url: &str, select: bool) -> Rc<Tab> {
+        let state = Rc::new(RefCell::new(State::default()));
+        let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
+        let view = self.make_view(&cell, url);
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.append(&view.widget);
+        let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view, state, page: page.clone() });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, state, page: page.clone() });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -157,12 +180,40 @@ impl Shell {
         tab
     }
 
+    /// The tab's view delivered no accelerated frame in time: switch to readback (for this tab
+    /// and every later one) by replacing the view with a new one on the same address.
+    fn fall_back(self: &Rc<Self>, tab: &Rc<Tab>) {
+        eprintln!("browsah: no accelerated frame within {FIRST_FRAME_WATCHDOG:?}; falling back to readback rendering");
+        self.mode.set(Mode::Paint);
+        let url = {
+            let s = tab.state.borrow();
+            if s.address.is_empty() { "about:blank".to_owned() } else { s.address.clone() }
+        };
+        // Find this tab's event cell again through the closure chain: a fresh cell is simplest.
+        let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
+        let _ = cell.set(Rc::downgrade(tab));
+        let old = tab.view();
+        let new = self.make_view(&cell, &url);
+        tab.holder.append(&new.widget);
+        tab.holder.remove(&old.widget);
+        *tab.view.borrow_mut() = new;
+        old.close();
+        {
+            let mut s = tab.state.borrow_mut();
+            s.ready = false;
+            s.fell_back = true;
+        }
+        if self.current().is_some_and(|c| Rc::ptr_eq(&c, tab)) {
+            tab.view().widget.grab_focus();
+        }
+    }
+
     /// The selected tab changed: show its state and give its page the keyboard focus.
     fn on_selected(&self) {
         self.editing.set(false);
         self.refresh();
         if let Some(t) = self.current() {
-            t.view.widget.grab_focus();
+            t.view().widget.grab_focus();
         }
     }
 
@@ -173,7 +224,7 @@ impl Shell {
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
-            tab.view.close();
+            tab.view().close();
         }
         if self.tabs.borrow().is_empty() {
             self.window.close();
@@ -183,7 +234,7 @@ impl Shell {
     /// Ask CEF to close every browser. Call before shutting CEF down.
     pub fn close_all(&self) {
         for t in self.tabs.borrow().iter() {
-            t.view.close();
+            t.view().close();
         }
     }
 
@@ -209,7 +260,18 @@ impl Shell {
         match ev {
             ViewEvent::Ready => {
                 tab.state.borrow_mut().ready = true;
-                tab.view.sync_focus();
+                tab.view().sync_focus();
+                if self.mode.get() == Mode::Accel {
+                    let (shell, tab, view) = (Rc::downgrade(self), Rc::downgrade(tab), tab.view());
+                    glib::timeout_add_local_once(FIRST_FRAME_WATCHDOG, move || {
+                        if let (Some(shell), Some(tab)) = (shell.upgrade(), tab.upgrade()) {
+                            // Still the same view, still visible or not, and nothing ever arrived.
+                            if Rc::ptr_eq(&tab.view(), &view) && view.frames() == 0 && !view.is_hidden() {
+                                shell.fall_back(&tab);
+                            }
+                        }
+                    });
+                }
             }
             ViewEvent::ContextMenu(req) => {
                 {
@@ -217,7 +279,7 @@ impl Shell {
                     s.menu = req.items.iter().map(|i| if i.separator { "-".into() } else { i.label.clone() }).collect();
                     s.menus += 1;
                 }
-                tab.view.show_context_menu(req);
+                tab.view().show_context_menu(req);
             }
             ViewEvent::OpenUrl(url) => {
                 self.open_tab(&url, true);
@@ -225,7 +287,7 @@ impl Shell {
             ViewEvent::Address(a) => {
                 tab.state.borrow_mut().address = a;
                 // Navigating to another host resets the zoom.
-                tab.view.apply_zoom();
+                tab.view().apply_zoom();
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
             ViewEvent::Loading { loading, can_back, can_forward } => {
@@ -239,7 +301,7 @@ impl Shell {
                     s.can_forward = can_forward;
                 }
                 if !loading {
-                    tab.view.apply_zoom();
+                    tab.view().apply_zoom();
                 }
             }
         }
@@ -324,7 +386,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         back_action: back_action.clone(),
         forward_action: forward_action.clone(),
         tabs: RefCell::new(Vec::new()),
-        mode: opts.mode.unwrap_or(cfg.rendering.mode.mode()),
+        mode: Cell::new(opts.mode.unwrap_or(cfg.rendering.mode.mode())),
         backing: opts.backing.unwrap_or(cfg.rendering.device_resolution),
         frame_rate: cfg.rendering.frame_rate,
         search_url: cfg.search_url.clone(),
@@ -338,7 +400,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         let weak = weak.clone();
         move || {
             if let Some(t) = weak.upgrade().and_then(|s| s.current()) {
-                f(&t.view);
+                f(&t.view());
             }
         }
     };

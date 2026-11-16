@@ -61,3 +61,21 @@ export LD_LIBRARY_PATH=$PWD/target/release
 ./target/release/browsah --selftest              # dmabuf
 ./target/release/browsah --selftest --mode=paint # readback
 ```
+
+## dmabuf watchdog
+
+**Question:** can the shell recover when the accelerated path delivers no frames (the failure that
+`AMD_DEBUG=nodcc` fixes on this GPU)?
+
+**Answer:** yes. 3 s after a view reports it is ready, if it is visible and has delivered no frame,
+the shell replaces it with a readback view on the same address and uses readback for later tabs. The
+page's history and scroll position are lost, which is acceptable at start-up.
+
+**Measured (this machine only):** with `BROWSAH_NO_GPU_WORKAROUNDS=1` the dmabuf path is silent;
+`--selftest` then logged the fallback and passed 68 of 68 checks (one run). Normal runs do not fall
+back (checked by the self-test). **Not tested:** a GPU that really fails differently (Intel, NVIDIA),
+a slow-but-working first frame beyond 3 s (it would fall back needlessly), frames that stop later.
+
+```bash
+BROWSAH_NO_GPU_WORKAROUNDS=1 ./target/release/browsah --selftest
+```

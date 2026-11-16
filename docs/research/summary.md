@@ -33,7 +33,7 @@ Wayland is a hard requirement and is met.
 |---|---|---|
 | Native Wayland delivers **no accelerated frames** on AMD/Mesa (`Unable to allocate frame for first frame capture: OOM?`) | `AMD_DEBUG=nodcc` in the environment of the CEF processes (set by the app at start-up) | Measured fix on this GPU; cause suspected (DCC-compressed buffer) not confirmed; Intel analogue `INTEL_DEBUG=noccs` reported by others, untested here; NVIDIA reported to work without one |
 | HiDPI blur | Device-resolution view plus zoom compensation | Verified at scale 2 only |
-| Frames never arrive (rare driver cases) | Fall back to `OnPaint` | **Not built.** Needs a watchdog ("no accelerated frame within N ms") |
+| Frames never arrive (rare driver cases) | Fall back to `OnPaint` | Built: no accelerated frame within 3 s replaces the view with a readback one ([tabs note](browser-tabs.md#dmabuf-watchdog)); tested only by removing the AMD workaround |
 
 Things that were tried and did **not** matter on Wayland: ANGLE backend choice (GL, EGL, Vulkan),
 GPU sandbox flags, `--in-process-gpu`, passing GTK's `wl_surface` as `parent_window`, and

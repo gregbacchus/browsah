@@ -104,6 +104,15 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         format!("frames={}", shell.view().frames())
     });
 
+    // With the Mesa workaround missing (BROWSAH_NO_GPU_WORKAROUNDS=1) the dmabuf path stays silent
+    // on AMD and the shell must have fallen back to readback; otherwise it must not have.
+    let expect_fallback = accel && std::env::var_os("BROWSAH_NO_GPU_WORKAROUNDS").is_some();
+    r.check(
+        if expect_fallback { "silent dmabuf path falls back to readback" } else { "no fallback when frames arrive" },
+        st.borrow().fell_back == expect_fallback,
+        || format!("fell_back={}", st.borrow().fell_back),
+    );
+
     if let Ok(path) = std::env::var("BROWSAH_SCREENSHOT") {
         // Let the page settle so the frame shown is the finished one.
         glib::timeout_future(Duration::from_millis(500)).await;
@@ -484,23 +493,23 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     shell.step_tab_for_test(1);
 
     // Background tabs are hidden and receive no frames.
-    let _ = wait_until(5_000, || second.view.has_frame()).await;
-    r.check("the selected tab is visible and has a frame", !second.view.is_hidden() && second.view.has_frame(), || {
-        format!("hidden={} frame={}", second.view.is_hidden(), second.view.has_frame())
+    let _ = wait_until(5_000, || second.view().has_frame()).await;
+    r.check("the selected tab is visible and has a frame", !second.view().is_hidden() && second.view().has_frame(), || {
+        format!("hidden={} frame={}", second.view().is_hidden(), second.view().has_frame())
     });
-    r.check("the background tab is hidden", first.view.is_hidden(), || "not hidden".into());
+    r.check("the background tab is hidden", first.view().is_hidden(), || "not hidden".into());
     glib::timeout_future(Duration::from_millis(400)).await;
-    let (f0, g0) = (first.view.frames(), second.view.frames());
+    let (f0, g0) = (first.view().frames(), second.view().frames());
     glib::timeout_future(Duration::from_millis(1000)).await;
-    r.check("a hidden tab receives no frames", first.view.frames() == f0, || format!("{} -> {}", f0, first.view.frames()));
+    r.check("a hidden tab receives no frames", first.view().frames() == f0, || format!("{} -> {}", f0, first.view().frames()));
     let _ = g0;
 
     // Switching wakes the hidden tab with a fresh frame.
-    let f1 = first.view.frames();
+    let f1 = first.view().frames();
     let _ = WidgetExt::activate_action(&shell.window, "win.prev-tab", None);
-    let ok = wait_until(3_000, || first.view.frames() > f1 && !first.view.is_hidden() && second.view.is_hidden()).await;
+    let ok = wait_until(3_000, || first.view().frames() > f1 && !first.view().is_hidden() && second.view().is_hidden()).await;
     r.check("switching tabs wakes the hidden tab and hides the other", ok, || {
-        format!("frames {} -> {}, hidden first={} second={}", f1, first.view.frames(), first.view.is_hidden(), second.view.is_hidden())
+        format!("frames {} -> {}, hidden first={} second={}", f1, first.view().frames(), first.view().is_hidden(), second.view().is_hidden())
     });
     r.check("window title follows the switch", shell.window.title().as_deref() == Some("Popup test"), || format!("{:?}", shell.window.title()));
 
@@ -532,11 +541,11 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
     let ok = wait_until(5_000, || shell.tab_count() == 1).await;
     r.check("closing another leaves one", ok, || shell.tab_count().to_string());
-    r.check("the remaining tab is the first and is shown", shell.current().is_some_and(|c| Rc::ptr_eq(&c, &first)) && !first.view.is_hidden(), || {
-        format!("hidden={}", first.view.is_hidden())
+    r.check("the remaining tab is the first and is shown", shell.current().is_some_and(|c| Rc::ptr_eq(&c, &first)) && !first.view().is_hidden(), || {
+        format!("hidden={}", first.view().is_hidden())
     });
-    let n0 = first.view.frames();
+    let n0 = first.view().frames();
     d.click(80.0, 40.0);
     let ok = wait_until(10_000, || shell.tab_count() == 2).await;
-    r.check("the surviving tab still works after the others closed", ok && first.view.frames() >= n0, || shell.tab_count().to_string());
+    r.check("the surviving tab still works after the others closed", ok && first.view().frames() >= n0, || shell.tab_count().to_string());
 }
