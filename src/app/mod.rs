@@ -14,6 +14,7 @@ use gtk::{gio, glib};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
+use crate::store::{Store, TabRecord};
 use view::{BrowserView, ViewEvent};
 
 /// What the page last told the shell. Kept so the UI (and the self-test) can read it back.
@@ -48,6 +49,24 @@ pub struct Tab {
     pub page: adw::TabPage,
     /// The window (shell) the tab is in. Changes when a tab is dragged to another window.
     owner: RefCell<Weak<Shell>>,
+    /// Stable id; names the tab's screenshot and its row in the database.
+    pub uid: u64,
+}
+
+thread_local! {
+    /// The profile's database (GTK thread).
+    static STORE: RefCell<Option<Rc<Store>>> = const { RefCell::new(None) };
+}
+
+fn store() -> Option<Rc<Store>> {
+    STORE.with(|s| s.borrow().clone())
+}
+
+/// A tab id that is unique across restarts (it names the tab's screenshot file).
+fn new_uid() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let micros = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0);
+    (micros << 8) | (COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff)
 }
 
 thread_local! {
@@ -73,6 +92,13 @@ impl Tab {
 /// the dmabuf path and uses readback instead.
 const FIRST_FRAME_WATCHDOG: Duration = Duration::from_secs(3);
 
+/// Where a workspace window's tabs are remembered.
+struct Persist {
+    workspace: String,
+    /// Directory of tab screenshots (`<uid>.png`).
+    shots: std::path::PathBuf,
+}
+
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub tab_view: adw::TabView,
@@ -93,6 +119,13 @@ pub struct Shell {
     /// one it started with, against which restart-only options are judged.
     settings: RefCell<Config>,
     startup_settings: Config,
+    /// Where this window's tabs are remembered (workspace windows only).
+    persist: Option<Persist>,
+    save_pending: Cell<bool>,
+    /// True while remembered tabs are being put back, so sleeping ones are not woken.
+    restoring: Cell<bool>,
+    /// The tab that was selected before the current one (its screenshot is taken on the switch).
+    last_selected: RefCell<Weak<Tab>>,
     /// The workspace this window shows; `None` is an ephemeral window (not remembered).
     pub workspace: Option<crate::workspace::Workspace>,
     /// The user has typed in the address bar and not yet committed or cancelled.
@@ -117,6 +150,138 @@ fn tab_title(s: &State) -> String {
 }
 
 impl Shell {
+    // ---- remembered tabs ------------------------------------------------------------------------
+
+    fn screenshot_path(&self, uid: u64) -> Option<std::path::PathBuf> {
+        self.persist.as_ref().map(|p| p.shots.join(format!("{uid}.png")))
+    }
+
+    /// Save a tab's last frame as its screenshot (workspace windows; a sleeping tab keeps its old
+    /// one). The frame is copied at once and the PNG encoded when the main loop is idle.
+    fn snapshot(&self, tab: &Rc<Tab>) {
+        self.snapshot_with(tab, false);
+    }
+
+    /// `now`: encode before returning (the window is closing, so there is no later).
+    fn snapshot_with(&self, tab: &Rc<Tab>, now: bool) {
+        let Some(path) = self.screenshot_path(tab.uid) else { return };
+        let view = tab.view();
+        if view.is_dormant() {
+            return;
+        }
+        let Some(frame) = view.capture() else {
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: screenshot of tab {}: the view has no frame", tab.uid);
+            }
+            return;
+        };
+        let uid = tab.uid;
+        let encode = move || {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let ok = frame.save_to_png(&path).is_ok();
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: screenshot of tab {uid}: {}", if ok { "saved" } else { "not saved" });
+            }
+        };
+        if now {
+            encode();
+        } else {
+            glib::idle_add_local_once(encode);
+        }
+    }
+
+    /// The tabs to remember, in tab-bar order. Blank tabs are not worth keeping.
+    fn tab_records(&self) -> Vec<TabRecord> {
+        let selected = self.tab_view.selected_page();
+        let tabs = self.tabs.borrow();
+        (0..self.tab_view.n_pages())
+            .filter_map(|i| {
+                let page = self.tab_view.nth_page(i);
+                let tab = tabs.iter().find(|t| t.page == page)?;
+                let s = tab.state.borrow();
+                if s.address.is_empty() || s.address == "about:blank" {
+                    return None;
+                }
+                Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: page.is_pinned(), selected: selected.as_ref() == Some(&page) })
+            })
+            .collect()
+    }
+
+    /// Remember the tabs now (and forget screenshots of tabs that are gone).
+    pub fn save_now(&self) {
+        let (Some(p), Some(store)) = (&self.persist, store()) else { return };
+        let records = self.tab_records();
+        if let Err(e) = store.save_tabs(&p.workspace, &records) {
+            eprintln!("browsah: cannot save tabs of workspace {}: {e}", p.workspace);
+            return;
+        }
+        let keep: std::collections::HashSet<String> = records.iter().map(|r| format!("{}.png", r.uid)).collect();
+        if let Ok(rd) = std::fs::read_dir(&p.shots) {
+            for e in rd.flatten() {
+                if !keep.contains(e.file_name().to_string_lossy().as_ref()) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+
+    /// Remember the tabs soon (changes come in bursts).
+    fn schedule_save(&self) {
+        if self.persist.is_none() || self.save_pending.replace(true) {
+            return;
+        }
+        let window = self.window.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+            if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
+                s.save_pending.set(false);
+                s.save_now();
+            }
+        });
+    }
+
+    /// Take the screenshot of the selected tab and save the tabs, for when the window closes.
+    fn save_on_close(&self) {
+        if let Some(t) = self.current() {
+            self.snapshot_with(&t, true);
+        }
+        self.save_now();
+    }
+
+    /// Put remembered tabs back as sleeping tabs (no browser yet, their screenshot shown); the
+    /// selected one wakes at once, the others when first shown.
+    fn restore(self: &Rc<Self>, records: &[TabRecord]) {
+        self.restoring.set(true);
+        let mut target = None;
+        for rec in records {
+            // Every remembered tab starts without a browser (the selected one is woken below, and
+            // shows its screenshot while it loads).
+            let tab = self.open_tab_dormant(rec);
+            if rec.selected {
+                target = Some(tab);
+            }
+        }
+        let target = target.or_else(|| self.tabs.borrow().first().cloned());
+        self.restoring.set(false);
+        if let Some(t) = target {
+            self.tab_view.set_selected_page(&t.page);
+            self.on_selected(); // wakes it if it was only remembered
+        }
+    }
+
+    /// A tab for a remembered page: no browser until it is shown.
+    fn open_tab_dormant(self: &Rc<Self>, rec: &TabRecord) -> Rc<Tab> {
+        let state = Rc::new(RefCell::new(State { address: rec.url.clone(), title: rec.title.clone(), ..State::default() }));
+        let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
+        let on_event = self.event_closure(&cell);
+        let shot = self.screenshot_path(rec.uid);
+        let view = BrowserView::new_dormant(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &rec.url, shot.as_deref(), on_event);
+        let tab = self.add_tab(view, cell, state, false, rec.uid);
+        tab.page.set_title(&tab_title(&tab.state.borrow()));
+        tab
+    }
+
     /// Scrolling settings are process-wide statics, so the window being used sets them.
     pub fn apply_input_tuning(&self) {
         let c = self.settings.borrow();
@@ -208,7 +373,7 @@ impl Shell {
         let (cell, state) = (Rc::new(OnceCell::new()), Rc::new(RefCell::new(State::default())));
         let on_event = self.event_closure(&cell);
         let view = BrowserView::adopt(WidgetExt::display(&self.window), spec, on_event);
-        self.add_tab(view, cell, state, true)
+        self.add_tab(view, cell, state, true, new_uid())
     }
 
     /// The closure that delivers a view's events to its tab.
@@ -232,14 +397,18 @@ impl Shell {
 
     /// Open a tab on `url`. Background tabs start hidden (not rendering) until selected.
     pub fn open_tab(self: &Rc<Self>, url: &str, select: bool) -> Rc<Tab> {
+        self.open_tab_with(url, new_uid(), select)
+    }
+
+    fn open_tab_with(self: &Rc<Self>, url: &str, uid: u64, select: bool) -> Rc<Tab> {
         let state = Rc::new(RefCell::new(State::default()));
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let view = self.make_view(&cell, url);
-        self.add_tab(view, cell, state, select)
+        self.add_tab(view, cell, state, select, uid)
     }
 
     /// Put a view in a new tab.
-    fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool) -> Rc<Tab> {
+    fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool, uid: u64) -> Rc<Tab> {
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
         let sad = adw::StatusPage::builder()
@@ -253,7 +422,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -297,9 +466,21 @@ impl Shell {
     fn on_selected(&self) {
         self.editing.set(false);
         self.refresh();
-        if let Some(t) = self.current() {
+        let current = self.current();
+        // The tab we are leaving gets a screenshot.
+        if let Some(prev) = self.last_selected.borrow().upgrade() {
+            if current.as_ref().is_none_or(|c| !Rc::ptr_eq(c, &prev)) {
+                self.snapshot(&prev);
+            }
+        }
+        if let Some(t) = current {
+            *self.last_selected.borrow_mut() = Rc::downgrade(&t);
+            if !self.restoring.get() {
+                t.view().wake(); // a restored tab comes to life when it is first shown
+            }
             t.view().widget.grab_focus();
         }
+        self.schedule_save();
     }
 
     /// A page left this window's tab view without being closed (dragged to another window): keep
@@ -338,6 +519,7 @@ impl Shell {
         if let Some(tab) = tab {
             tab.view().close();
         }
+        self.schedule_save();
         if self.tabs.borrow().is_empty() {
             self.window.close();
         }
@@ -438,6 +620,7 @@ impl Shell {
         if self.current().is_some_and(|c| Rc::ptr_eq(&c, tab)) {
             self.refresh();
         }
+        self.schedule_save();
     }
 }
 
@@ -455,7 +638,7 @@ fn icon_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
     b
 }
 
-fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<crate::workspace::Workspace>) -> Rc<Shell> {
+fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<crate::workspace::Workspace>, remembered_tabs: Vec<TabRecord>) -> Rc<Shell> {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("browsah")
@@ -520,6 +703,10 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         toasts: toasts.clone(),
         settings: RefCell::new(cfg.clone()),
         startup_settings: cfg.clone(),
+        persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
+        save_pending: Cell::new(false),
+        restoring: Cell::new(false),
+        last_selected: RefCell::new(Weak::new()),
         workspace,
         editing: Cell::new(false),
         programmatic: Cell::new(false),
@@ -683,6 +870,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let shell = Rc::downgrade(&shell);
         move |_| {
             if let Some(s) = shell.upgrade() {
+                s.save_on_close(); // before the browsers close
                 s.close_all();
             }
             glib::Propagation::Proceed
@@ -704,7 +892,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         window.add_controller(log);
     }
 
-    shell.open_tab(start_url, true);
+    if remembered_tabs.is_empty() {
+        shell.open_tab(start_url, true);
+    } else {
+        shell.restore(&remembered_tabs);
+        if !start_url.is_empty() {
+            shell.open_tab(start_url, true); // a link given when opening: after the remembered tabs
+        }
+    }
     shell
 }
 
@@ -731,6 +926,18 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     let cfg0 = loaded.config;
     input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);
     let exit = Rc::new(Cell::new(0));
+    match Store::open(&profile.dir.join("data.sqlite")) {
+        Ok(s) => STORE.with(|st| *st.borrow_mut() = Some(Rc::new(s))),
+        Err(e) => eprintln!("browsah: cannot open the profile database ({e}); tabs will not be remembered"),
+    }
+    // Restored tabs that are still asleep are shown blurred.
+    app.connect_startup(|_| {
+        let css = gtk::CssProvider::new();
+        css.load_from_string(".dormant { filter: blur(8px); }");
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    });
     // The live configuration: replaced when a config file changes (see `watch`).
     let cfg = Rc::new(RefCell::new(cfg0));
     let watcher: Rc<RefCell<Option<watch::ConfigWatch>>> = Rc::new(RefCell::new(None));
@@ -738,7 +945,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     // Open a window showing `workspace` (None: an ephemeral window) on `start`.
     let new_window = {
         let (opts, cfg, exit, watcher, profile) = (opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
-        move |app: &adw::Application, workspace: Option<crate::workspace::Workspace>, start: &str| -> Rc<Shell> {
+        move |app: &adw::Application, workspace: Option<crate::workspace::Workspace>, start: &str, restore: Vec<TabRecord>| -> Rc<Shell> {
             let first = WINDOWS.with(|w| w.borrow().is_empty());
             let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
             let profile_file = profile.dir.join("profile.yaml");
@@ -757,7 +964,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 }
                 None => cfg.borrow().clone(),
             };
-            let s = build(app, &opts, &window_cfg, start, workspace.clone());
+            let s = build(app, &opts, &window_cfg, start, workspace.clone(), restore);
             s.window.connect_is_active_notify({
                 let shell = Rc::downgrade(&s);
                 move |w| {
@@ -830,11 +1037,14 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 return Ok(s);
             }
             let w = crate::workspace::Workspace::resolve(&profile, id)?;
+            // A workspace opens as it was; with nothing remembered it opens on a link or its home page.
+            let remembered = store().map(|s| s.load_tabs(&w.id)).unwrap_or_default();
             let start = match url {
                 Some(u) => u.to_owned(),
-                None => cfg.borrow().home_page.clone(),
+                None if remembered.is_empty() => cfg.borrow().home_page.clone(),
+                None => String::new(),
             };
-            Ok(new_window(app, Some(w), &start))
+            Ok(new_window(app, Some(w), &start, remembered))
         }
     };
 
@@ -844,7 +1054,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         let (cfg, new_window, app) = (cfg.clone(), new_window.clone(), app.clone());
         move |_, _| {
             let home = cfg.borrow().home_page.clone();
-            new_window(&app, None, &home);
+            new_window(&app, None, &home, Vec::new());
         }
     });
     app.add_action(&new_ephemeral);
@@ -896,7 +1106,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             }
             if !opened {
                 let start = url.unwrap_or_else(|| cfg.borrow().home_page.clone());
-                new_window(app, None, &start);
+                new_window(app, None, &start, Vec::new());
             }
         }
     });
@@ -917,7 +1127,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                     if let Err(e) = open_workspace(app, hint, Some(url)) {
                         eprintln!("browsah: {e}");
                         if i == 0 {
-                            new_window(app, None, url);
+                            new_window(app, None, url, Vec::new());
                         }
                     }
                 }
@@ -927,7 +1137,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             let existing = active.or_else(|| windows().last().cloned());
             let (s, skip) = match existing {
                 Some(s) => (s, 0),
-                None => (new_window(app, None, urls.first().map(String::as_str).unwrap_or("about:blank")), 1),
+                None => (new_window(app, None, urls.first().map(String::as_str).unwrap_or("about:blank"), Vec::new()), 1),
             };
             for url in urls.iter().skip(skip) {
                 s.open_tab(url, true);
@@ -938,6 +1148,11 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 
     app.run_with_args::<&str>(&[]);
     exit.get()
+}
+
+/// The shell of a window.
+fn shell_of(window: &adw::ApplicationWindow) -> Option<Rc<Shell>> {
+    WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).cloned())
 }
 
 /// The workspace id of the window, if it shows one.

@@ -157,6 +157,8 @@ struct Shared {
     /// Downloaded images by URL: (HTTP status, width, height).
     images: Mutex<HashMap<String, (i32, usize, usize)>>,
     next_cdp_id: std::sync::atomic::AtomicI32,
+    /// Set while the browser has not been created yet (a restored tab): its address.
+    deferred_url: Mutex<Option<String>>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -176,6 +178,7 @@ impl Shared {
             cdp_registration: Mutex::new(None),
             images: Mutex::new(HashMap::new()),
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
+            deferred_url: Mutex::new(None),
             accel,
             frame_rate,
         })
@@ -241,6 +244,7 @@ fn present(id: u64, tex: gdk::Texture) {
     let hook = VIEWS.with(|v| {
         v.borrow().get(&id).and_then(|side| {
             side.picture.set_paintable(Some(&tex));
+            side.picture.remove_css_class("dormant");
             side.frame_hook.clone()
         })
     });
@@ -746,23 +750,78 @@ impl BrowserView {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let shared = Shared::new(id, device_resolution, mode == Mode::Accel, frame_rate);
         let view = Self::build(display, shared.clone(), on_event);
+        Self::create_browser(&shared, url);
+        view
+    }
+
+    /// A view whose browser is not created until `wake` (a restored tab). `screenshot`, if it
+    /// exists, is shown (blurred) in the meantime.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_dormant(
+        display: gdk::Display,
+        mode: Mode,
+        device_resolution: bool,
+        frame_rate: i32,
+        url: &str,
+        screenshot: Option<&std::path::Path>,
+        on_event: impl Fn(ViewEvent) + 'static,
+    ) -> Rc<BrowserView> {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let shared = Shared::new(id, device_resolution, mode == Mode::Accel, frame_rate);
+        *shared.deferred_url.lock().unwrap() = Some(url.to_owned());
+        let view = Self::build(display, shared, on_event);
+        if let Some(tex) = screenshot.filter(|p| p.is_file()).and_then(|p| gdk::Texture::from_filename(p).ok()) {
+            view.picture.set_paintable(Some(&tex));
+            view.picture.add_css_class("dormant");
+        }
+        view
+    }
+
+    /// Create the CEF browser for a view.
+    fn create_browser(shared: &Arc<Shared>, url: &str) {
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
-            shared_texture_enabled: (mode == Mode::Accel) as _,
+            shared_texture_enabled: shared.accel as _,
             runtime_style: RuntimeStyle::from(sys::cef_runtime_style_t::CEF_RUNTIME_STYLE_ALLOY),
             ..Default::default()
         };
-        let settings = BrowserSettings { windowless_frame_rate: frame_rate, ..Default::default() };
-        let mut client = make_client(shared);
-        browser_host_create_browser(
-            Some(&window_info),
-            Some(&mut client),
-            Some(&CefString::from(url)),
-            Some(&settings),
-            None,
-            None,
-        );
-        view
+        let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
+        let mut client = make_client(shared.clone());
+        browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+    }
+
+    /// Whether a (blurred) screenshot is standing in for the page.
+    pub fn showing_placeholder(&self) -> bool {
+        self.picture.has_css_class("dormant")
+    }
+
+    /// Whether the browser has not been created yet.
+    pub fn is_dormant(&self) -> bool {
+        self.shared.deferred_url.lock().unwrap().is_some()
+    }
+
+    /// Create the browser of a dormant view (a no-op otherwise). A navigation requested while it
+    /// was dormant wins over the remembered address.
+    pub fn wake(&self) {
+        let url = self.shared.deferred_url.lock().unwrap().take();
+        if let Some(url) = url {
+            let pending = self.shared.pending_url.lock().unwrap().take();
+            Self::create_browser(&self.shared, pending.as_deref().unwrap_or(&url));
+        }
+    }
+
+    /// Copy the page's last frame into memory. Do this promptly after the tab is left: the frame
+    /// is a GPU buffer that CEF may release once the view is hidden (a later download failed
+    /// intermittently), whereas encoding the PNG can wait (`save_png`).
+    pub fn capture(&self) -> Option<gdk::MemoryTexture> {
+        let p = self.picture.paintable();
+        let tex = p?.downcast::<gdk::Texture>().ok()?;
+        let (w, h) = (tex.width() as usize, tex.height() as usize);
+        let stride = w * 4;
+        let mut buf = vec![0u8; stride * h];
+        tex.download(&mut buf, stride);
+        let bytes = glib::Bytes::from_owned(buf);
+        Some(gdk::MemoryTexture::new(w as i32, h as i32, gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride))
     }
 
     /// The view for a popup browser CEF is already creating (see `PopupSpec`).
@@ -914,8 +973,13 @@ impl BrowserView {
                 }
             }
         };
-        if let Some(frame) = browser.and_then(|b| b.main_frame()) {
-            frame.load_url(Some(&CefString::from(url)));
+        match browser {
+            Some(b) => {
+                if let Some(frame) = b.main_frame() {
+                    frame.load_url(Some(&CefString::from(url)));
+                }
+            }
+            None => self.wake(), // a restored tab being navigated: bring its browser up on this address
         }
     }
 

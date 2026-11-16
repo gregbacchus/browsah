@@ -9,6 +9,7 @@ mod config;
 mod frames;
 mod gpu;
 mod profile;
+mod store;
 mod workspace;
 
 use adw::prelude::*;

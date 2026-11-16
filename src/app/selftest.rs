@@ -228,6 +228,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_tabs(shell, r).await;
     run_opener(shell, r).await;
     run_windows(shell, r).await;
+    run_restore(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -731,4 +732,84 @@ async fn run_windows(shell: &Rc<Shell>, r: &mut Report) {
     second.window.close();
     let ok = wait_until(5_000, || super::windows().len() == 1).await;
     r.check("closing a window removes it from the registry", ok, || format!("{} windows; visible={} tabs={}", super::windows().len(), second.window.is_visible(), second.tab_count()));
+}
+
+/// A workspace remembers its tabs: they come back as sleeping tabs with a screenshot, the selected
+/// one live, and a sleeping tab wakes when shown.
+async fn run_restore(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let ws_dir = profile.workspaces_dir().join("wstest");
+    let db = profile.dir.join("data.sqlite");
+    // Start from nothing.
+    let _ = std::fs::remove_dir_all(&ws_dir);
+    std::fs::create_dir_all(&ws_dir).expect("workspace dir");
+    std::fs::write(ws_dir.join("workspace.yaml"), "name: Test workspace\n").expect("workspace.yaml");
+    if let Ok(s) = crate::store::Store::open(&db) {
+        let _ = s.delete_workspace("wstest");
+    }
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "wstest"));
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wstest".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().ready))).await;
+    r.check("open-workspace opens the workspace's window", ok, || format!("{} windows", super::windows().len()));
+    let Some(w) = find() else { return };
+    r.check("the window title names the workspace", w.window.title().is_some_and(|t| t.ends_with("Test workspace")), || format!("{:?}", w.window.title()));
+
+    // Three tabs: A, B, C, with B selected last.
+    let a = w.current().expect("tab");
+    a.view().navigate(&page("a.html"));
+    let _ = wait_until(15_000, || a.state.borrow().title == "Page A").await;
+    let _ = wait_until(10_000, || a.view().has_frame()).await; // a page that is left before its first frame has no screenshot
+    let b = w.open_tab(&page("b.html"), true);
+    let _ = wait_until(15_000, || b.state.borrow().title == "Page B" && b.view().has_frame()).await;
+    let c = w.open_tab(&page("popup.html"), true);
+    let _ = wait_until(15_000, || c.state.borrow().title == "Popup test" && c.view().has_frame()).await;
+    let _ = WidgetExt::activate_action(&w.window, "win.prev-tab", None); // back to B
+    let ok = wait_until(5_000, || w.current().is_some_and(|t| Rc::ptr_eq(&t, &b))).await;
+    r.check("B is selected before closing", ok, || "not selected".into());
+    glib::timeout_future(Duration::from_millis(1200)).await; // screenshots are taken after the switch
+    let shots = ws_dir.join("shots");
+    let (ua, ub, uc) = (a.uid, b.uid, c.uid);
+    w.window.close();
+    let ok = wait_until(5_000, || find().is_none()).await;
+    r.check("closing the workspace window removes it", ok, || "still open".into());
+
+    let records = crate::store::Store::open(&db).map(|s| s.load_tabs("wstest")).unwrap_or_default();
+    r.check("the tabs were remembered in order with the selection", records.len() == 3 && records[1].selected && !records[0].selected && records[0].title == "Page A" && records[2].title == "Popup test", || format!("{records:?}"));
+    let shot = |uid: u64| shots.join(format!("{uid}.png")).is_file();
+    r.check("screenshots were saved for the tabs", shot(ua) && shot(ub) && shot(uc), || format!("a={} b={} c={}", shot(ua), shot(ub), shot(uc)));
+
+    // Reopen.
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wstest".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.tab_count() == 3)).await;
+    r.check("reopening restores the three tabs", ok, || format!("{:?}", find().map(|s| s.tab_count())));
+    let Some(w) = find() else { return };
+    if let Ok(path) = std::env::var("BROWSAH_SCREENSHOT") {
+        // The selected tab shows its blurred screenshot until its first frame.
+        println!("screenshot {path}.restored.png: {}", if screenshot(&w.window, &format!("{path}.restored.png")) { "saved" } else { "failed" });
+    }
+    let tabs = w.tabs();
+    let titles: Vec<String> = tabs.iter().map(|t| t.page.title().to_string()).collect();
+    r.check("restored tabs show their remembered titles at once", titles == ["Page A", "Page B", "Popup test"], || format!("{titles:?}"));
+    r.check("the previously selected tab is selected and live", w.current().is_some_and(|t| t.uid == ub && !t.view().is_dormant()), || "wrong selection".into());
+    r.check("the other tabs are asleep behind a blurred screenshot", tabs[0].view().is_dormant() && tabs[0].view().has_frame() && tabs[0].view().showing_placeholder() && tabs[2].view().is_dormant(), || {
+        format!("a dormant={} frame={} blurred={}", tabs[0].view().is_dormant(), tabs[0].view().has_frame(), tabs[0].view().showing_placeholder())
+    });
+    let ok = wait_until(15_000, || w.current().is_some_and(|t| t.state.borrow().title == "Page B")).await;
+    r.check("the live tab loads its page", ok, || "B did not load".into());
+
+    // Showing a sleeping tab wakes it.
+    let _ = WidgetExt::activate_action(&w.window, "win.prev-tab", None); // to A
+    let ok = wait_until(15_000, || tabs[0].state.borrow().ready && tabs[0].state.borrow().title == "Page A" && !tabs[0].view().showing_placeholder()).await;
+    r.check("a sleeping tab wakes when shown and replaces its screenshot", ok && !tabs[0].view().is_dormant(), || format!("{:?} blurred={}", tabs[0].state.borrow(), tabs[0].view().showing_placeholder()));
+    r.check("a tab that was never shown is still asleep", tabs[2].view().is_dormant(), || "woken".into());
+
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    if let Ok(s) = crate::store::Store::open(&db) {
+        let _ = s.delete_workspace("wstest");
+    }
+    let _ = std::fs::remove_dir_all(&ws_dir);
 }

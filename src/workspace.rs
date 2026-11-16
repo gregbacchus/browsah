@@ -210,6 +210,9 @@ fn remove(profile: &Profile, args: &[String]) -> i32 {
         eprintln!("this DELETES workspace {id:?}: {} (its configuration and, once stored there, its tabs and bookmarks).\nrun again with --yes to continue", w.dir.display());
         return 1;
     }
+    if let Ok(store) = crate::store::Store::open(&profile.dir.join("data.sqlite")) {
+        let _ = store.delete_workspace(&w.id);
+    }
     if let Err(e) = std::fs::remove_dir_all(&w.dir) {
         eprintln!("cannot delete {}: {e}", w.dir.display());
         return 1;
