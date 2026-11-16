@@ -89,7 +89,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
 
     // The widgets reach the shell through weak references; the window must own it or the address
     // bar and buttons die at the end of start-up (the test's own reference hides that).
-    r.check("the window keeps the shell alive", Rc::strong_count(shell) >= 2, || format!("strong count {}", Rc::strong_count(shell)));
+    r.check("the window registry owns the shell", Rc::strong_count(shell) >= 2, || format!("strong count {}", Rc::strong_count(shell)));
 
     let ready = wait_until(15_000, || st.borrow().ready).await;
     r.check("browser is created", ready, || "no Ready event within 15 s".into());
@@ -227,6 +227,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     run_tabs(shell, r).await;
     run_opener(shell, r).await;
+    run_windows(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -697,4 +698,37 @@ async fn run_opener(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a popup keeps window.opener (postMessage reaches the opener)", ok, || {
         format!("tabs={} parent title={:?}", shell.tab_count(), parent.state.borrow().title)
     });
+}
+
+/// A second (ephemeral) window, and a tab dragged between windows changing owner.
+async fn run_windows(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    r.check("one window to start with", super::windows().len() == 1, || super::windows().len().to_string());
+    ActionGroupExt::activate_action(&app, "new-window", None);
+    let ok = wait_until(10_000, || super::windows().len() == 2).await;
+    r.check("new-window opens a second window", ok, || super::windows().len().to_string());
+    let second = super::windows().into_iter().find(|s| !Rc::ptr_eq(s, shell));
+    let Some(second) = second else { return };
+    r.check("the new window is ephemeral (no workspace)", second.workspace.is_none(), || format!("{:?}", second.workspace));
+    let ok = wait_until(15_000, || second.current().is_some_and(|t| t.state.borrow().ready)).await;
+    r.check("the new window's tab starts", ok, || "no browser".into());
+
+    // Move the first window's tab to the second window, as dragging it would.
+    let tab = shell.current().expect("tab");
+    shell.open_tab("about:blank", true); // keep the first window non-empty
+    shell.tab_view.transfer_page(&tab.page, &second.tab_view, 0);
+    r.check("a transferred tab changes owner", tab.owner().is_some_and(|o| Rc::ptr_eq(&o, &second)), || "owner not updated".into());
+    r.check("tab lists follow the transfer", second.tabs().iter().any(|t| Rc::ptr_eq(t, &tab)) && !shell.tabs().iter().any(|t| Rc::ptr_eq(t, &tab)), || {
+        format!("first={} second={}", shell.tab_count(), second.tab_count())
+    });
+    // Events from the moved tab reach its new window: its title shows up there.
+    let (page_title_before, _) = (tab.page.title(), ());
+    tab.view().navigate(&page("a.html"));
+    let ok = wait_until(15_000, || tab.page.title() == "Page A").await;
+    r.check("a moved tab still updates its page in the new window", ok, || format!("{:?} (was {page_title_before:?})", tab.page.title()));
+
+    second.window.close();
+    let ok = wait_until(5_000, || super::windows().len() == 1).await;
+    r.check("closing a window removes it from the registry", ok, || format!("{} windows; visible={} tabs={}", super::windows().len(), second.window.is_visible(), second.tab_count()));
 }

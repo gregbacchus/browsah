@@ -46,9 +46,20 @@ pub struct Tab {
     sad: adw::StatusPage,
     pub state: Rc<RefCell<State>>,
     pub page: adw::TabPage,
+    /// The window (shell) the tab is in. Changes when a tab is dragged to another window.
+    owner: RefCell<Weak<Shell>>,
+}
+
+thread_local! {
+    /// Tabs detached from one window and not yet attached to another (a drag between windows).
+    static IN_FLIGHT: RefCell<Vec<Rc<Tab>>> = const { RefCell::new(Vec::new()) };
 }
 
 impl Tab {
+    pub fn owner(&self) -> Option<Rc<Shell>> {
+        self.owner.borrow().upgrade()
+    }
+
     pub fn sad_visible(&self) -> bool {
         self.sad.is_visible()
     }
@@ -78,6 +89,8 @@ pub struct Shell {
     frame_rate: Cell<i32>,
     search_url: RefCell<String>,
     toasts: adw::ToastOverlay,
+    /// The workspace this window shows; `None` is an ephemeral window (not remembered).
+    pub workspace: Option<String>,
     /// The user has typed in the address bar and not yet committed or cancelled.
     editing: Cell<bool>,
     /// Set while the shell itself changes the entry text, so that is not mistaken for typing.
@@ -187,11 +200,13 @@ impl Shell {
 
     /// The closure that delivers a view's events to its tab.
     fn event_closure(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>) -> impl Fn(ViewEvent) + 'static {
-        let shell = Rc::downgrade(self);
         let cell = cell.clone();
         move |ev: ViewEvent| {
-            if let (Some(shell), Some(tab)) = (shell.upgrade(), cell.get().and_then(|w| w.upgrade())) {
-                shell.handle(&tab, ev);
+            // The owner is looked up per event: a tab can be dragged to another window.
+            if let Some(tab) = cell.get().and_then(|w| w.upgrade()) {
+                if let Some(shell) = tab.owner() {
+                    shell.handle(&tab, ev);
+                }
             }
         }
     }
@@ -225,7 +240,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone() });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -271,6 +286,33 @@ impl Shell {
         self.refresh();
         if let Some(t) = self.current() {
             t.view().widget.grab_focus();
+        }
+    }
+
+    /// A page left this window's tab view without being closed (dragged to another window): keep
+    /// its tab until the other window adopts it.
+    fn detach_page(&self, page: &adw::TabPage) {
+        let tab = {
+            let mut tabs = self.tabs.borrow_mut();
+            tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
+        };
+        if let Some(tab) = tab {
+            IN_FLIGHT.with(|f| f.borrow_mut().push(tab));
+        }
+    }
+
+    /// A page arrived from another window: adopt its tab. (A new page of our own is not in flight.)
+    fn attach_page(self: &Rc<Self>, page: &adw::TabPage) {
+        let tab = IN_FLIGHT.with(|f| {
+            let mut f = f.borrow_mut();
+            f.iter().position(|t| &t.page == page).map(|i| f.remove(i))
+        });
+        if let Some(tab) = tab {
+            *tab.owner.borrow_mut() = Rc::downgrade(self);
+            self.tabs.borrow_mut().push(tab);
+            if self.tab_view.selected_page().as_ref() == Some(page) {
+                self.on_selected();
+            }
         }
     }
 
@@ -400,7 +442,7 @@ fn icon_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
     b
 }
 
-fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) -> Rc<Shell> {
+fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<String>) -> Rc<Shell> {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("browsah")
@@ -463,6 +505,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         frame_rate: Cell::new(cfg.rendering.frame_rate),
         search_url: RefCell::new(cfg.search_url.clone()),
         toasts: toasts.clone(),
+        workspace,
         editing: Cell::new(false),
         programmatic: Cell::new(false),
     });
@@ -528,6 +571,22 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
         move || {
             if let Some(s) = weak.upgrade() {
                 s.step_tab(-1);
+            }
+        }
+    });
+    tab_view.connect_page_detached({
+        let weak = weak.clone();
+        move |_, page, _| {
+            if let Some(s) = weak.upgrade() {
+                s.detach_page(page);
+            }
+        }
+    });
+    tab_view.connect_page_attached({
+        let weak = weak.clone();
+        move |_, page, _| {
+            if let Some(s) = weak.upgrade() {
+                s.attach_page(page);
             }
         }
     });
@@ -639,6 +698,18 @@ pub fn resolve_address(text: &str, search_url: &str) -> String {
     nav::resolve(text, search_url)
 }
 
+// The open windows of this process: a workspace's window (`Some(id)`) or an ephemeral one
+// (`None`). The registry owns the shells (everything the widgets call back into holds a shell
+// weakly, so something must own it for as long as its window lives).
+thread_local! {
+    static WINDOWS: RefCell<Vec<Rc<Shell>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The open windows (GTK thread).
+pub fn windows() -> Vec<Rc<Shell>> {
+    WINDOWS.with(|w| w.borrow().clone())
+}
+
 /// Run the browser in this process, which owns its profile's application id. `app` is already
 /// registered (see `main`). Returns the process exit code.
 pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
@@ -647,57 +718,66 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     let exit = Rc::new(Cell::new(0));
     // The live configuration: replaced when a config file changes (see `watch`).
     let cfg = Rc::new(RefCell::new(cfg0));
-    let shell: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
     let watcher: Rc<RefCell<Option<watch::ConfigWatch>>> = Rc::new(RefCell::new(None));
 
-    // The first window, on `start`. Later calls (another launch of this profile) raise it.
-    let make_shell = {
-        let (shell, opts, cfg, exit, watcher, profile) = (shell.clone(), opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
-        move |app: &adw::Application, start: &str| -> Rc<Shell> {
-            if let Some(s) = shell.borrow().as_ref() {
-                return s.clone();
-            }
-            let s = build(app, &opts, &cfg.borrow(), start);
-            // Everything the window's widgets call back into holds the shell weakly, so something
-            // must own it for as long as the window lives. (Without this the address bar, buttons
-            // and shortcuts silently did nothing once start-up ended.)
-            s.window.connect_destroy({
-                let keep = s.clone();
+    // Open a window showing `workspace` (None: an ephemeral window) on `start`.
+    let new_window = {
+        let (opts, cfg, exit, watcher, profile) = (opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
+        move |app: &adw::Application, workspace: Option<String>, start: &str| -> Rc<Shell> {
+            let first = WINDOWS.with(|w| w.borrow().is_empty());
+            let s = build(app, &opts, &cfg.borrow(), start, workspace);
+            WINDOWS.with(|w| w.borrow_mut().push(s.clone()));
+            // A closed window leaves the registry at once (its widgets are only disposed of later, and
+            // a closure must not hold the window strongly or it would never be).
+            s.window.connect_close_request({
+                let window = s.window.downgrade();
                 move |_| {
-                    let _ = &keep;
+                    WINDOWS.with(|w| w.borrow_mut().retain(|s| Some(&s.window) != window.upgrade().as_ref()));
+                    glib::Propagation::Proceed
                 }
             });
             s.window.present();
-            if opts.latency {
-                latency::spawn(app.clone(), s.clone(), cfg.borrow().rendering.frame_rate);
-            }
-            if opts.selftest {
-                selftest::spawn(app.clone(), s.clone(), exit.clone(), opts.mode.unwrap_or(cfg.borrow().rendering.mode.mode()) == Mode::Accel);
-            }
-            *shell.borrow_mut() = Some(s.clone());
-
-            // Reload configuration when its files change (unless switched off).
-            let watching = cfg.borrow().watch_config && !opts.no_watch && !opts.selftest && !opts.latency;
-            if watching {
-                let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
-                let profile_file = profile.dir.join("profile.yaml");
-                let startup = Rc::new(cfg.borrow().clone());
-                let (cfg, shell_w, watcher2) = (cfg.clone(), Rc::downgrade(&s), watcher.clone());
-                let (app_file2, profile_file2) = (app_file.clone(), profile_file.clone());
-                *watcher.borrow_mut() = Some(watch::ConfigWatch::start(&[app_file, profile_file], move || {
-                    let Some(s) = shell_w.upgrade() else { return };
-                    reload(&s, &cfg, &startup, &app_file2, &profile_file2, &watcher2);
-                }));
+            if first {
+                if opts.latency {
+                    latency::spawn(app.clone(), s.clone(), cfg.borrow().rendering.frame_rate);
+                }
+                if opts.selftest {
+                    selftest::spawn(app.clone(), s.clone(), exit.clone(), opts.mode.unwrap_or(cfg.borrow().rendering.mode.mode()) == Mode::Accel);
+                }
+                // Reload configuration when its files change (unless switched off).
+                let watching = cfg.borrow().watch_config && !opts.no_watch && !opts.selftest && !opts.latency;
+                if watching {
+                    let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+                    let profile_file = profile.dir.join("profile.yaml");
+                    let startup = Rc::new(cfg.borrow().clone());
+                    let (cfg, watcher2) = (cfg.clone(), watcher.clone());
+                    let (app_file2, profile_file2) = (app_file.clone(), profile_file.clone());
+                    *watcher.borrow_mut() = Some(watch::ConfigWatch::start(&[app_file, profile_file], move || {
+                        reload(&cfg, &startup, &app_file2, &profile_file2, &watcher2);
+                    }));
+                }
             }
             s
         }
     };
 
+    // Another window with no workspace (Ctrl+Shift+N): nothing about it is remembered.
+    let new_ephemeral = gio::SimpleAction::new("new-window", None);
+    new_ephemeral.connect_activate({
+        let (cfg, new_window, app) = (cfg.clone(), new_window.clone(), app.clone());
+        move |_, _| {
+            let home = cfg.borrow().home_page.clone();
+            new_window(&app, None, &home);
+        }
+    });
+    app.add_action(&new_ephemeral);
+    app.set_accels_for_action("app.new-window", &["<Ctrl><Shift>N"]);
+
     app.connect_activate({
-        let (opts, cfg, shell, make_shell) = (opts.clone(), cfg.clone(), shell.clone(), make_shell.clone());
+        let (opts, cfg, new_window) = (opts.clone(), cfg.clone(), new_window.clone());
         move |app| {
-            if let Some(s) = shell.borrow().as_ref() {
-                s.window.present(); // another launch of this profile: show the window
+            if let Some(s) = windows().last() {
+                s.window.present(); // another launch of this profile: show a window
                 return;
             }
             let start = if opts.selftest {
@@ -708,23 +788,27 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 let c = cfg.borrow();
                 nav::resolve(opts.url.as_deref().unwrap_or(&c.home_page), &c.search_url)
             };
-            make_shell(app, &start);
+            new_window(app, None, &start);
         }
     });
 
     // Links handed over by another launch of this profile (or by the desktop, when this profile's
-    // entry is the default browser): each opens as a tab.
+    // entry is the default browser): each opens as a tab in the active window.
     app.connect_open({
-        let (cfg, shell, make_shell) = (cfg.clone(), shell.clone(), make_shell);
+        let (cfg, new_window) = (cfg.clone(), new_window);
         move |app, files, _hint| {
             let search = cfg.borrow().search_url.clone();
             let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &search)).collect();
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: asked to open {urls:?}");
             }
-            let first_open = shell.borrow().is_none();
-            let s = make_shell(app, urls.first().map(String::as_str).unwrap_or("about:blank"));
-            for url in urls.iter().skip(first_open as usize) {
+            let active = app.active_window().and_then(|w| windows().into_iter().find(|s| s.window.upcast_ref::<gtk::Window>() == &w));
+            let existing = active.or_else(|| windows().last().cloned());
+            let (s, skip) = match existing {
+                Some(s) => (s, 0),
+                None => (new_window(app, None, urls.first().map(String::as_str).unwrap_or("about:blank")), 1),
+            };
+            for url in urls.iter().skip(skip) {
                 s.open_tab(url, true);
             }
             s.window.present();
@@ -737,11 +821,17 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 
 /// A config file changed: load the effective configuration again and apply what can change live.
 /// An invalid file is reported and the running configuration kept.
-fn reload(shell: &Rc<Shell>, cfg: &Rc<RefCell<Config>>, startup: &Config, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
+fn reload(cfg: &Rc<RefCell<Config>>, startup: &Config, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
+    let shells: Vec<Rc<Shell>> = windows();
+    let tell = |text: &str| {
+        for s in &shells {
+            s.toast(text);
+        }
+    };
     match config::load_effective(app_file, Some(profile_file)) {
         Err(e) => {
             eprintln!("config: {e}; keeping the current settings");
-            shell.toast("Configuration has an error; keeping the current settings");
+            tell("Configuration has an error; keeping the current settings");
         }
         Ok(loaded) => {
             let new = loaded.config;
@@ -758,7 +848,9 @@ fn reload(shell: &Rc<Shell>, cfg: &Rc<RefCell<Config>>, startup: &Config, app_fi
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: config reloaded: live {:?}, restart needed {:?}", changes.live, pending_restart);
             }
-            shell.apply_config(&new);
+            for s in &shells {
+                s.apply_config(&new);
+            }
             let stop = !new.watch_config;
             *cfg.borrow_mut() = new;
             let mut msg = String::from("Configuration reloaded");
@@ -769,7 +861,7 @@ fn reload(shell: &Rc<Shell>, cfg: &Rc<RefCell<Config>>, startup: &Config, app_fi
                 *watcher.borrow_mut() = None;
                 msg.push_str("; watching is now off");
             }
-            shell.toast(&msg);
+            tell(&msg);
         }
     }
 }
