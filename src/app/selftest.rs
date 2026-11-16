@@ -6,6 +6,7 @@
 use super::Shell;
 use adw::prelude::*;
 use gtk::gdk::{self, Key, ModifierType};
+use gtk::gio;
 use gtk::glib;
 use gtk::gdk::prelude::PaintableExt;
 use std::cell::Cell;
@@ -229,6 +230,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_opener(shell, r).await;
     run_windows(shell, r).await;
     run_restore(shell, r).await;
+    run_locked(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -811,5 +813,111 @@ async fn run_restore(shell: &Rc<Shell>, r: &mut Report) {
     if let Ok(s) = crate::store::Store::open(&db) {
         let _ = s.delete_workspace("wstest");
     }
+    let _ = std::fs::remove_dir_all(&ws_dir);
+}
+
+/// A tiny local web server for the scope test: `localhost` and `127.0.0.1` are two different hosts
+/// served by the same socket. Returns its port.
+fn start_test_server() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+          // One thread per connection: the browser opens idle connections ahead of use.
+          std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_owned();
+            let (status, extra, body) = match path.as_str() {
+                "/scope.html" => (
+                    "200 OK",
+                    String::new(),
+                    format!("<!doctype html><title>Scope test</title><a href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">out of scope</a>"),
+                ),
+                "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
+                "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
+                _ => ("404 Not Found", String::new(), "<title>Not found</title>".to_owned()),
+            };
+            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+          });
+        }
+    });
+    port
+}
+
+/// A locked workspace: controls hidden or read-only, no new tabs, a pinned tab limited to its
+/// scope that cannot be closed, and the workspace colour.
+async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let ws_dir = profile.workspaces_dir().join("locked");
+    let port = start_test_server();
+    let _ = std::fs::remove_dir_all(&ws_dir);
+    std::fs::create_dir_all(&ws_dir).expect("workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.yaml"),
+        format!(
+            "name: Locked\ncolor: '#2a6f97 #61a5c2'\nnav: {{ address_bar: readonly, forward: false, new_tab_button: false }}\ntabs:\n  allow_new: false\n  pinned:\n    - url: http://localhost:{port}/scope.html\n      title: Scoped\n      scope: [localhost]\n"
+        ),
+    )
+    .expect("workspace.yaml");
+    let before = super::windows().len();
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "locked"));
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"locked".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test"))).await;
+    r.check("a workspace with a pinned tab opens on it (and nothing else)", ok, || format!("{:?}", find().map(|s| (s.tab_count(), s.current().map(|t| t.state.borrow().title.clone())))));
+    let Some(w) = find() else { return };
+    let pinned = w.current().expect("tab");
+    r.check("the tab is pinned and it is the only tab", pinned.page.is_pinned() && w.tab_count() == 1, || format!("pinned={} tabs={}", pinned.page.is_pinned(), w.tab_count()));
+    r.check("the address bar is read-only and forward is hidden", !w.entry.is_editable() && !w.forward.is_visible() && w.back.is_visible(), || {
+        format!("editable={} forward={} back={}", w.entry.is_editable(), w.forward.is_visible(), w.back.is_visible())
+    });
+    let new_tab = w.window.lookup_action("new-tab").and_then(|a| a.downcast::<gio::SimpleAction>().ok());
+    r.check("new tabs are not allowed (action disabled)", new_tab.is_some_and(|a| !a.is_enabled()), || "enabled".into());
+    r.check("the workspace colour is applied to the window", w.window.has_css_class("ws-locked"), || "no colour class".into());
+
+    if let Ok(path) = std::env::var("BROWSAH_SCREENSHOT") {
+        glib::timeout_future(Duration::from_millis(1200)).await;
+        println!("screenshot {path}.locked.png: {}", if screenshot(&w.window, &format!("{path}.locked.png")) { "saved" } else { "failed" });
+    }
+
+    // A pinned tab cannot be closed.
+    let _ = WidgetExt::activate_action(&w.window, "win.close-tab", None);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    r.check("a pinned tab cannot be closed", w.tab_count() == 1, || w.tab_count().to_string());
+
+    // A link out of scope leaves the pinned tab alone and opens in an ephemeral window (no new tabs here).
+    let _ = wait_until(10_000, || pinned.view().has_frame()).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let d = Driver { shell: &w };
+    d.click(40.0, 45.0);
+    let ok = wait_until(10_000, || super::windows().len() == before + 2).await;
+    r.check("a link out of scope opens in an ephemeral window", ok, || format!("{} windows (was {before})", super::windows().len()));
+    let find_other = || super::windows().into_iter().find(|s| s.workspace.is_none() && !Rc::ptr_eq(s, shell) && !Rc::ptr_eq(s, &w));
+    let ok = wait_until(15_000, || find_other().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && t.state.borrow().address.contains("127.0.0.1")))).await;
+    let other = find_other();
+    r.check("the out-of-scope page loads there", ok, || "not loaded".into());
+    r.check("the pinned tab stayed where it was", pinned.state.borrow().title == "Scope test" && pinned.state.borrow().address.contains("localhost"), || format!("{:?}", pinned.state.borrow()));
+    if let Some(o) = other {
+        o.window.close();
+    }
+
+    // Inside the scope, navigation is free.
+    pinned.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let ok = wait_until(15_000, || pinned.state.borrow().title == "Page B").await;
+    r.check("navigation inside the scope is allowed", ok, || format!("{:?}", pinned.state.borrow()));
+
+    // A redirect out of the scope (a sign-in flow) is allowed.
+    pinned.view().navigate(&format!("http://localhost:{port}/redir"));
+    let ok = wait_until(15_000, || pinned.state.borrow().address.contains("127.0.0.1")).await;
+    r.check("a redirect out of the scope is followed in the pinned tab", ok && w.tab_count() == 1, || format!("{:?} tabs={}", pinned.state.borrow().address, w.tab_count()));
+
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
     let _ = std::fs::remove_dir_all(&ws_dir);
 }

@@ -19,10 +19,137 @@ pub struct WorkspaceConfig {
     pub name: Option<String>,
     /// Accent colour for light and dark appearance.
     pub color: Option<ColorPair>,
+    /// Which navigation controls the window shows.
+    pub nav: NavConfig,
+    /// Rules for the window's tabs.
+    pub tabs: TabsConfig,
+}
+
+/// How the address bar behaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AddressBar {
+    /// Type to navigate (the default).
+    #[default]
+    Editable,
+    /// Shows the address but cannot be changed.
+    Readonly,
+    /// Not shown; the page title is shown instead.
+    Hidden,
+}
+
+/// Which navigation controls the window shows (`nav:` in `workspace.yaml`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct NavConfig {
+    pub back: bool,
+    pub forward: bool,
+    pub reload: bool,
+    pub address_bar: AddressBar,
+    pub new_tab_button: bool,
+    pub tab_bar: bool,
+}
+
+impl Default for NavConfig {
+    fn default() -> Self {
+        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true }
+    }
+}
+
+/// Rules for a workspace's tabs (`tabs:` in `workspace.yaml`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct TabsConfig {
+    /// Whether tabs can be opened from the window itself. When false, tabs only arrive by being
+    /// sent to the workspace, and pages that open windows get an ephemeral window instead.
+    pub allow_new: bool,
+    /// Tabs that are always present, first, and cannot be closed.
+    pub pinned: Vec<PinnedTab>,
+}
+
+impl Default for TabsConfig {
+    fn default() -> Self {
+        Self { allow_new: true, pinned: Vec::new() }
+    }
+}
+
+/// A tab that is always present (`tabs.pinned` in `workspace.yaml`).
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct PinnedTab {
+    pub url: String,
+    /// Label until the page gives its own title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Where the tab may navigate (see `scope_matches`). Empty: anywhere.
+    #[serde(default)]
+    pub scope: Vec<String>,
+}
+
+/// Does `url` match a scope pattern? A pattern is `host` or `host/path`. The host is exact, or
+/// `*.example.com` for any subdomain (not `example.com` itself), or `example.com` plus its
+/// subdomains with `**.example.com`. The path may contain `*` (any characters, including `/`);
+/// without a path any path matches, and `host/` matches only the site root. Only http and https
+/// URLs match; the scheme and port are ignored.
+pub fn scope_matches(pattern: &str, url: &str) -> bool {
+    let rest = match url.split_once("://") {
+        Some(("http" | "https", rest)) => rest,
+        _ => return false,
+    };
+    let split = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(split);
+    // The path ends at a query or fragment; an empty path is the root.
+    let path = &tail[..tail.find(['?', '#']).unwrap_or(tail.len())];
+    let path = if path.is_empty() { "/" } else { path };
+    let host = authority.rsplit('@').next().unwrap_or(authority).split(':').next().unwrap_or("").to_lowercase();
+    let (pat_host, pat_path) = match pattern.split_once('/') {
+        Some((h, p)) => (h.to_lowercase(), Some(format!("/{p}"))),
+        None => (pattern.to_lowercase(), None),
+    };
+    let host_ok = if let Some(base) = pat_host.strip_prefix("**.") {
+        host == base || host.ends_with(&format!(".{base}"))
+    } else if let Some(base) = pat_host.strip_prefix("*.") {
+        host.ends_with(&format!(".{base}"))
+    } else {
+        host == pat_host
+    };
+    host_ok && pat_path.is_none_or(|p| glob(&p, path))
+}
+
+/// Match `text` against a pattern where `*` is any run of characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let mut rest = text;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            match rest.strip_prefix(part) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            match rest.find(part) {
+                Some(p) => rest = &rest[p + part.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+/// True if `url` is inside at least one of `patterns` (or there are none).
+pub fn in_scope(patterns: &[String], url: &str) -> bool {
+    patterns.is_empty() || patterns.iter().any(|p| scope_matches(p, url))
 }
 
 /// The keys of `workspace.yaml` that are not configuration overrides.
-pub const IDENTITY_KEYS: &[&str] = &["name", "color"];
+pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs"];
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -253,13 +380,73 @@ mod tests {
     }
 
     #[test]
+    fn scope_patterns() {
+        let m = scope_matches;
+        // Host patterns.
+        assert!(m("mail.example.com", "https://mail.example.com/inbox"));
+        assert!(m("mail.example.com", "http://MAIL.example.com:8080/x?y=1#z"));
+        assert!(!m("mail.example.com", "https://example.com/"));
+        assert!(!m("mail.example.com", "https://evil-mail.example.com/"));
+        assert!(!m("mail.example.com", "https://mail.example.com.evil.net/"));
+        assert!(m("*.example.com", "https://a.b.example.com/"));
+        assert!(!m("*.example.com", "https://example.com/"));
+        assert!(m("**.example.com", "https://example.com/"));
+        assert!(m("**.example.com", "https://x.example.com/"));
+        assert!(!m("**.example.com", "https://notexample.com/"));
+        // Paths.
+        assert!(m("example.com/app/*", "https://example.com/app/x/y"));
+        assert!(m("example.com/app/*", "https://example.com/app/"));
+        assert!(!m("example.com/app/*", "https://example.com/app"));
+        assert!(!m("example.com/app/*", "https://example.com/other"));
+        assert!(m("example.com/app*", "https://example.com/application"));
+        assert!(m("example.com/*/edit", "https://example.com/doc/1/edit"));
+        assert!(!m("example.com/*/edit", "https://example.com/doc/1/view"));
+        assert!(m("example.com/", "https://example.com"));
+        assert!(m("example.com/", "https://example.com/"));
+        assert!(!m("example.com/", "https://example.com/x"));
+        assert!(m("example.com", "https://example.com/anything?q=1"));
+        // Query strings do not count as path; userinfo is ignored.
+        assert!(m("example.com/search", "https://example.com/search?q=a/b"));
+        assert!(m("example.com", "https://user:pw@example.com/"));
+        // Only web URLs.
+        assert!(!m("example.com", "about:blank"));
+        assert!(!m("example.com", "file:///etc/passwd"));
+        assert!(!m("example.com", "javascript:alert(1)"));
+        // Empty scope allows everything; otherwise any pattern may match.
+        assert!(in_scope(&[], "https://anywhere.net/"));
+        let s = vec!["a.com".to_string(), "b.com/x/*".to_string()];
+        assert!(in_scope(&s, "https://a.com/") && in_scope(&s, "https://b.com/x/1") && !in_scope(&s, "https://b.com/y"));
+    }
+
+    #[test]
+    fn nav_and_tabs_parse() {
+        let c = parse_config("nav: { back: false, address_bar: readonly, tab_bar: false }\ntabs:\n  allow_new: false\n  pinned:\n    - url: https://a.example/\n      scope: [a.example]\n    - url: https://b.example/\n").unwrap();
+        assert!(!c.nav.back && c.nav.forward && c.nav.reload && c.nav.new_tab_button && !c.nav.tab_bar);
+        assert_eq!(c.nav.address_bar, AddressBar::Readonly);
+        assert!(!c.tabs.allow_new);
+        assert_eq!(c.tabs.pinned.len(), 2);
+        assert_eq!(c.tabs.pinned[0].scope, ["a.example"]);
+        assert!(c.tabs.pinned[1].scope.is_empty() && c.tabs.pinned[1].title.is_none());
+        assert!(parse_config("nav: { address_bar: sideways }").is_err());
+        assert!(parse_config("tabs: { pinned: [ { title: no url } ] }").is_err());
+        let d = parse_config("").unwrap();
+        assert!(d.nav.back && d.tabs.allow_new && d.tabs.pinned.is_empty() && d.nav.address_bar == AddressBar::Editable);
+    }
+
+    #[test]
     fn docs_cover_every_workspace_option() {
         let docs = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/config/workspace.md")).expect("docs/config/workspace.md exists");
-        let err = serde_yaml_ng::from_str::<WorkspaceConfig>("{ __nope__: 1 }").err().unwrap().to_string();
-        let fields: Vec<&str> = err.split("expected").nth(1).unwrap_or("").split('`').skip(1).step_by(2).collect();
-        assert!(!fields.is_empty());
-        for f in fields {
-            assert!(docs.contains(&format!("| `{f}`")), "workspace option {f} is not documented in docs/config/workspace.md");
+        fn fields<T: serde::de::DeserializeOwned>() -> Vec<String> {
+            let err = serde_yaml_ng::from_str::<T>("{ __nope__: 1 }").err().unwrap().to_string();
+            err.split("expected").nth(1).unwrap_or("").split('`').skip(1).step_by(2).map(str::to_owned).collect()
+        }
+        let mut paths: Vec<String> = fields::<WorkspaceConfig>();
+        paths.extend(fields::<NavConfig>().into_iter().map(|f| format!("nav.{f}")));
+        paths.extend(fields::<TabsConfig>().into_iter().map(|f| format!("tabs.{f}")));
+        paths.extend(fields::<PinnedTab>().into_iter().map(|f| format!("tabs.pinned[].{f}")));
+        assert!(paths.len() >= 14, "{paths:?}");
+        for p in paths {
+            assert!(docs.contains(&format!("| `{p}`")), "workspace option {p} is not documented in docs/config/workspace.md");
         }
     }
 

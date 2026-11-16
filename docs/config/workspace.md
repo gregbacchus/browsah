@@ -42,11 +42,41 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | text | the workspace id | Display name, shown in the window title. |
-| `color` | colour pair | none | The workspace's accent colour: one colour, two in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. |
+| `color` | colour pair | none | The workspace's accent colour: one colour, two in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. It tints the window's header and tab bar. |
+| `nav` | map | all shown | Which navigation controls the window shows (below). |
+| `nav.back` | bool | `true` | Show the back button (and allow `Alt+Left`). |
+| `nav.forward` | bool | `true` | Show the forward button (and allow `Alt+Right`). |
+| `nav.reload` | bool | `true` | Show the reload and stop buttons (`Ctrl+R` still works). |
+| `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead. |
+| `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. |
+| `nav.tab_bar` | bool | `true` | Show the tab bar. Hide it for a window with a single pinned tab. |
+| `tabs` | map | see below | Rules for the window's tabs. |
+| `tabs.allow_new` | bool | `true` | When `false`, tabs cannot be opened from the window (no `Ctrl+T`, no "+" button, links that would open a tab open in an ephemeral window instead); tabs can only be sent to the workspace. |
+| `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Each is a map with the keys below. They load fresh each time the workspace opens. |
+| `tabs.pinned[].url` | text | required | The address the tab opens on. |
+| `tabs.pinned[].title` | text | the page's title | Label shown until the page gives its own title. |
+| `tabs.pinned[].scope` | list of text | anywhere | Where the tab may navigate (patterns below). A navigation to an address outside it opens as a new tab (an ephemeral window if `allow_new` is `false`) and the pinned tab stays where it is. |
+
+**Scope patterns** are `host` or `host/path`. The host is exact (`mail.example.com`), or `*.example.com`
+for any subdomain (not `example.com` itself), or `**.example.com` for the domain and every subdomain.
+The path may contain `*` (any characters); with no path any path matches, `host/` matches only the
+site root. Only `http` and `https` addresses match; scheme and port are ignored. Redirects are not
+restricted, and a page that is already outside the scope (reached by a redirect, such as a
+single sign-on login) can navigate freely, so sign-in flows work. This keeps tabs from piling up; it
+is not a security feature.
 
 ```yaml
 name: Mail
 color:
   light: "#2a6f97"
   dark: "#61a5c2"
+nav:
+  address_bar: readonly
+  forward: false
+tabs:
+  allow_new: false
+  pinned:
+    - url: https://mail.example.com/
+      title: Mail
+      scope: ["mail.example.com", "accounts.example.com/signin/*"]
 ```

@@ -98,6 +98,8 @@ pub enum ViewEvent {
     Address(String),
     Title(String),
     Loading { loading: bool, can_back: bool, can_forward: bool },
+    /// A main-frame navigation left the view's scope and was cancelled (see `set_scope`): open it elsewhere.
+    OutOfScope(String),
     /// A popup that keeps its opener (`window.open` with a user gesture): adopt it as a tab.
     Popup(PopupSpec),
     /// The page's renderer process died (crash, out of memory, killed).
@@ -159,6 +161,8 @@ struct Shared {
     next_cdp_id: std::sync::atomic::AtomicI32,
     /// Set while the browser has not been created yet (a restored tab): its address.
     deferred_url: Mutex<Option<String>>,
+    /// Where the view may navigate (patterns of `workspace::scope_matches`); empty: anywhere.
+    scope: Mutex<Vec<String>>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -179,6 +183,7 @@ impl Shared {
             images: Mutex::new(HashMap::new()),
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
             deferred_url: Mutex::new(None),
+            scope: Mutex::new(Vec::new()),
             accel,
             frame_rate,
         })
@@ -654,6 +659,38 @@ wrap_request_handler! {
             send(self.shared.id, ViewEvent::Crashed(why));
         }
 
+        // A pinned tab limited to a scope: a navigation from inside the scope to somewhere outside
+        // it is cancelled and reported, to be opened as another tab. Not restricted: redirects, and
+        // pages that are already outside the scope (reached by a redirect, as in a sign-in flow).
+        fn on_before_browse(
+            &self,
+            _b: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _user_gesture: ::std::os::raw::c_int,
+            is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let scope = self.shared.scope.lock().unwrap().clone();
+            if scope.is_empty() || is_redirect != 0 {
+                return 0;
+            }
+            let (Some(frame), Some(request)) = (frame, request) else { return 0 };
+            if frame.is_main() == 0 {
+                return 0;
+            }
+            let target = CefString::from(&request.url()).to_string();
+            let current = CefString::from(&frame.url()).to_string();
+            let outside = |u: &str| !crate::workspace::in_scope(&scope, u);
+            if target == "about:blank" || !outside(&target) {
+                return 0;
+            }
+            if current.is_empty() || current == "about:blank" || outside(&current) {
+                return 0; // the first load, or a detour already under way
+            }
+            send(self.shared.id, ViewEvent::OutOfScope(target));
+            1
+        }
+
         fn resource_request_handler(
             &self,
             _b: Option<&mut Browser>,
@@ -788,6 +825,11 @@ impl BrowserView {
         let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
         let mut client = make_client(shared.clone());
         browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+    }
+
+    /// Limit where this view may navigate (see `workspace::scope_matches`); empty means anywhere.
+    pub fn set_scope(&self, patterns: Vec<String>) {
+        *self.shared.scope.lock().unwrap() = patterns;
     }
 
     /// Whether a (blurred) screenshot is standing in for the page.

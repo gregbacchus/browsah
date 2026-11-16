@@ -70,6 +70,12 @@ fn new_uid() -> u64 {
 }
 
 thread_local! {
+    /// Opens an ephemeral window on a URL (no tab at all for an empty one) and returns it. Set by
+    /// `run`; used when a workspace cannot open tabs itself.
+    static NEW_EPHEMERAL: RefCell<Option<Rc<dyn Fn(&str) -> Rc<Shell>>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
     /// Tabs detached from one window and not yet attached to another (a drag between windows).
     static IN_FLIGHT: RefCell<Vec<Rc<Tab>>> = const { RefCell::new(Vec::new()) };
 }
@@ -119,6 +125,11 @@ pub struct Shell {
     /// one it started with, against which restart-only options are judged.
     settings: RefCell<Config>,
     startup_settings: Config,
+    /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
+    nav: crate::workspace::NavConfig,
+    allow_new_tabs: bool,
+    /// The workspace colour's style sheet, if it has one.
+    color_css: RefCell<Option<gtk::CssProvider>>,
     /// Where this window's tabs are remembered (workspace windows only).
     persist: Option<Persist>,
     save_pending: Cell<bool>,
@@ -150,6 +161,52 @@ fn tab_title(s: &State) -> String {
 }
 
 impl Shell {
+    /// Tint the window's header and tab bar with the workspace colour (light or dark to match the
+    /// appearance, which can change while running).
+    fn install_color(self: &Rc<Self>, color: Option<&(String, crate::profile::ColorPair)>) {
+        let Some((id, pair)) = color else { return };
+        let class = format!("ws-{id}");
+        self.window.add_css_class(&class);
+        let provider = gtk::CssProvider::new();
+        let apply = {
+            let (provider, class, pair) = (provider.clone(), class.clone(), pair.clone());
+            move || provider.load_from_string(&workspace_css(&class, &pair, adw::StyleManager::default().is_dark()))
+        };
+        apply();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+        adw::StyleManager::default().connect_dark_notify(move |_| apply());
+        *self.color_css.borrow_mut() = Some(provider);
+    }
+
+    /// Open a workspace's pinned tabs: always present, first, not closable, and limited to their scope.
+    fn add_pinned(self: &Rc<Self>, pinned: &[crate::workspace::PinnedTab]) {
+        for (i, p) in pinned.iter().enumerate() {
+            let tab = self.open_tab_scoped(&p.url, p.scope.clone());
+            if let Some(title) = &p.title {
+                tab.state.borrow_mut().title = title.clone();
+                tab.page.set_title(title);
+            }
+            self.tab_view.set_page_pinned(&tab.page, true);
+            tab.page.set_icon(Some(&gio::ThemedIcon::new("web-browser-symbolic")));
+            tab.page.set_tooltip(p.title.as_deref().unwrap_or(&p.url));
+            if i == 0 {
+                self.tab_view.set_selected_page(&tab.page);
+            }
+        }
+        if !pinned.is_empty() {
+            self.on_selected();
+        }
+    }
+
+    /// A tab that may only navigate inside `scope` (empty: anywhere).
+    fn open_tab_scoped(self: &Rc<Self>, url: &str, scope: Vec<String>) -> Rc<Tab> {
+        let tab = self.open_tab_with(url, new_uid(), false);
+        tab.view().set_scope(scope);
+        tab
+    }
+
     // ---- remembered tabs ------------------------------------------------------------------------
 
     fn screenshot_path(&self, uid: u64) -> Option<std::path::PathBuf> {
@@ -362,10 +419,10 @@ impl Shell {
             Some(w) => format!("{page_title} \u{2014} {}", w.display_name()),
             None => page_title,
         }));
-        self.back_action.set_enabled(s.can_back);
-        self.forward_action.set_enabled(s.can_forward);
-        self.reload.set_visible(!s.loading);
-        self.stop.set_visible(s.loading);
+        self.back_action.set_enabled(s.can_back && self.nav.back);
+        self.forward_action.set_enabled(s.can_forward && self.nav.forward);
+        self.reload.set_visible(!s.loading && self.nav.reload);
+        self.stop.set_visible(s.loading && self.nav.reload);
     }
 
     /// Show a popup browser (one that keeps its opener) as a new selected tab.
@@ -576,7 +633,21 @@ impl Shell {
                 tab.view().show_context_menu(req);
             }
             ViewEvent::Popup(spec) => {
-                self.adopt_tab(spec);
+                if self.allow_new_tabs {
+                    self.adopt_tab(spec);
+                } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    // Tabs cannot be opened here: the popup goes to a window of its own, still attached to its opener.
+                    factory("").adopt_tab(spec);
+                } else {
+                    self.adopt_tab(spec);
+                }
+            }
+            ViewEvent::OutOfScope(url) => {
+                if self.allow_new_tabs {
+                    self.open_tab(&url, true);
+                } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    factory(&url);
+                }
             }
             ViewEvent::Crashed(why) => {
                 eprintln!("browsah: a page's renderer ended: {why}");
@@ -646,6 +717,10 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         .default_height(cfg.window.height)
         .build();
 
+    // A workspace window's navigation controls and tab rules; ephemeral windows have everything.
+    let ws_config = workspace.as_ref().map(|w| w.config.clone()).unwrap_or_default();
+    let workspace_color = workspace.as_ref().and_then(|w| w.config.color.clone().map(|c| (w.id.clone(), c)));
+    let nav = ws_config.nav.clone();
     let back = icon_button("go-previous-symbolic", "Back (Alt+Left)", "win.back");
     let forward = icon_button("go-next-symbolic", "Forward (Alt+Right)", "win.forward");
     let reload = icon_button("view-refresh-symbolic", "Reload (Ctrl+R)", "win.reload");
@@ -664,11 +739,24 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     header.pack_start(&forward);
     header.pack_start(&reload);
     header.pack_start(&stop);
-    header.set_title_widget(Some(&clamp));
+    back.set_visible(nav.back);
+    forward.set_visible(nav.forward);
+    match nav.address_bar {
+        crate::workspace::AddressBar::Editable => header.set_title_widget(Some(&clamp)),
+        crate::workspace::AddressBar::Readonly => {
+            entry.set_editable(false);
+            header.set_title_widget(Some(&clamp));
+        }
+        // The header shows the window title (the page title) when it has no title widget.
+        crate::workspace::AddressBar::Hidden => {}
+    }
 
     let tab_view = adw::TabView::new();
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
-    tab_bar.set_end_action_widget(Some(&icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab")));
+    let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
+    new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new);
+    tab_bar.set_end_action_widget(Some(&new_tab_button));
+    tab_bar.set_visible(nav.tab_bar);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
@@ -703,6 +791,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         toasts: toasts.clone(),
         settings: RefCell::new(cfg.clone()),
         startup_settings: cfg.clone(),
+        nav: ws_config.nav.clone(),
+        allow_new_tabs: ws_config.tabs.allow_new,
+        color_css: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
         save_pending: Cell::new(false),
         restoring: Cell::new(false),
@@ -741,7 +832,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     });
 
     // Tabs.
-    add_action(&window, "new-tab", {
+    let new_tab_action = add_action(&window, "new-tab", {
         let (weak, entry) = (weak.clone(), entry.clone());
         move || {
             if let Some(s) = weak.upgrade() {
@@ -750,6 +841,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    new_tab_action.set_enabled(ws_config.tabs.allow_new);
     add_action(&window, "close-tab", {
         let weak = weak.clone();
         move || {
@@ -795,6 +887,11 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     tab_view.connect_close_page({
         let weak = weak.clone();
         move |tv, page| {
+            // Pinned tabs (a workspace's always-present tabs) are not closable.
+            if page.is_pinned() {
+                tv.close_page_finish(page, false);
+                return glib::Propagation::Stop;
+            }
             if let Some(s) = weak.upgrade() {
                 s.close_tab(page);
             }
@@ -892,8 +989,15 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         window.add_controller(log);
     }
 
+    shell.install_color(workspace_color.as_ref());
+
+    // A workspace's pinned tabs come first.
+    let pinned = ws_config.tabs.pinned.clone();
+    shell.add_pinned(&pinned);
     if remembered_tabs.is_empty() {
-        shell.open_tab(start_url, true);
+        if !start_url.is_empty() {
+            shell.open_tab(start_url, true);
+        }
     } else {
         shell.restore(&remembered_tabs);
         if !start_url.is_empty() {
@@ -1038,15 +1142,22 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             }
             let w = crate::workspace::Workspace::resolve(&profile, id)?;
             // A workspace opens as it was; with nothing remembered it opens on a link or its home page.
-            let remembered = store().map(|s| s.load_tabs(&w.id)).unwrap_or_default();
+            // (Pinned tabs come from the configuration each time, not from what was remembered.)
+            let remembered: Vec<TabRecord> = store().map(|s| s.load_tabs(&w.id)).unwrap_or_default().into_iter().filter(|r| !r.pinned).collect();
             let start = match url {
                 Some(u) => u.to_owned(),
-                None if remembered.is_empty() => cfg.borrow().home_page.clone(),
+                None if remembered.is_empty() && w.config.tabs.pinned.is_empty() => cfg.borrow().home_page.clone(),
                 None => String::new(),
             };
             Ok(new_window(app, Some(w), &start, remembered))
         }
     };
+
+    // Lets a locked workspace (no new tabs) send a link or a popup to an ephemeral window.
+    NEW_EPHEMERAL.with(|f| {
+        let (new_window, app) = (new_window.clone(), app.clone());
+        *f.borrow_mut() = Some(Rc::new(move |url: &str| new_window(&app, None, url, Vec::new())));
+    });
 
     // Another window with no workspace (Ctrl+Shift+N): nothing about it is remembered.
     let new_ephemeral = gio::SimpleAction::new("new-window", None);
@@ -1148,6 +1259,24 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 
     app.run_with_args::<&str>(&[]);
     exit.get()
+}
+
+/// Relative luminance of `#rrggbb` (0 dark, 1 light), to choose a readable foreground.
+fn luminance(hex: &str) -> f64 {
+    let c = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0) as f64 / 255.0;
+    0.2126 * c(1) + 0.7152 * c(3) + 0.0722 * c(5)
+}
+
+/// The style sheet that gives a workspace window its colour: libadwaita's header colours, set for
+/// just this window.
+fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> String {
+    let bg = if dark { &pair.dark } else { &pair.light };
+    let fg = if luminance(bg) > 0.55 { "rgba(0, 0, 0, 0.8)" } else { "#ffffff" };
+    format!(
+        "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
+         window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
+         window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}"
+    )
 }
 
 /// The shell of a window.

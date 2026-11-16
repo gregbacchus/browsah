@@ -7,6 +7,17 @@ color:                      # accent colour for light and dark appearance
   light: "#2a6f97"
   dark: "#61a5c2"
 
+nav:                        # which controls the window shows
+  address_bar: readonly     # editable (default), readonly or hidden
+  forward: false
+  new_tab_button: false
+tabs:
+  allow_new: false          # tabs only arrive by being sent here
+  pinned:                   # always present, first, cannot be closed
+    - url: https://mail.example.com/
+      title: Mail
+      scope: ["mail.example.com", "accounts.example.com/signin/*"]   # navigation limits
+
 # Any per-window option from docs/config/options.md can be overridden for this workspace. Process-
 # wide ones (chromium, gpu, rendering.mode, rendering.device_resolution) cannot.
 home_page: "https://mail.example.com/"
