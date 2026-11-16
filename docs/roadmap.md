@@ -115,6 +115,15 @@ discarding (the research shows ~42 MB per tab is recoverable) and a settings fil
 2. **M4 items that matter early:** the watchdog fallback from dmabuf to readback, renderer-crash
    handling, per-site zoom.
 
+## Next phase: profiles, workspaces, web apps
+
+Designed in [research/profiles-workspaces-design.md](research/profiles-workspaces-design.md), after
+a set of spikes (per-window Wayland app id, manifest read, popup with opener, cookie filter, link
+source, service workers and WebAuthn, codecs). Build order: profile directories and a unique
+per-profile instance with D-Bus URL handoff; layered config with a schema per level; the router and
+`route test`; workspaces; web apps; sweeping and history; permissions as cascading config.
+Password-manager integration (1Password) is a separate investigation.
+
 ## Still open
 
 - **Name, repo layout:** the repo is `browsah`; the app id is `nz.co.bacchus.browsah`.

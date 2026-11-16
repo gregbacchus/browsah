@@ -76,6 +76,13 @@ All at 2880x1568, native Wayland, zero-copy, single run each.
 6. **Upstream.** No CEF/Chromium maintainer statement or bug exists for the Mesa/Wayland
    failure; a minimal bug report is worth filing.
 
+## Planned direction
+
+Multiple profiles (one process and app id each), workspaces (a window of tabs) and web apps (own
+app id, defaults from the web manifest), per-profile URL routing, cascading config and tab sweeping
+are designed in [profiles-workspaces-design.md](profiles-workspaces-design.md). Measured there:
+this CEF build plays VP8/VP9/AV1/Opus/MP3 but not H.264 or AAC.
+
 ## Where things are
 
 | | |

@@ -193,7 +193,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         let st = shell.state();
         shell.entry.set_text(&text);
         shell.entry.emit_by_name::<()>("activate", &[]);
-        let ok = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.address != "" && !s.address.starts_with("file:") }).await;
+        let before = st.borrow().address.clone();
+        let ok = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.address != before }).await;
+        glib::timeout_future(Duration::from_millis(1500)).await; // let page scripts finish
         r.check("address-bar text loads a real site", ok, || format!("{:?}", st.borrow()));
         glib::timeout_future(Duration::from_millis(2500)).await;
         println!("net screenshot: {}", screenshot(&shell.window, "/tmp/net.png"));

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>codecs: pending</title>
+<script>
+(async () => {
+  const v = document.createElement('video');
+  const a = document.createElement('audio');
+  const ct = (el, t) => el.canPlayType(t) || 'no';
+  const r = {
+    'h264': ct(v, 'video/mp4; codecs="avc1.42E01E"'),
+    'aac': ct(a, 'audio/mp4; codecs="mp4a.40.2"'),
+    'mp3': ct(a, 'audio/mpeg'),
+    'vp8': ct(v, 'video/webm; codecs="vp8"'),
+    'vp9': ct(v, 'video/webm; codecs="vp9"'),
+    'av1': ct(v, 'video/mp4; codecs="av01.0.05M.08"'),
+    'opus': ct(a, 'audio/ogg; codecs="opus"'),
+    'mse_h264': String(window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')),
+  };
+  try {
+    r.rtc_video = RTCRtpSender.getCapabilities('video').codecs.map(c => c.mimeType.split('/')[1]).filter((x, i, s) => s.indexOf(x) === i).join(',');
+  } catch (e) { r.rtc_video = 'err'; }
+  try {
+    const d = await navigator.mediaCapabilities.decodingInfo({type: 'file', video: {contentType: 'video/mp4; codecs="avc1.42E01E"', width: 1280, height: 720, bitrate: 2e6, framerate: 30}});
+    r.mc_h264 = d.supported + '/hw:' + d.powerEfficient;
+  } catch (e) { r.mc_h264 = 'err'; }
+  document.title = 'codecs: ' + JSON.stringify(r);
+})();
+</script>
