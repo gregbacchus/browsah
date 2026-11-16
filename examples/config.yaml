@@ -9,6 +9,13 @@ search_url: https://duckduckgo.com/?q={query}
 
 watch_config: true         # reload this file and the profile's file when they change
 
+# URL routing rules for every profile (docs/config/routing.md); profiles and workspaces add their own.
+routing:
+  rules:
+    - name: Meeting links open in the desktop client
+      match: { scheme: [zoommtg] }
+      open: system
+
 window:
   width: 1280   # initial size in logical pixels
   height: 800

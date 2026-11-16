@@ -19,6 +19,12 @@ tabs:
       title: Mail
       scope: ["mail.example.com", "accounts.example.com/signin/*"]   # navigation limits
 
+# Rules for links clicked in this workspace's tabs (docs/config/routing.md); tried first.
+routing:
+  rules:
+    - match: { url: ["docs.example.com"] }
+      open: workspace:docs
+
 # Any per-window option from docs/config/options.md can be overridden for this workspace. Process-
 # wide ones (chromium, gpu, rendering.mode, rendering.device_resolution) cannot.
 home_page: "https://mail.example.com/"

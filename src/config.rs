@@ -132,7 +132,9 @@ impl Config {
         if text.trim().is_empty() {
             return Ok(Config::default());
         }
-        let mut cfg: Config = serde_yaml_ng::from_str(text)?;
+        let mut value: Value = serde_yaml_ng::from_str(text)?;
+        strip_routing(&mut value); // read by the router, not part of the options
+        let mut cfg: Config = serde_yaml_ng::from_value(value)?;
         cfg.sanitize();
         Ok(cfg)
     }
@@ -292,16 +294,26 @@ fn read_yaml(path: &std::path::Path) -> Result<Value, String> {
     }
 }
 
+/// `routing:` is read by the router (`router.rs`), not merged like options, so it is not part of
+/// the configuration.
+fn strip_routing(v: &mut Value) {
+    if let Value::Mapping(m) = v {
+        m.remove("routing");
+    }
+}
+
 /// Build the effective configuration from the application file with `layers` merged over it, in
 /// order. A missing file is empty. An invalid file is an error naming it (the caller decides
 /// whether to fall back to defaults or keep what it has).
 pub fn load_layers(app_file: &std::path::Path, layers: &[Layer]) -> Result<Loaded, String> {
     let mut merged = read_yaml(app_file)?;
+    strip_routing(&mut merged);
     let mut overrides = Vec::new();
     let mut warnings = Vec::new();
     let mut last_set = app_file;
     for layer in layers {
         let mut over = read_yaml(layer.file)?;
+        strip_routing(&mut over);
         for k in layer.identity {
             if let Value::Mapping(m) = &mut over {
                 m.remove(*k);

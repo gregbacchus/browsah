@@ -8,6 +8,17 @@ color:                      # icon colour for light and dark appearance
 # color: "#4a2f80 #7a56c2"
 default_workspace: mail     # opened by a plain start when no workspace was open last time
 
+# Where links go (docs/config/routing.md). Tried before the application's rules.
+routing:
+  external: workspace:mail            # links from other applications with no rule
+  rules:
+    - name: Work chat
+      match: { url: ["chat.example.com"] }
+      open: workspace:mail
+    - name: Banking in the personal profile
+      match: { url: ["*.bank.example"], target: [new_tab] }
+      open: profile:personal
+
 # Any option from docs/config/options.md can be overridden for this profile. Maps merge, values and
 # lists replace, and `key+:` appends to a list.
 search_url: "https://www.google.com/search?q={query}"

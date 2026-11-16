@@ -60,6 +60,8 @@ says what happened. An invalid file is reported and the running settings are kep
 | immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*` |
 | next start (the message says so) | `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
+Where links go is configured under `routing:` in any of these files: see [routing.md](routing.md).
+
 Workspaces have theirs, [workspace.yaml](workspace.md).
 
 Profiles have their own file, [profile.yaml](profile.md) (name and colour; more will arrive with workspaces and routing).

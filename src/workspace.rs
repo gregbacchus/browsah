@@ -267,13 +267,15 @@ pub fn cli(args: &[String]) -> i32 {
     }
 }
 
-fn first_positional(args: &[String]) -> Option<&String> {
+/// The first argument that is not a flag or a flag's value (`--flag value` or `--flag=value`;
+/// `--yes` and `--explain` take no value).
+pub fn first_positional(args: &[String]) -> Option<&String> {
     // Skip `--flag value` pairs and `--flag=value`.
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
         if a.starts_with("--") {
-            i += if a.contains('=') || a == "--yes" { 1 } else { 2 };
+            i += if a.contains('=') || a == "--yes" || a == "--explain" { 1 } else { 2 };
         } else {
             return Some(a);
         }

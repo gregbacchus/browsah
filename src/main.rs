@@ -9,6 +9,7 @@ mod config;
 mod frames;
 mod gpu;
 mod profile;
+mod router;
 mod store;
 mod workspace;
 
@@ -37,6 +38,9 @@ fn main() {
         std::process::exit(config_show(&args[2..]));
     }
 
+    if args.first().map(String::as_str) == Some("route") {
+        std::process::exit(router::cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("workspace") {
         std::process::exit(workspace::cli(&args[1..]));
     }
