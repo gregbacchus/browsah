@@ -33,15 +33,19 @@ implemented yet.)
 Settings come in layers, each a YAML file with the same option names as [options.md](options.md):
 
 1. the application file, `~/.config/browsah/config.yaml`;
-2. the profile's file, `~/.local/share/browsah/profiles/<id>/profile.yaml` (see [profile.md](profile.md)).
+2. the profile's file, `~/.local/share/browsah/profiles/<id>/profile.yaml` (see [profile.md](profile.md));
+3. a workspace's file, `.../profiles/<id>/workspaces/<id>/workspace.yaml` (see [workspace.md](workspace.md)),
+   for that workspace's window only.
 
-(Workspaces and web apps will add layers of their own.) The upper layer is merged over the lower:
+(Web apps will add a layer of their own.) The upper layer is merged over the lower:
 
 - maps merge key by key, so a profile can change one option inside `input` and keep the rest;
 - a value or a list in the upper layer replaces the lower one;
 - a key ending in `+` appends a list instead: `chromium: { flags+: ["--foo"] }` adds to the
   application's flags;
-- application-only options (`watch_config`) are ignored in a profile, with a warning.
+- application-only options (`watch_config`) are ignored in a profile or workspace, and options fixed
+  per process (`chromium`, `gpu`, `rendering.mode`, `rendering.device_resolution`) are ignored in a
+  workspace, with a warning.
 
 A profile is its own process, so it may also set options that are fixed per process (`chromium`,
 `gpu`, `rendering.mode`). See the result with `browsah config show --profile=<id>`, which also lists
@@ -53,7 +57,7 @@ says what happened. An invalid file is reported and the running settings are kep
 
 | Takes effect | Options |
 |---|---|
-| immediately | `search_url`, `home_page` (new tabs), `rendering.frame_rate`, `input.*` |
+| immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*` |
 | next start (the message says so) | `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
 Workspaces have theirs, [workspace.yaml](workspace.md).

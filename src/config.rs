@@ -174,9 +174,6 @@ pub fn default_path() -> PathBuf {
 
 use serde_yaml_ng::Value;
 
-/// Options a profile cannot set.
-pub const APP_ONLY: &[&str] = &["watch_config"];
-
 /// Keys of `profile.yaml` that describe the profile itself and are not configuration.
 pub const PROFILE_IDENTITY_KEYS: &[&str] = &["name", "color", "default_workspace"];
 
@@ -228,10 +225,55 @@ pub fn leaf_paths(v: &Value) -> Vec<String> {
 #[derive(Debug, Clone)]
 pub struct Loaded {
     pub config: Config,
-    /// Options the profile file set (dotted paths).
-    pub profile_overrides: Vec<String>,
+    /// Options each layer above the application file set: (layer name, dotted option paths).
+    pub overrides: Vec<(String, Vec<String>)>,
     /// Things worth telling the user (ignored options).
     pub warnings: Vec<String>,
+}
+
+impl Loaded {
+    pub fn defaults() -> Loaded {
+        Loaded { config: Config::default(), overrides: Vec::new(), warnings: Vec::new() }
+    }
+
+    /// The options set by the layer called `layer` (`"profile"`, `"workspace"`).
+    pub fn overrides_of(&self, layer: &str) -> &[String] {
+        self.overrides.iter().find(|(l, _)| l == layer).map(|(_, p)| p.as_slice()).unwrap_or(&[])
+    }
+}
+
+/// Options that only the application file may set.
+pub const APP_ONLY: &[&str] = &["watch_config"];
+
+/// Options fixed per process, so a workspace (a window of the process) cannot set them; a profile
+/// (which is a process) can.
+#[cfg_attr(not(test), allow(dead_code))] // documentation of what `WORKSPACE_IGNORED` contains
+pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+
+/// What a workspace file may not set: the application-only and the process-only options.
+const WORKSPACE_IGNORED: &[&str] = &["watch_config", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+
+/// One layer merged over the application file.
+pub struct Layer<'a> {
+    pub name: &'static str,
+    pub file: &'a std::path::Path,
+    /// Keys that describe the thing itself (`name`, `color`), not configuration.
+    pub identity: &'a [&'a str],
+    /// Dotted option paths this layer may not set; ignored with a warning.
+    pub ignored: &'a [&'a str],
+}
+
+/// Remove a dotted path from a mapping; true if something was removed.
+fn remove_path(v: &mut Value, path: &str) -> bool {
+    let (head, rest) = match path.split_once('.') {
+        Some((h, r)) => (h, Some(r)),
+        None => (path, None),
+    };
+    let Value::Mapping(m) = v else { return false };
+    match rest {
+        None => m.remove(head).is_some(),
+        Some(r) => m.get_mut(head).is_some_and(|child| remove_path(child, r)),
+    }
 }
 
 fn read_yaml(path: &std::path::Path) -> Result<Value, String> {
@@ -250,31 +292,62 @@ fn read_yaml(path: &std::path::Path) -> Result<Value, String> {
     }
 }
 
-/// Build the effective configuration from the application file and (optionally) a profile file.
-/// A missing file is empty. An invalid file is an error naming it (the caller decides whether to
-/// fall back to defaults or keep what it has).
-pub fn load_effective(app_file: &std::path::Path, profile_file: Option<&std::path::Path>) -> Result<Loaded, String> {
+/// Build the effective configuration from the application file with `layers` merged over it, in
+/// order. A missing file is empty. An invalid file is an error naming it (the caller decides
+/// whether to fall back to defaults or keep what it has).
+pub fn load_layers(app_file: &std::path::Path, layers: &[Layer]) -> Result<Loaded, String> {
     let mut merged = read_yaml(app_file)?;
     let mut overrides = Vec::new();
     let mut warnings = Vec::new();
-    if let Some(pf) = profile_file {
-        let mut over = read_yaml(pf)?;
-        if let Value::Mapping(m) = &mut over {
-            for k in PROFILE_IDENTITY_KEYS {
+    let mut last_set = app_file;
+    for layer in layers {
+        let mut over = read_yaml(layer.file)?;
+        for k in layer.identity {
+            if let Value::Mapping(m) = &mut over {
                 m.remove(*k);
             }
-            for k in APP_ONLY {
-                if m.remove(*k).is_some() {
-                    warnings.push(format!("{}: `{k}` can only be set in the application config; ignored", pf.display()));
-                }
+        }
+        for path in layer.ignored {
+            if remove_path(&mut over, path) {
+                warnings.push(format!("{}: `{path}` cannot be set in a {} file; ignored", layer.file.display(), layer.name));
             }
         }
-        overrides = leaf_paths(&over);
+        let paths = leaf_paths(&over);
+        if !paths.is_empty() {
+            last_set = layer.file;
+            overrides.push((layer.name.to_owned(), paths));
+        }
         merge(&mut merged, &over);
     }
-    let mut config: Config = serde_yaml_ng::from_value(merged).map_err(|e| format!("{}: {e}", profile_file.filter(|_| !overrides.is_empty()).unwrap_or(app_file).display()))?;
+    let mut config: Config = serde_yaml_ng::from_value(merged).map_err(|e| format!("{}: {e}", last_set.display()))?;
     config.sanitize();
-    Ok(Loaded { config, profile_overrides: overrides, warnings })
+    Ok(Loaded { config, overrides, warnings })
+}
+
+/// The profile layer, as a `Layer`.
+pub fn profile_layer(file: &std::path::Path) -> Layer<'_> {
+    Layer { name: "profile", file, identity: PROFILE_IDENTITY_KEYS, ignored: APP_ONLY }
+}
+
+/// The workspace layer, as a `Layer`.
+pub fn workspace_layer(file: &std::path::Path) -> Layer<'_> {
+    Layer { name: "workspace", file, identity: crate::workspace::IDENTITY_KEYS, ignored: WORKSPACE_IGNORED }
+}
+
+/// The application file with the profile's file merged over it (the configuration of the process).
+pub fn load_effective(app_file: &std::path::Path, profile_file: Option<&std::path::Path>) -> Result<Loaded, String> {
+    match profile_file {
+        Some(pf) => load_layers(app_file, &[profile_layer(pf)]),
+        None => load_layers(app_file, &[]),
+    }
+}
+
+/// The configuration of one window: application, profile, then the workspace's file if it has one.
+pub fn load_window(app_file: &std::path::Path, profile_file: &std::path::Path, workspace_file: Option<&std::path::Path>) -> Result<Loaded, String> {
+    match workspace_file {
+        Some(wf) => load_layers(app_file, &[profile_layer(profile_file), workspace_layer(wf)]),
+        None => load_layers(app_file, &[profile_layer(profile_file)]),
+    }
 }
 
 /// `load_effective` for start-up: problems are reported and defaults used, so a typo never
@@ -289,7 +362,7 @@ pub fn load_for_startup(app_file: &std::path::Path, profile_file: Option<&std::p
         }
         Err(e) => {
             eprintln!("config: {e}; using defaults");
-            Loaded { config: Config::default(), profile_overrides: Vec::new(), warnings: Vec::new() }
+            Loaded::defaults()
         }
     }
 }
@@ -485,9 +558,9 @@ mod tests {
         assert_eq!(l.config.chromium.flags, ["--one", "--two"]); // appended
         assert!(l.config.watch_config, "application-only option cannot be set by a profile");
         assert!(l.warnings.iter().any(|w| w.contains("watch_config")));
-        assert_eq!(l.profile_overrides, ["chromium.flags", "input.wheel_notch", "search_url"]);
+        assert_eq!(l.overrides_of("profile"), ["chromium.flags", "input.wheel_notch", "search_url"]);
         // Identity keys are not configuration (they would be unknown options).
-        assert!(!l.profile_overrides.iter().any(|p| p == "name" || p == "color"));
+        assert!(!l.overrides_of("profile").iter().any(|p| p == "name" || p == "color"));
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -528,7 +601,54 @@ mod tests {
     fn example_profile_overrides_apply() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let l = load_effective(&root.join("examples/config.yaml"), Some(&root.join("examples/profile.yaml"))).unwrap();
-        assert!(!l.profile_overrides.is_empty(), "examples/profile.yaml should show overrides");
+        assert!(!l.overrides_of("profile").is_empty(), "examples/profile.yaml should show overrides");
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn workspace_layer_and_ignored_options() {
+        let d = temp_dir("ws-layer");
+        let (app, prof, ws) = (d.join("config.yaml"), d.join("profile.yaml"), d.join("workspace.yaml"));
+        std::fs::write(&app, "search_url: 'https://a/?q={query}'\ninput: { touchpad_speed: 4.0, wheel_notch: 60 }\n").unwrap();
+        std::fs::write(&prof, "search_url: 'https://b/?q={query}'\nchromium: { flags: ['--p'] }\ninput: { wheel_notch: 80 }\n").unwrap();
+        std::fs::write(&ws, "name: Mail\ncolor: '#123456'\nsearch_url: 'https://c/?q={query}'\ninput: { touchpad_speed: 9.0 }\nchromium: { flags: ['--w'] }\nrendering: { mode: readback, frame_rate: 20 }\nwatch_config: false\n").unwrap();
+        let l = load_window(&app, &prof, Some(&ws)).unwrap();
+        assert_eq!(l.config.search_url, "https://c/?q={query}"); // workspace over profile over application
+        assert_eq!(l.config.input.touchpad_speed, 9.0); // workspace over application
+        assert_eq!(l.config.input.wheel_notch, 80.0); // profile over application, untouched by workspace
+        assert_eq!(l.config.rendering.frame_rate, 20); // a per-window option the workspace may set
+        assert_eq!(l.config.chromium.flags, ["--p"], "process-only options cannot be set by a workspace");
+        assert_eq!(l.config.rendering.mode, RenderMode::Accelerated);
+        assert!(l.config.watch_config);
+        assert_eq!(l.warnings.len(), 3, "{:?}", l.warnings);
+        assert_eq!(l.overrides_of("workspace"), ["input.touchpad_speed", "rendering.frame_rate", "search_url"]);
+        assert_eq!(l.overrides_of("profile"), ["chromium.flags", "input.wheel_notch", "search_url"]);
+        // Without a workspace file the window is the profile's.
+        assert_eq!(load_window(&app, &prof, None).unwrap().config.search_url, "https://b/?q={query}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn workspace_ignored_list_is_application_only_plus_process_only() {
+        let mut expected: Vec<&str> = APP_ONLY.to_vec();
+        expected.extend(PROCESS_ONLY);
+        assert_eq!(WORKSPACE_IGNORED, expected.as_slice());
+    }
+
+    #[test]
+    fn remove_nested_paths() {
+        let mut v = yaml("rendering: { mode: readback, frame_rate: 20 }\ngpu: { workarounds: false }\n");
+        assert!(remove_path(&mut v, "rendering.mode"));
+        assert!(!remove_path(&mut v, "rendering.mode"));
+        assert!(remove_path(&mut v, "gpu"));
+        assert_eq!(v, yaml("rendering: { frame_rate: 20 }"));
+    }
+
+    #[test]
+    fn example_workspace_overrides_apply() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let l = load_window(&root.join("examples/config.yaml"), &root.join("examples/profile.yaml"), Some(&root.join("examples/workspace.yaml"))).unwrap();
+        assert!(!l.overrides_of("workspace").is_empty(), "examples/workspace.yaml should show overrides");
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
     }
 }

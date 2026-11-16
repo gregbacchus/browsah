@@ -6,3 +6,10 @@ name: Mail                  # shown in the window title
 color:                      # accent colour for light and dark appearance
   light: "#2a6f97"
   dark: "#61a5c2"
+
+# Any per-window option from docs/config/options.md can be overridden for this workspace. Process-
+# wide ones (chromium, gpu, rendering.mode, rendering.device_resolution) cannot.
+home_page: "https://mail.example.com/"
+search_url: "https://www.bing.com/search?q={query}"
+rendering:
+  frame_rate: 30

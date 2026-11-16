@@ -79,7 +79,8 @@ take minutes.
   (`profile.yaml`) has its own docs and example, with tests that check both (see
   `docs/config/profile.md`, `examples/profile.yaml`).
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
-  merged over it (`config::load_effective`; rules in `docs/config/README.md`). Option names are the
+  and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
+  `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the
   same at every level, so adding an option to `Config` makes it overridable in a profile; mark it
   application-only in `config::APP_ONLY` if a profile must not set it, and classify it live or
   restart-only in `config::RESTART_REQUIRED` (otherwise it is treated as live, so it must be read

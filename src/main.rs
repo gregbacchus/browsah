@@ -61,7 +61,7 @@ fn main() {
     // defaults so results do not depend on a user's files.
     let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
     let loaded = if is_bench {
-        config::Loaded { config: config::Config::default(), profile_overrides: Vec::new(), warnings: Vec::new() }
+        config::Loaded::defaults()
     } else {
         config::load_for_startup(&app_file, Some(&profile.dir.join("profile.yaml")))
     };
@@ -131,7 +131,8 @@ fn main() {
     std::process::exit(code);
 }
 
-/// Print the effective configuration for a profile and which options the profile set.
+/// Print the effective configuration for a profile (and optionally one of its workspaces) and
+/// which options each layer set.
 fn config_show(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
     let id = value("--profile").unwrap_or_else(|| profile::DEFAULT_ID.to_owned());
@@ -142,15 +143,30 @@ fn config_show(args: &[String]) -> i32 {
             return 2;
         }
     };
+    let ws = match value("--workspace").map(|w| workspace::Workspace::resolve(&profile, &w)) {
+        Some(Err(e)) => {
+            eprintln!("browsah: {e}");
+            return 2;
+        }
+        Some(Ok(w)) => Some(w),
+        None => None,
+    };
     let app_file = value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
     let profile_file = profile.dir.join("profile.yaml");
-    match config::load_effective(&app_file, Some(&profile_file)) {
+    let ws_file = ws.as_ref().map(|w| w.dir.join("workspace.yaml"));
+    match config::load_window(&app_file, &profile_file, ws_file.as_deref()) {
         Ok(l) => {
-            println!("# profile: {id}\n# application file: {}\n# profile file: {}", app_file.display(), profile_file.display());
-            if l.profile_overrides.is_empty() {
-                println!("# options set by the profile: none");
-            } else {
-                println!("# options set by the profile: {}", l.profile_overrides.join(", "));
+            println!("# profile: {id}{}", ws.as_ref().map(|w| format!(", workspace: {}", w.id)).unwrap_or_default());
+            println!("# application file: {}\n# profile file: {}", app_file.display(), profile_file.display());
+            if let Some(f) = &ws_file {
+                println!("# workspace file: {}", f.display());
+            }
+            for layer in ["profile", "workspace"] {
+                let o = l.overrides_of(layer);
+                if layer == "workspace" && ws.is_none() {
+                    continue;
+                }
+                println!("# options set by the {layer}: {}", if o.is_empty() { "none".to_owned() } else { o.join(", ") });
             }
             for w in &l.warnings {
                 println!("# warning: {w}");

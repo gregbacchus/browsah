@@ -89,6 +89,10 @@ pub struct Shell {
     frame_rate: Cell<i32>,
     search_url: RefCell<String>,
     toasts: adw::ToastOverlay,
+    /// This window's effective configuration (application, profile, workspace layers) and the
+    /// one it started with, against which restart-only options are judged.
+    settings: RefCell<Config>,
+    startup_settings: Config,
     /// The workspace this window shows; `None` is an ephemeral window (not remembered).
     pub workspace: Option<crate::workspace::Workspace>,
     /// The user has typed in the address bar and not yet committed or cancelled.
@@ -113,6 +117,12 @@ fn tab_title(s: &State) -> String {
 }
 
 impl Shell {
+    /// Scrolling settings are process-wide statics, so the window being used sets them.
+    pub fn apply_input_tuning(&self) {
+        let c = self.settings.borrow();
+        input::set_scroll_tuning(c.input.wheel_notch, c.input.touchpad_speed, c.input.touchpad_acceleration);
+    }
+
     /// Show a short message over the page.
     pub fn toast(&self, text: &str) {
         self.toasts.add_toast(adw::Toast::new(text));
@@ -121,7 +131,10 @@ impl Shell {
     /// Apply the options that can change while running (see `config::changes`): search engine,
     /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
     pub fn apply_config(&self, cfg: &Config) {
-        input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed, cfg.input.touchpad_acceleration);
+        *self.settings.borrow_mut() = cfg.clone();
+        if self.window.is_active() {
+            self.apply_input_tuning();
+        }
         *self.search_url.borrow_mut() = cfg.search_url.clone();
         if self.frame_rate.get() != cfg.rendering.frame_rate {
             self.frame_rate.set(cfg.rendering.frame_rate);
@@ -505,6 +518,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         frame_rate: Cell::new(cfg.rendering.frame_rate),
         search_url: RefCell::new(cfg.search_url.clone()),
         toasts: toasts.clone(),
+        settings: RefCell::new(cfg.clone()),
+        startup_settings: cfg.clone(),
         workspace,
         editing: Cell::new(false),
         programmatic: Cell::new(false),
@@ -725,7 +740,35 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         let (opts, cfg, exit, watcher, profile) = (opts.clone(), cfg.clone(), exit.clone(), watcher.clone(), profile.clone());
         move |app: &adw::Application, workspace: Option<crate::workspace::Workspace>, start: &str| -> Rc<Shell> {
             let first = WINDOWS.with(|w| w.borrow().is_empty());
-            let s = build(app, &opts, &cfg.borrow(), start, workspace.clone());
+            let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+            let profile_file = profile.dir.join("profile.yaml");
+            // This window's configuration: application, profile, then the workspace's own file.
+            let ws_file = workspace.as_ref().map(|w| w.dir.join("workspace.yaml"));
+            let window_cfg = match ws_file.as_deref().map(|wf| config::load_window(&app_file, &profile_file, Some(wf))) {
+                Some(Ok(l)) => {
+                    for w in &l.warnings {
+                        eprintln!("config: {w}");
+                    }
+                    l.config
+                }
+                Some(Err(e)) => {
+                    eprintln!("config: {e}; using the profile's settings for this workspace");
+                    cfg.borrow().clone()
+                }
+                None => cfg.borrow().clone(),
+            };
+            let s = build(app, &opts, &window_cfg, start, workspace.clone());
+            s.window.connect_is_active_notify({
+                let shell = Rc::downgrade(&s);
+                move |w| {
+                    if let (true, Some(s)) = (w.is_active(), shell.upgrade()) {
+                        s.apply_input_tuning();
+                    }
+                }
+            });
+            if let (Some(wf), Some(w)) = (&ws_file, watcher.borrow().as_ref()) {
+                w.add(wf);
+            }
             WINDOWS.with(|w| w.borrow_mut().push(s.clone()));
             if let Some(w) = &workspace {
                 remember_workspace(&profile, &w.id, true);
@@ -760,14 +803,15 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 // Reload configuration when its files change (unless switched off).
                 let watching = cfg.borrow().watch_config && !opts.no_watch && !opts.selftest && !opts.latency;
                 if watching {
-                    let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
-                    let profile_file = profile.dir.join("profile.yaml");
-                    let startup = Rc::new(cfg.borrow().clone());
                     let (cfg, watcher2) = (cfg.clone(), watcher.clone());
                     let (app_file2, profile_file2) = (app_file.clone(), profile_file.clone());
-                    *watcher.borrow_mut() = Some(watch::ConfigWatch::start(&[app_file, profile_file], move || {
-                        reload(&cfg, &startup, &app_file2, &profile_file2, &watcher2);
-                    }));
+                    let w = watch::ConfigWatch::start(&[app_file, profile_file], move || {
+                        reload(&cfg, &app_file2, &profile_file2, &watcher2);
+                    });
+                    if let Some(wf) = &ws_file {
+                        w.add(wf);
+                    }
+                    *watcher.borrow_mut() = Some(w);
                 }
             }
             s
@@ -922,49 +966,61 @@ fn remember_workspace(profile: &crate::profile::Profile, id: &str, open: bool) {
     profile.save_state(&state);
 }
 
-/// A config file changed: load the effective configuration again and apply what can change live.
-/// An invalid file is reported and the running configuration kept.
-fn reload(cfg: &Rc<RefCell<Config>>, startup: &Config, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
-    let shells: Vec<Rc<Shell>> = windows();
-    let tell = |text: &str| {
-        for s in &shells {
-            s.toast(text);
-        }
-    };
-    match config::load_effective(app_file, Some(profile_file)) {
+/// A config file changed: load each window's effective configuration again and apply what can
+/// change live. An invalid file is reported and the running configuration kept.
+fn reload(cfg: &Rc<RefCell<Config>>, app_file: &std::path::Path, profile_file: &std::path::Path, watcher: &Rc<RefCell<Option<watch::ConfigWatch>>>) {
+    let shells = windows();
+    let debug = std::env::var_os("BROWSAH_DEBUG").is_some();
+    let process = match config::load_effective(app_file, Some(profile_file)) {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("config: {e}; keeping the current settings");
-            tell("Configuration has an error; keeping the current settings");
-        }
-        Ok(loaded) => {
-            let new = loaded.config;
-            let changes = config::changes(&cfg.borrow(), &new);
-            if changes == config::Changes::default() {
-                return; // saved without a relevant change
-            }
-            // Options fixed at start-up are judged against what this process started with, so the
-            // message stays right when a restart-only option is edited back.
-            let pending_restart = config::changes(startup, &new).restart;
-            for w in &loaded.warnings {
-                eprintln!("config: {w}");
-            }
-            if std::env::var_os("BROWSAH_DEBUG").is_some() {
-                eprintln!("browsah: config reloaded: live {:?}, restart needed {:?}", changes.live, pending_restart);
-            }
             for s in &shells {
-                s.apply_config(&new);
+                s.toast("Configuration has an error; keeping the current settings");
             }
-            let stop = !new.watch_config;
-            *cfg.borrow_mut() = new;
-            let mut msg = String::from("Configuration reloaded");
-            if !pending_restart.is_empty() {
-                msg.push_str(&format!(" (restart needed for {})", pending_restart.join(", ")));
-            }
-            if stop {
-                *watcher.borrow_mut() = None;
-                msg.push_str("; watching is now off");
-            }
-            tell(&msg);
+            return;
         }
+    };
+    let mut stop = false;
+    if !process.config.watch_config {
+        stop = true;
+    }
+    for s in &shells {
+        let ws_file = s.workspace.as_ref().map(|w| w.dir.join("workspace.yaml"));
+        let loaded = match config::load_window(app_file, profile_file, ws_file.as_deref()) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("config: {e}; keeping this window's settings");
+                s.toast("Configuration has an error; keeping the current settings");
+                continue;
+            }
+        };
+        let new = loaded.config;
+        let changes = config::changes(&s.settings.borrow(), &new);
+        if changes == config::Changes::default() {
+            continue; // saved without a relevant change for this window
+        }
+        // Options fixed at start-up are judged against what this window started with, so the
+        // message stays right when a restart-only option is edited back.
+        let pending_restart = config::changes(&s.startup_settings, &new).restart;
+        for w in &loaded.warnings {
+            eprintln!("config: {w}");
+        }
+        if debug {
+            eprintln!("browsah: config reloaded for workspace {:?}: live {:?}, restart needed {:?}", s.workspace.as_ref().map(|w| &w.id), changes.live, pending_restart);
+        }
+        s.apply_config(&new);
+        let mut msg = String::from("Configuration reloaded");
+        if !pending_restart.is_empty() {
+            msg.push_str(&format!(" (restart needed for {})", pending_restart.join(", ")));
+        }
+        if stop {
+            msg.push_str("; watching is now off");
+        }
+        s.toast(&msg);
+    }
+    *cfg.borrow_mut() = process.config;
+    if stop {
+        *watcher.borrow_mut() = None;
     }
 }
