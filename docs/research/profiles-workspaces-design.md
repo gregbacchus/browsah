@@ -331,6 +331,26 @@ browser session as a normal profile window (a password manager, existing cookies
 ephemeral window of the same profile, which shares the profile's cookies (the profile is the storage
 unit), so existing sign-ins are available there.
 
+## Status: profile selector (2026-11-17)
+
+Requested: a `.desktop` that is a profile chooser usable as the default web browser. Built as
+`browsah select [URL]` (a libadwaita list of the profiles; `1`-`9`, click or `Enter` chooses, `Esc`
+cancels; running profiles are marked) and `browsah selector install|uninstall|status` for the
+`be.geee.browsah.desktop` entry (the application's id without a profile). It starts no CEF, so it opens
+at once. It skips the question when there is one profile, when `default_profile` is set in
+`config.yaml`, or when an application routing rule names a profile (`profile:<id>[/workspace:<id>]`)
+or blocks the link. Setting the system default browser is left to the person (the command only
+prints how). Profile entries still declare the web handlers, so either style of default works.
+
+Measured here: the chooser built and reported the activated row (`browsah select --check`, run by hand,
+not part of `--selftest`), the install, status and uninstall commands wrote, read and removed the entry
+(the entry validated and the default browser was left untouched), and `select` with two profiles stayed
+open for the 4 s of a timed run. **Not verified:** how the window looks, a real pick that starts a
+profile (not run, to avoid starting a real profile), being chosen as the default browser through the
+desktop's settings, or links arriving from real applications through it. Not built: remembering a
+choice per site (an application routing rule does that, written by hand), and offering the selector's
+list as desktop actions.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

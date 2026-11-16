@@ -20,8 +20,11 @@ search_url: https://duckduckgo.com/?q={query}
 |---|---|---|---|
 | `watch_config` | bool | `true` | Reload this file and the profile's `profile.yaml` when they change, and apply what can change live (see [Layers and reloading](README.md#layers-and-reloading)). Set `false` to read the files only at start-up. Application-only: a profile cannot set it. `--no-watch` turns it off for one run. Read at start-up; turning it off in a running browser stops watching, turning it on needs a restart. |
 
+| `default_profile` | text | none | The profile the [selector](selector.md) opens web links in without asking, by id. Without it the selector asks (unless there is only one profile). Application-only. |
+
 ```yaml
 watch_config: true
+default_profile: work
 ```
 
 ## `window`

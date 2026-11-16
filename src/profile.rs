@@ -226,16 +226,16 @@ fn list_in(root: &Path) -> Vec<Profile> {
 
 // ---- desktop integration ----------------------------------------------------------------------
 
-fn applications_dir() -> PathBuf {
+pub fn applications_dir() -> PathBuf {
     gtk::glib::user_data_dir().join("applications")
 }
 
-fn icons_dir() -> PathBuf {
+pub fn icons_dir() -> PathBuf {
     gtk::glib::user_data_dir().join("icons").join("hicolor").join("scalable").join("apps")
 }
 
 /// Quote a path for a `.desktop` Exec line.
-fn exec_quote(s: &str) -> String {
+pub fn exec_quote(s: &str) -> String {
     if s.chars().any(|c| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c)) {
         format!("\"{}\"", s.replace('\\', "\\\\\\\\").replace('"', "\\\"").replace('$', "\\\\$").replace('`', "\\\\`"))
     } else {

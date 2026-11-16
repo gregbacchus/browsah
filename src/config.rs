@@ -36,6 +36,8 @@ impl RenderMode {
 pub struct Config {
     /// Reload the config files when they change (application-only: a profile cannot set it).
     pub watch_config: bool,
+    /// The profile the selector opens links in without asking (application-only).
+    pub default_profile: Option<String>,
     pub home_page: String,
     pub search_url: String,
     pub window: WindowConfig,
@@ -95,6 +97,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             watch_config: true,
+            default_profile: None,
             home_page: DEFAULT_HOME_PAGE.into(),
             search_url: DEFAULT_SEARCH_URL.into(),
             window: WindowConfig::default(),
@@ -245,7 +248,7 @@ impl Loaded {
 }
 
 /// Options that only the application file may set.
-pub const APP_ONLY: &[&str] = &["watch_config"];
+pub const APP_ONLY: &[&str] = &["watch_config", "default_profile"];
 
 /// Options fixed per process, so a workspace (a window of the process) cannot set them; a profile
 /// (which is a process) can.
@@ -253,7 +256,7 @@ pub const APP_ONLY: &[&str] = &["watch_config"];
 pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
 
 /// What a workspace file may not set: the application-only and the process-only options.
-const WORKSPACE_IGNORED: &[&str] = &["watch_config", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
 
 /// One layer merged over the application file.
 pub struct Layer<'a> {
@@ -478,7 +481,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
+        let roots = ["watch_config", "default_profile", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

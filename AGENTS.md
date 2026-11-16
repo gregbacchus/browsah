@@ -55,6 +55,7 @@ take minutes.
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
+| `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
 | `src/cli.rs` | Command-line options |
 | `src/bench/` | `--bench=single|tabs|fps`, kept as a regression check for the rendering path |

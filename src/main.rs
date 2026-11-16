@@ -10,6 +10,7 @@ mod frames;
 mod gpu;
 mod profile;
 mod router;
+mod selector;
 mod store;
 mod workspace;
 
@@ -38,6 +39,13 @@ fn main() {
         std::process::exit(config_show(&args[2..]));
     }
 
+    // The profile selector (the system web browser entry) needs no CEF and no profile.
+    if args.first().map(String::as_str) == Some("select") {
+        std::process::exit(selector::select_cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("selector") {
+        std::process::exit(selector::selector_cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
     }

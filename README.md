@@ -56,6 +56,11 @@ Options: [docs/config/workspace.md](docs/config/workspace.md). Where links go (f
 pages) is set by routing rules, tried without a browser by `browsah route test`: [docs/config/routing.md](docs/config/routing.md). Right-click a tab to send it to another workspace. `Ctrl+Shift+N` opens an ephemeral window
 (not remembered), `Ctrl+D` bookmarks the page in a workspace window.
 
+Default browser: `browsah selector install` adds a "Browsah" entry that asks which profile should open
+a link from another application (it does not load Chromium, so it appears at once, and it can skip the
+question with `default_profile` or a routing rule); then choose it as the default web browser in your
+desktop's settings. See [docs/config/selector.md](docs/config/selector.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 
