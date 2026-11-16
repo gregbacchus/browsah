@@ -599,6 +599,42 @@ wrap_context_menu_handler! {
     }
 }
 
+/// Spike: cookie allow/deny by URL substring (`BROWSAH_COOKIE_DENY=a.com,b.com`).
+fn cookie_denied(deny: &[String], url: &str) -> bool {
+    deny.iter().any(|d| !d.is_empty() && url.contains(d.as_str()))
+}
+
+wrap_cookie_access_filter! {
+    struct CookieRules { deny: Vec<String> }
+
+    impl CookieAccessFilter {
+        fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+            let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
+            (!cookie_denied(&self.deny, &url)) as _
+        }
+
+        fn can_save_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _resp: Option<&mut Response>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+            let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
+            (!cookie_denied(&self.deny, &url)) as _
+        }
+    }
+}
+
+wrap_resource_request_handler! {
+    struct ViewResources { deny: Vec<String> }
+
+    impl ResourceRequestHandler {
+        fn cookie_access_filter(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, _r: Option<&mut Request>) -> Option<CookieAccessFilter> {
+            Some(CookieRules::new(self.deny.clone()))
+        }
+
+        // The default would be "cancel" (a zero return value), which fails every request.
+        fn on_before_resource_load(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, _r: Option<&mut Request>, _cb: Option<&mut Callback>) -> ReturnValue {
+            ReturnValue::from(sys::cef_return_value_t::RV_CONTINUE)
+        }
+    }
+}
+
 wrap_request_handler! {
     struct ViewRequest { shared: Arc<Shared> }
 
@@ -612,6 +648,23 @@ wrap_request_handler! {
         ) {
             let why = error_string.map(|e| e.to_string()).filter(|e| !e.is_empty()).unwrap_or_else(|| format!("{status:?}"));
             send(self.shared.id, ViewEvent::Crashed(why));
+        }
+
+        fn resource_request_handler(
+            &self,
+            _b: Option<&mut Browser>,
+            _f: Option<&mut Frame>,
+            _r: Option<&mut Request>,
+            _is_navigation: ::std::os::raw::c_int,
+            _is_download: ::std::os::raw::c_int,
+            _initiator: Option<&CefString>,
+            _disable_default: Option<&mut ::std::os::raw::c_int>,
+        ) -> Option<ResourceRequestHandler> {
+            let deny: Vec<String> = std::env::var("BROWSAH_COOKIE_DENY").unwrap_or_default().split(',').map(str::to_owned).collect();
+            if deny.iter().all(|d| d.is_empty()) {
+                return None;
+            }
+            Some(ViewResources::new(deny))
         }
     }
 }

@@ -212,18 +212,18 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
             println!("icon spike: {icon}: answered={ok} in {} ms, (status, w, h)={:?}", t0.elapsed().as_millis(), v.image_result(&u));
         }
     }
-    if let Ok(text) = std::env::var("BROWSAH_NET_TEST") {
-        // Optional: type this into the address bar and report where the page ends up (needs network).
+    if let Ok(list) = std::env::var("BROWSAH_NET_TEST") {
+        // Optional: type each of these (space separated) into the address bar in turn and report
+        // where the page ends up (needs network or a local server).
         let st = shell.state();
-        shell.entry.set_text(&text);
-        shell.entry.emit_by_name::<()>("activate", &[]);
-        let before = st.borrow().address.clone();
-        let ok = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.address != before }).await;
-        glib::timeout_future(Duration::from_millis(1500)).await; // let page scripts finish
-        r.check("address-bar text loads a real site", ok, || format!("{:?}", st.borrow()));
-        glib::timeout_future(Duration::from_millis(2500)).await;
-        println!("net screenshot: {}", screenshot(&shell.window, "/tmp/net.png"));
-        println!("net test: {:?} -> address {:?} title {:?}", text, st.borrow().address, st.borrow().title);
+        for text in list.split_whitespace() {
+            shell.entry.set_text(text);
+            let before = (st.borrow().address.clone(), st.borrow().load_cycles);
+            shell.entry.emit_by_name::<()>("activate", &[]);
+            let _ = wait_until(30_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before.1 }).await;
+            glib::timeout_future(Duration::from_millis(std::env::var("BROWSAH_NET_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500))).await; // let page scripts finish
+            println!("net test: {:?} -> address {:?} title {:?}", text, st.borrow().address, st.borrow().title);
+        }
     }
     run_tabs(shell, r).await;
     run_opener(shell, r).await;

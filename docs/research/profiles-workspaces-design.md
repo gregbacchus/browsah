@@ -173,7 +173,30 @@ activation reveals for links opened from a few real applications.
   filtered that way; per workspace the choice is to share the profile store or use an isolated
   sub-store (its own request context and cache path under the profile).
 
-## Spikes, in order
+## Spike results (2026-11-17)
+
+Environment for all: this machine (AMD Radeon 890M, Mesa 26, GNOME/Mutter on native Wayland, GTK 4.22,
+CEF 156.5.0), single runs, local test pages and local HTTP servers. "Verified" means observed here.
+
+| # | Spike | Result |
+|---|---|---|
+| 1 | Per-window Wayland app id | **Works at the protocol level.** `gdk4-wayland`'s `WaylandToplevel::set_application_id` sent a second `xdg_toplevel.set_app_id` with the web app's id (seen with `WAYLAND_DEBUG=client`) when called from the window's `map` handler. Calling it earlier (before present or on realize) is overwritten by GTK. **Not verified:** that GNOME Shell regroups the window under the matching `.desktop` entry and icon (its window introspection is denied to us, so this needs a visual check); the id is briefly the profile's before it changes. The spike was a throwaway crate, not kept in this repo. |
+| 2 | Manifest and icons | **Works.** `Page.getAppManifest` through `execute_dev_tools_method` answered in about 20 ms with the raw manifest text and a parsed form with resolved URLs (`id`, `startUrl`, `scope`, colours as `rgba(...)`, `display` as `kStandalone`, `displayOverrides`, `launchHandler`, `protocolHandlers`, shortcut name and URL). **The parsed form omits some fields** (icon `purpose`, shortcut `description`), so also read the raw text. Icons: `download_image` returned decoded images for both PNG and SVG in about 20 ms, and a 404 for a missing one. A 192 px PNG reported 512x512 (rescaled to the requested maximum): ask for the size wanted and check. Code: `BrowserView::cdp` and `download_image`; test: `BROWSAH_MANIFEST_TEST` with `bench/pwa/` served over HTTP. |
+| 3 | Popup that keeps its opener | **Works, and is now the behaviour.** `on_before_popup` creates the popup as another windowless browser (client, window info and settings filled in) and the shell adopts it as a tab. A `postMessage` from the child to `window.opener` reached the parent (`--selftest`). Consequence: a popup shares its opener's renderer process, so a crash takes both down (measured, now a self-test check). Without a user gesture popups are still blocked. The popup policy (modal, tab, denied) is not built. |
+| 4 | Cookie filter | **Works for save and send.** A `CookieAccessFilter` (via the request handler's resource request handler) with a deny list: without it, a `Set-Cookie` and then a second request sent `spike=1`; with the host denied the cookie was neither saved nor sent; denying only the second URL saved it but did not send it. Gotcha: a `ResourceRequestHandler` that does not override `on_before_resource_load` **cancels every request** (the default return value is zero), so override it. **Not tested:** a second request context with its own cache path (an isolated sub-store), the memory cost of several contexts, matching by cookie domain instead of URL substring. |
+| 5 | Source application of a link | **Not run.** It needs a registered handler, which means changing the default-browser setting on this machine; wanted agreement first. |
+| 6 | Service workers, notifications, WebAuthn | `serviceWorker.register` reached `activated`. The `Notification` and `PushManager` APIs exist but `Notification.requestPermission()` and `pushManager.subscribe()` did not resolve in 40 s: **there is no permission prompt** until we implement CEF's permission handler (needed anyway for the allow/deny/ask config). WebAuthn: the API exists, there is no platform authenticator, conditional mediation reports available, and `credentials.create` did not resolve (no prompt UI, no security key attached): **not working yet**; it needs the same prompt work plus a security-key test. Geolocation timed out (no provider); `enumerateDevices` listed 5 devices. Server push through Google's messaging service was not tested end to end and is expected not to work. Test page: `bench/pwa/caps.html`. |
+| 7 | Codecs | Measured above: no H.264 or AAC. Prebuilt-with-codecs options and Teams behaviour not checked. |
+
+Reproduce 2 and 6 (serve `bench/pwa/` on port 8765 with any static server first):
+
+```bash
+export LD_LIBRARY_PATH=$PWD/target/release
+BROWSAH_MANIFEST_TEST=http://localhost:8765/index.html ./target/release/browsah --selftest | grep -A3 spike
+BROWSAH_NET_WAIT_MS=40000 BROWSAH_NET_TEST=http://localhost:8765/caps.html ./target/release/browsah --selftest | grep "net test"
+```
+
+## Spikes, in order (results above)
 
 1. Per-window Wayland app id and GNOME grouping, with per-profile and per-web-app `.desktop` files.
 2. Manifest read (`Page.getAppManifest`) and icon download in our windowless browser.
