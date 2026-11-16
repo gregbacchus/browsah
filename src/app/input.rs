@@ -159,15 +159,35 @@ pub fn is_shell_shortcut(key: Key, state: ModifierType) -> bool {
 }
 
 /// Pixels to scroll for one GTK scroll delta. A mouse wheel notch is `1.0` in `Wheel` units
-/// (about 53 px, as in Chromium); touchpads report `Surface` units, already pixels. The sign is
+/// (`WHEEL_NOTCH` px); touchpads report `Surface` units, already pixels. The sign is
 /// flipped because CEF counts wheel-up as positive. `k` is the render scale: the page is zoomed
 /// by it, so the same logical distance is `k` times as many view pixels.
-pub fn wheel_delta(delta: f64, unit: gdk::ScrollUnit, k: f32) -> i32 {
+/// CSS pixels per mouse-wheel notch (Chrome on Linux scrolls about 100; 53 felt too slow).
+const WHEEL_NOTCH: f64 = 100.0;
+
+/// Touchpad scrolling is multiplied by this: GTK reports finger travel in logical pixels, which
+/// feels slow next to other browsers (a guess, not measured against a real device).
+const TOUCHPAD_GAIN: f64 = 2.0;
+
+/// View pixels to scroll for one GTK scroll delta (fractional; the caller keeps the remainder).
+pub fn wheel_delta_f(delta: f64, unit: gdk::ScrollUnit, k: f32) -> f64 {
     let px = match unit {
-        gdk::ScrollUnit::Wheel => delta * 53.0,
-        _ => delta,
+        gdk::ScrollUnit::Wheel => delta * WHEEL_NOTCH,
+        _ => delta * TOUCHPAD_GAIN,
     };
-    (-px * k as f64).round() as i32
+    -px * k as f64
+}
+
+#[cfg(test)]
+pub fn wheel_delta(delta: f64, unit: gdk::ScrollUnit, k: f32) -> i32 {
+    wheel_delta_f(delta, unit, k).round() as i32
+}
+
+/// Take the whole pixels out of an accumulated scroll, keeping the fraction for next time.
+pub fn take_whole(acc: &mut f64) -> i32 {
+    let whole = acc.trunc();
+    *acc -= whole;
+    whole as i32
 }
 
 /// CSS cursor name (as GTK knows it) for a CEF cursor type.
@@ -302,13 +322,18 @@ mod tests {
 
     #[test]
     fn wheel_deltas() {
-        // One notch down at 1x: 53 px, negated for CEF.
-        assert_eq!(wheel_delta(1.0, gdk::ScrollUnit::Wheel, 1.0), -53);
-        assert_eq!(wheel_delta(-2.0, gdk::ScrollUnit::Wheel, 1.0), 106);
+        // One notch down at 1x: 100 px, negated for CEF.
+        assert_eq!(wheel_delta(1.0, gdk::ScrollUnit::Wheel, 1.0), -100);
+        assert_eq!(wheel_delta(-2.0, gdk::ScrollUnit::Wheel, 1.0), 200);
         // The render scale multiplies it.
-        assert_eq!(wheel_delta(1.0, gdk::ScrollUnit::Wheel, 2.0), -106);
-        // Touchpad deltas are already pixels.
-        assert_eq!(wheel_delta(10.0, gdk::ScrollUnit::Surface, 1.0), -10);
+        assert_eq!(wheel_delta(1.0, gdk::ScrollUnit::Wheel, 2.0), -200);
+        // Touchpad deltas are pixels, with a gain.
+        assert_eq!(wheel_delta(10.0, gdk::ScrollUnit::Surface, 1.0), -20);
+        let mut acc = 2.7;
+        assert_eq!(take_whole(&mut acc), 2);
+        assert!((acc - 0.7).abs() < 1e-9);
+        let mut acc = -2.7;
+        assert_eq!(take_whole(&mut acc), -2);
         assert_eq!(wheel_delta(0.0, gdk::ScrollUnit::Wheel, 2.0), 0);
     }
 

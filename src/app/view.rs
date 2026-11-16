@@ -572,6 +572,9 @@ pub struct BrowserView {
     im_state: RefCell<ImState>,
     /// Last pointer position in widget (logical) coordinates, for wheel events.
     pointer: Cell<(f64, f64)>,
+    /// Scroll distance not yet sent (sub-pixel remainders), and the kinetic-scroll generation.
+    scroll_acc: Cell<(f64, f64)>,
+    kinetic_gen: Cell<u64>,
 }
 
 impl BrowserView {
@@ -652,6 +655,8 @@ impl BrowserView {
             shared: shared.clone(),
             im_state: RefCell::new(ImState::default()),
             pointer: Cell::new((0.0, 0.0)),
+            scroll_acc: Cell::new((0.0, 0.0)),
+            kinetic_gen: Cell::new(0),
         });
         view.connect_input();
 
@@ -940,17 +945,26 @@ impl BrowserView {
             }
         });
 
-        // Wheel and touchpad scrolling.
+        // Wheel and touchpad scrolling. The kinetic flag makes GTK report the finger's velocity
+        // when it lifts, and we keep the page coasting (the page itself only sees wheel events).
+        c.scroll.set_flags(gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::KINETIC);
         c.scroll.connect_scroll({
             let w = weak.clone();
             move |ctrl, dx, dy| {
                 let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
-                let (x, y) = v.pointer.get();
-                let ev = v.mouse_event(x, y, ctrl.current_event_state());
+                v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
                 let k = v.k();
-                let (px, py) = (input::wheel_delta(dx, ctrl.unit(), k), input::wheel_delta(dy, ctrl.unit(), k));
-                v.with_host(|h| h.send_mouse_wheel_event(Some(&ev), px, py));
+                let unit = ctrl.unit();
+                v.scroll_by(input::wheel_delta_f(dx, unit, k), input::wheel_delta_f(dy, unit, k), ctrl.current_event_state());
                 glib::Propagation::Stop
+            }
+        });
+        c.scroll.connect_decelerate({
+            let w = weak.clone();
+            move |_, vx, vy| {
+                if let Some(v) = w.upgrade() {
+                    v.coast(vx, vy);
+                }
             }
         });
 
@@ -1023,6 +1037,54 @@ impl BrowserView {
         self.widget.add_controller(c.scroll.clone());
         self.widget.add_controller(c.key.clone());
         self.widget.add_controller(c.focus.clone());
+    }
+
+    /// Send a scroll of `dx`, `dy` view pixels, carrying sub-pixel remainders over.
+    fn scroll_by(&self, dx: f64, dy: f64, state: gdk::ModifierType) {
+        let (mut ax, mut ay) = self.scroll_acc.get();
+        ax += dx;
+        ay += dy;
+        let (px, py) = (input::take_whole(&mut ax), input::take_whole(&mut ay));
+        self.scroll_acc.set((ax, ay));
+        if px != 0 || py != 0 {
+            let (x, y) = self.pointer.get();
+            let ev = self.mouse_event(x, y, state);
+            self.with_host(|h| h.send_mouse_wheel_event(Some(&ev), px, py));
+        }
+    }
+
+    /// Keep scrolling after a touchpad flick: `vx`, `vy` are the release velocity in logical px/s,
+    /// decaying exponentially until too slow to see.
+    fn coast(self: &Rc<Self>, vx: f64, vy: f64) {
+        const TAU: f64 = 0.35; // seconds for the speed to fall by a factor e
+        let generation = self.kinetic_gen.get() + 1;
+        self.kinetic_gen.set(generation);
+        let (mut vx, mut vy) = (vx, vy);
+        let weak = Rc::downgrade(self);
+        let mut last = std::time::Instant::now();
+        glib::timeout_add_local(std::time::Duration::from_millis(8), move || {
+            let Some(v) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if v.kinetic_gen.get() != generation {
+                return glib::ControlFlow::Break;
+            }
+            let now = std::time::Instant::now();
+            let dt = (now - last).as_secs_f64();
+            last = now;
+            let k = v.k();
+            v.scroll_by(
+                input::wheel_delta_f(vx * dt, gdk::ScrollUnit::Surface, k),
+                input::wheel_delta_f(vy * dt, gdk::ScrollUnit::Surface, k),
+                gdk::ModifierType::empty(),
+            );
+            let decay = (-dt / TAU).exp();
+            vx *= decay;
+            vy *= decay;
+            if vx.hypot(vy) < 20.0 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     pub(super) fn click(&self, button: u32, n_press: i32, x: f64, y: f64, state: gdk::ModifierType, up: bool) {
