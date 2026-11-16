@@ -962,6 +962,9 @@ impl BrowserView {
                 v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
                 let k = v.k();
                 let unit = ctrl.unit();
+                if std::env::var_os("BROWSAH_DEBUG_SCROLL").is_some() {
+                    eprintln!("browsah: scroll dx={dx:.2} dy={dy:.2} unit={unit:?}");
+                }
                 v.scroll_by(input::wheel_delta_f(dx, unit, k), input::wheel_delta_f(dy, unit, k), ctrl.current_event_state());
                 glib::Propagation::Stop
             }

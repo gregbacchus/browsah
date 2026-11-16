@@ -616,6 +616,15 @@ pub fn run(opts: Rc<Options>, cfg: Config) -> i32 {
                 nav::resolve(opts.url.as_deref().unwrap_or(&cfg.home_page), &cfg.search_url)
             };
             let shell = build(app, &opts, &cfg, &start);
+            // Everything the window's widgets call back into holds the shell weakly, so something
+            // must own it for as long as the window lives. (Without this the address bar, buttons
+            // and shortcuts silently did nothing once start-up ended.)
+            shell.window.connect_destroy({
+                let keep = shell.clone();
+                move |_| {
+                    let _ = &keep;
+                }
+            });
             shell.window.present();
             if opts.latency {
                 latency::spawn(app.clone(), shell.clone(), cfg.rendering.frame_rate);

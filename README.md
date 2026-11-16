@@ -26,6 +26,9 @@ reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close ta
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number.
 
+Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
+press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
+
 ## Configuration
 
 One optional YAML file, `~/.config/browsah/config.yaml` (or `--config=PATH`); every option is

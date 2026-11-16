@@ -87,6 +87,10 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         }
     };
 
+    // The widgets reach the shell through weak references; the window must own it or the address
+    // bar and buttons die at the end of start-up (the test's own reference hides that).
+    r.check("the window keeps the shell alive", Rc::strong_count(shell) >= 2, || format!("strong count {}", Rc::strong_count(shell)));
+
     let ready = wait_until(15_000, || st.borrow().ready).await;
     r.check("browser is created", ready, || "no Ready event within 15 s".into());
     if !ready {
@@ -604,5 +608,38 @@ async fn run_scroll(shell: &Rc<Shell>, r: &mut Report) {
     let took = t0.elapsed().as_millis();
     r.check("20 fast wheel notches scroll 2000 px (no speed cap)", (y() - 2000.0).abs() <= 20.0, || format!("scrollY={} after {took} ms", y()));
     println!("scroll: 20 notches reached y={} in {took} ms", y());
+    // One big event (a fast trackpad swipe delivers large deltas): must not be clamped.
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let y0 = y();
+    d.scroll(10.0);
+    let _ = wait_until(3_000, || y() >= y0 + 990.0).await;
+    // Blink limits one wheel event to about a viewport of scrolling; real swipes are many small events.
+    println!("scroll: a single 1000 px wheel event moved {} px (limited to about a viewport)", y() - y0);
+    // Sustained small events at a given rate, as a trackpad delivers them: the page must keep up
+    // (record how far behind the input it falls).
+    for (per_event_px, interval_ms) in [(10.0, 8u64), (30.0, 8), (60.0, 8)] {
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        glib::timeout_future(Duration::from_millis(100)).await;
+        let _ = WidgetExt::activate_action(&shell.window, "win.focus-address", None);
+        shell.entry.set_text(&page("tall.html"));
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        let _ = wait_until(10_000, || !st.borrow().loading && st.borrow().title == "y:0").await;
+        glib::timeout_future(Duration::from_millis(700)).await;
+        d.mv(300.0, 300.0);
+        let n = 125;
+        let t0 = std::time::Instant::now();
+        let mut samples = Vec::new();
+        for i in 0..n {
+            d.scroll(per_event_px / 100.0);
+            glib::timeout_future(Duration::from_millis(interval_ms)).await;
+            if i % 25 == 24 {
+                samples.push((t0.elapsed().as_millis(), y()));
+            }
+        }
+        let sent = n as f64 * per_event_px;
+        glib::timeout_future(Duration::from_millis(1500)).await;
+        println!("scroll rate test: {per_event_px} px every {interval_ms} ms (sent {sent} px over {} ms): samples {:?}, final y={}", t0.elapsed().as_millis() - 1500, samples, y());
+        r.check(&format!("sustained {per_event_px} px events every {interval_ms} ms are all applied"), (y() - sent).abs() <= sent * 0.02 + 5.0, || format!("sent {sent}, scrolled {}", y()));
+    }
     let _ = &v;
 }
