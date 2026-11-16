@@ -14,6 +14,18 @@ the profile's rules, then the application's. (`routing:` is not merged like othe
 are tried in that order.) The files are reloaded when they change, like the rest of the configuration
 ([Layers and reloading](README.md#layers-and-reloading)).
 
+**Sign-ins started by other applications.** Command-line tools and desktop applications (for example
+Claude or ChatGPT) open the browser to sign in and then wait for the browser to hand the result back. A
+link from another application that looks like that opens by default in an **ephemeral window** of the
+profile that received it, so it does not land among a workspace's tabs, and nothing about it is
+remembered. Close the window when it says you are done. Recognised (by the address alone, so it is a
+guess): an OAuth address whose `redirect_uri` (or `redirect_url`) points back to this machine, either
+`http://localhost:PORT/...`, `127.0.0.1` or `[::1]`, or the application's own scheme (`myapp://...`),
+and that also has a `client_id`, `response_type` or `code_challenge`; and a device sign-in address (a
+path containing `device` with a `user_code`). A rule written by you is tried first, so you can send
+particular sign-ins elsewhere (`match: { app_sign_in: true }`), and `routing.app_sign_in` changes the
+default for the whole profile or application. `browsah route test` shows when it applied.
+
 What counts as a request:
 
 | Kind | When |
@@ -39,6 +51,7 @@ link from another application is first judged. `--from` is `external` (the defau
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `routing.external` | action | open as a tab in the active window | What to do with a link from another application when no rule matches. |
+| `routing.app_sign_in` | action | `ephemeral` | What to do with a link from another application that looks like a sign-in it started (see below). `allow` turns the detection off. |
 | `routing.rules` | list | none | The rules, tried in order. Each is a map with the keys below. A rule with a mistake is skipped with a warning. |
 | `routing.rules[].name` | text | none | A label shown by `route test`. |
 | `routing.rules[].match` | map | everything | When the rule applies: all the keys given must match (`match.*` below). With no `match` the rule applies to every link of the default kinds. |
@@ -47,6 +60,7 @@ link from another application is first judged. `--from` is `external` (the defau
 | `routing.rules[].match.from` | list of text | any source | Where the request came from: `external`, `ephemeral` (a window with no workspace) or `workspace:<id>`. Any one may match. |
 | `routing.rules[].match.kind` | list | `link` and `external` | `external`, `link` or `typed`. |
 | `routing.rules[].match.target` | list | any | `same_tab` or `new_tab`. |
+| `routing.rules[].match.app_sign_in` | bool | either | `true`: only addresses that look like another application's sign-in; `false`: only ones that do not (below). |
 | `routing.rules[].open` | action | required | What to do (below). |
 
 **Actions** (`open:` and `routing.external`):

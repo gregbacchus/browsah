@@ -131,6 +131,77 @@ pub struct Decision {
     pub rule: Option<(String, usize, Option<String>)>,
 }
 
+// ---- recognising a sign-in started by another application ---------------------------------------
+
+/// Percent-decode a query component (`+` is a space).
+fn query_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() + 0 && bytes.get(i + 1..i + 3).is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("00");
+                out.push(u8::from_str_radix(hex, 16).unwrap_or(b'?'));
+                i += 2;
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `key=value` pairs of a URL's query.
+fn query_pairs(url: &str) -> Vec<(String, String)> {
+    let Some((_, rest)) = url.split_once('?') else { return Vec::new() };
+    let query = rest.split('#').next().unwrap_or("");
+    query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (query_decode(k), query_decode(v)),
+            None => (query_decode(p), String::new()),
+        })
+        .collect()
+}
+
+/// Is `url` an address that another application (a command-line tool, a desktop app) opens in the
+/// browser to sign in? Two shapes are recognised:
+/// - OAuth: a web address whose query has a `redirect_uri` (or `redirect_url`) that points back to the
+///   machine, either a loopback address (`http://localhost:PORT/...`, `127.0.0.1`, `[::1]`) or an
+///   application's own scheme (`myapp://...`), and also a `client_id`, `response_type` or
+///   `code_challenge` (so an ordinary link that happens to carry a redirect is not caught);
+/// - device sign-in: a path containing `device` and a `user_code`.
+/// This is a heuristic: it only looks at the address.
+pub fn looks_like_app_sign_in(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else { return false };
+    if !matches!(scheme.to_lowercase().as_str(), "http" | "https") {
+        return false;
+    }
+    let path = rest.split(['?', '#']).next().unwrap_or("").to_lowercase();
+    let pairs = query_pairs(url);
+    let has = |k: &str| pairs.iter().any(|(key, v)| key == k && !v.is_empty());
+    if has("user_code") && path.contains("device") {
+        return true;
+    }
+    let redirect = pairs.iter().find(|(k, v)| (k == "redirect_uri" || k == "redirect_url") && !v.is_empty()).map(|(_, v)| v.as_str());
+    let Some(redirect) = redirect else { return false };
+    let marker = has("client_id") || has("response_type") || has("code_challenge");
+    let target_is_local = match redirect.split_once("://") {
+        Some((s, rest)) if matches!(s.to_lowercase().as_str(), "http" | "https") => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+            let host = if host.starts_with('[') { host.split(']').next().unwrap_or("").trim_start_matches('[') } else { host.split(':').next().unwrap_or("") };
+            host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.")
+        }
+        // An application's own scheme (also the `com.example.app:/path` form).
+        Some((s, _)) => !s.is_empty(),
+        None => redirect.split_once(':').is_some_and(|(s, _)| s.contains('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')),
+    };
+    marker && target_is_local
+}
+
 // ---- configuration ----------------------------------------------------------------------------
 
 /// The `routing:` section of a configuration file.
@@ -141,6 +212,9 @@ pub struct RoutingConfig {
     /// What to do with links from other applications when no rule matches (default: open as a tab
     /// in the active window).
     pub external: Option<String>,
+    /// What to do with a link from another application that looks like a sign-in (default
+    /// `ephemeral`: a window of its own that is forgotten); `allow` turns the detection off.
+    pub app_sign_in: Option<String>,
     pub rules: Vec<RuleConfig>,
 }
 
@@ -170,6 +244,9 @@ pub struct MatchConfig {
     pub kind: Vec<Kind>,
     /// How the page asks to open it; default any.
     pub target: Vec<Target>,
+    /// `true`: only addresses that look like another application's sign-in; `false`: only ones
+    /// that do not (see `looks_like_app_sign_in`). Default: either.
+    pub app_sign_in: Option<bool>,
 }
 
 /// A source selector in a rule.
@@ -188,6 +265,7 @@ struct Rule {
     from: Vec<FromSel>,
     kinds: Vec<Kind>,
     targets: Vec<Target>,
+    sign_in: Option<bool>,
     action: Action,
 }
 
@@ -215,6 +293,7 @@ impl Rule {
             from,
             kinds,
             targets: cfg.matches.target.clone(),
+            sign_in: cfg.matches.app_sign_in,
             action: Action::parse(&cfg.open)?,
         })
     }
@@ -238,6 +317,9 @@ impl Rule {
                 return Some("source");
             }
         }
+        if self.sign_in.is_some_and(|want| looks_like_app_sign_in(&req.url) != want) {
+            return Some("app_sign_in");
+        }
         let scheme = req.url.split_once(':').map(|(s, _)| s.to_lowercase()).unwrap_or_default();
         if !self.schemes.is_empty() && !self.schemes.contains(&scheme) {
             return Some("scheme");
@@ -256,6 +338,8 @@ pub struct Router {
     profile: Vec<Rule>,
     app: Vec<Rule>,
     external: Option<Action>,
+    /// What to do with a link that looks like another application's sign-in.
+    sign_in: Option<Action>,
     /// A label for the profile layer (`route test` output).
     profile_label: String,
     /// Problems found while loading (invalid rules are skipped).
@@ -301,12 +385,16 @@ impl Router {
         let app_cfg = read_routing(app_file, &mut warnings);
         router.app = compile_all("application", app_file, &app_cfg, &mut warnings);
         let mut external = app_cfg.external.clone();
+        let mut sign_in = app_cfg.app_sign_in.clone();
         if let Some(p) = profile {
             let file = p.dir.join("profile.yaml");
             let cfg = read_routing(&file, &mut warnings);
             router.profile = compile_all("profile", &file, &cfg, &mut warnings);
             if cfg.external.is_some() {
                 external = cfg.external.clone();
+            }
+            if cfg.app_sign_in.is_some() {
+                sign_in = cfg.app_sign_in.clone();
             }
             for w in Workspace::list(p) {
                 let file = w.dir.join("workspace.yaml");
@@ -321,6 +409,13 @@ impl Router {
             Ok(a) => Some(a),
             Err(err) => {
                 warnings.push(format!("routing.external: {err}; ignored"));
+                None
+            }
+        });
+        router.sign_in = sign_in.and_then(|e| match Action::parse(&e) {
+            Ok(a) => Some(a),
+            Err(err) => {
+                warnings.push(format!("routing.app_sign_in: {err}; ignored"));
                 None
             }
         });
@@ -359,6 +454,12 @@ impl Router {
                 }
             }
         }
+        // A sign-in another application started: its own window, unless told otherwise.
+        let sign_in_action = self.sign_in.clone().unwrap_or(Action::Ephemeral);
+        let decision = decision.or_else(|| {
+            (req.kind == Kind::External && sign_in_action != Action::Allow && looks_like_app_sign_in(&req.url))
+                .then(|| Decision { action: sign_in_action.clone(), rule: Some(("routing.app_sign_in".into(), 0, None)) })
+        });
         let decision = decision.unwrap_or_else(|| match (&req.kind, &self.external) {
             (Kind::External, Some(a)) => Decision { action: a.clone(), rule: Some(("routing.external".into(), 0, None)) },
             _ => Decision { action: Action::Allow, rule: None },
@@ -375,8 +476,10 @@ impl Router {
                 out.push(w.clone());
             }
         }
-        if let Some(Action::Workspace(w)) = &self.external {
-            out.push(w.clone());
+        for a in [&self.external, &self.sign_in].into_iter().flatten() {
+            if let Action::Workspace(w) = a {
+                out.push(w.clone());
+            }
         }
         out.sort();
         out.dedup();
@@ -524,7 +627,7 @@ mod tests {
         let cfg: RoutingConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let mut warnings = Vec::new();
         let rules = compile_all("profile", Path::new("test.yaml"), &cfg, &mut warnings);
-        Router { profile: rules, external: cfg.external.as_deref().and_then(|e| Action::parse(e).ok()), warnings, ..Router::default() }
+        Router { profile: rules, external: cfg.external.as_deref().and_then(|e| Action::parse(e).ok()), sign_in: cfg.app_sign_in.as_deref().and_then(|e| Action::parse(e).ok()), warnings, ..Router::default() }
     }
 
     fn req(url: &str, source: Source, kind: Kind, target: Target) -> Request {
@@ -537,6 +640,66 @@ mod tests {
 
     fn click(url: &str, ws: &str) -> Request {
         req(url, Source::Tab(Some(ws.into())), Kind::Link, Target::SameTab)
+    }
+
+    #[test]
+    fn recognises_sign_ins_started_by_other_applications() {
+        let yes = [
+            "https://accounts.example.com/o/oauth2/v2/auth?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback&response_type=code",
+            "https://login.example.com/authorize?response_type=code&redirect_uri=http://127.0.0.1:53124/cb&code_challenge=xyz",
+            "https://auth.example.com/authorize?client_id=1&redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A9000%2Fcb",
+            "https://claude.example.com/oauth/authorize?client_id=app&redirect_uri=claude%3A%2F%2Fauth%2Fcallback&response_type=code",
+            "https://auth.example.com/authorize?client_id=app&redirect_uri=com.example.app%3A%2Foauth2redirect",
+            "https://github.example/login/device?user_code=ABCD-1234",
+        ];
+        for u in yes {
+            assert!(looks_like_app_sign_in(u), "{u}");
+        }
+        let no = [
+            "https://example.com/",
+            "https://example.com/login",
+            // A redirect to a web site, or no marker: an ordinary page.
+            "https://accounts.example.com/authorize?client_id=abc&redirect_uri=https%3A%2F%2Fapp.example.org%2Fcb&response_type=code",
+            "https://example.com/go?redirect_uri=http://localhost:3000/",
+            "https://example.com/device-list",
+            "https://example.com/x?user_code=1",
+            "mailto:a@b.c",
+            "claude://auth?client_id=a&redirect_uri=http://localhost:1/",
+            "not a url",
+        ];
+        for u in no {
+            assert!(!looks_like_app_sign_in(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn query_decoding() {
+        assert_eq!(query_decode("a%2Fb+c%3D"), "a/b c=");
+        assert_eq!(query_decode("100%"), "100%");
+        assert_eq!(query_decode("%zz"), "%zz");
+        let p = query_pairs("https://x/?a=1&b=%26&c&=d#frag=2");
+        assert_eq!(p, [("a".into(), "1".into()), ("b".into(), "&".into()), ("c".into(), "".into()), ("".into(), "d".into())]);
+    }
+
+    #[test]
+    fn sign_ins_get_their_own_window_by_default_and_rules_can_override() {
+        let url = "https://accounts.example.com/authorize?client_id=a&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcb&response_type=code";
+        let r = rules("rules: []\n");
+        let d = r.route(&ext(url));
+        assert_eq!(d.action, Action::Ephemeral);
+        assert_eq!(d.rule.as_ref().map(|r| r.0.as_str()), Some("routing.app_sign_in"));
+        // Only for links from other applications.
+        assert_eq!(r.route(&click(url, "w")).action, Action::Allow);
+        // The default can be changed or switched off.
+        assert_eq!(rules("app_sign_in: workspace:auth\n").route(&ext(url)).action, Action::Workspace("auth".into()));
+        assert_eq!(rules("app_sign_in: allow\n").route(&ext(url)).action, Action::Allow);
+        // A rule beats the default, and can single sign-ins out.
+        let r = rules("rules:\n  - match: { url: ['accounts.example.com'], app_sign_in: true }\n    open: profile:personal\n  - match: { url: ['accounts.example.com'], app_sign_in: false }\n    open: workspace:web\n");
+        assert_eq!(r.route(&ext(url)).action, Action::Profile { profile: "personal".into(), workspace: None });
+        assert_eq!(r.route(&ext("https://accounts.example.com/settings")).action, Action::Workspace("web".into()));
+        // The external default does not hide it.
+        assert_eq!(rules("external: workspace:inbox\n").route(&ext(url)).action, Action::Ephemeral);
+        assert_eq!(rules("external: workspace:inbox\n").route(&ext("https://news.net/")).action, Action::Workspace("inbox".into()));
     }
 
     #[test]

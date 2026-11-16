@@ -833,7 +833,7 @@ fn start_test_server() -> u16 {
             let mut buf = [0u8; 2048];
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-            let path = req.split_whitespace().nth(1).unwrap_or("/").to_owned();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_owned();
             let (status, extra, body) = match path.as_str() {
                 "/scope.html" => (
                     "200 OK",
@@ -1125,6 +1125,19 @@ async fn run_routing(shell: &Rc<Shell>, r: &mut Report) {
     app.open(&[gio::File::for_uri("http://blocked.invalid/x")], "");
     glib::timeout_future(Duration::from_millis(800)).await;
     r.check("a blocked external link opens nothing", super::windows().len() == n && n == windows_before + 1, || format!("{} windows (was {windows_before}+1)", super::windows().len()));
+
+    // A sign-in another application started (an OAuth address that redirects back to this machine)
+    // gets an ephemeral window of its own, whatever the page is.
+    let n = super::windows().len();
+    app.open(&[gio::File::for_uri(&format!("http://127.0.0.1:{port}/b.html?client_id=cli&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A9%2Fcallback"))], "");
+    let find_signin = || super::windows().into_iter().find(|s| s.workspace.is_none() && !Rc::ptr_eq(s, shell) && s.tabs().iter().any(|t| t.state.borrow().address.contains("response_type=code")));
+    let ok = wait_until(15_000, || super::windows().len() == n + 1 && find_signin().is_some()).await;
+    let signin = find_signin();
+    r.check("a sign-in started by another application opens in an ephemeral window", ok && signin.is_some(), || format!("{} windows (was {n})", super::windows().len()));
+    if let Some(s) = signin {
+        let ok = wait_until(15_000, || s.current().is_some_and(|t| t.state.borrow().title == "Page B")).await;
+        r.check("the sign-in page loads there", ok, || "not loaded".into());
+    }
 
     // A workspace named on the command line is an explicit choice: no routing.
     let rc_tabs = find("rc").map(|s| s.tab_count()).unwrap_or(0);
