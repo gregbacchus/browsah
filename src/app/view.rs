@@ -1,0 +1,1209 @@
+//! `BrowserView`: one CEF browser rendered into a `GtkPicture`.
+//!
+//! CEF runs on its own thread, so its handlers only touch `Shared` (behind mutexes and atomics)
+//! and hand frames and events to the GTK thread with `MainContext::invoke`. GTK objects live in a
+//! thread-local registry keyed by the view's id and are only used on the GTK thread.
+
+use super::input;
+use crate::cef_rt::{on_ui, BrowserHandle, HostHandle};
+use crate::cli::Mode;
+use crate::frames::{import_frame, DmabufFrame, View};
+use cef::*;
+use gtk::{gdk, glib, prelude::*};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// One entry of a context menu.
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub id: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub separator: bool,
+}
+
+/// CEF's callback for completing a context menu. Resolved (or cancelled) exactly once.
+struct MenuCallback(RunContextMenuCallback);
+unsafe impl Send for MenuCallback {}
+
+/// A context menu CEF wants shown, with the callback to answer it.
+pub struct MenuRequest {
+    /// Position in logical widget coordinates.
+    pub x: f64,
+    pub y: f64,
+    pub items: Vec<MenuItem>,
+    callback: Mutex<Option<MenuCallback>>,
+}
+
+impl std::fmt::Debug for MenuRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MenuRequest({} items at {},{})", self.items.len(), self.x, self.y)
+    }
+}
+
+impl MenuRequest {
+    /// Answer with a command for CEF to run. Posted to CEF's UI thread.
+    fn run(&self, id: i32) {
+        if let Some(cb) = self.callback.lock().unwrap().take() {
+            on_ui(move || {
+                let cb = cb; // whole wrapper, not its field, so the closure stays Send
+                cb.0.cont(id, EventFlags::from(sys::cef_event_flags_t::EVENTFLAG_NONE));
+            });
+        }
+    }
+
+    /// Dismiss the menu without choosing anything (a no-op if already answered).
+    fn cancel(&self) {
+        if let Some(cb) = self.callback.lock().unwrap().take() {
+            on_ui(move || {
+                let cb = cb;
+                cb.0.cancel();
+            });
+        }
+    }
+}
+
+/// Context-menu commands this browser can carry out (CEF's `MENU_ID_*`).
+fn supported(id: i32) -> bool {
+    use sys::cef_menu_id_t as M;
+    [
+        M::MENU_ID_BACK,
+        M::MENU_ID_FORWARD,
+        M::MENU_ID_RELOAD,
+        M::MENU_ID_RELOAD_NOCACHE,
+        M::MENU_ID_STOPLOAD,
+        M::MENU_ID_UNDO,
+        M::MENU_ID_REDO,
+        M::MENU_ID_CUT,
+        M::MENU_ID_COPY,
+        M::MENU_ID_PASTE,
+        M::MENU_ID_DELETE,
+        M::MENU_ID_SELECT_ALL,
+    ]
+    .iter()
+    .any(|m| *m as i32 == id)
+}
+
+/// What a page tells the shell about itself.
+#[derive(Debug, Clone)]
+pub enum ViewEvent {
+    /// Show this context menu.
+    ContextMenu(Arc<MenuRequest>),
+    /// The browser exists; navigation calls now work.
+    Ready,
+    /// The main frame's address changed.
+    Address(String),
+    Title(String),
+    Loading { loading: bool, can_back: bool, can_forward: bool },
+    /// The page asked for a new window (`window.open`, `target=_blank`): open this URL as a tab.
+    OpenUrl(String),
+}
+
+/// State shared with CEF's thread.
+struct Shared {
+    id: u64,
+    view: Mutex<View>,
+    browser: Mutex<Option<BrowserHandle>>,
+    host: Mutex<Option<HostHandle>>,
+    /// Frames CEF has delivered (any path).
+    frames: AtomicU64,
+    /// The view is not on screen (a background tab): CEF is told to stop rendering it. Starts
+    /// false (a new view is assumed visible); set when the widget is unmapped, cleared when mapped.
+    hidden: AtomicBool,
+    /// A navigation requested before the browser existed; run when it is created.
+    pending_url: Mutex<Option<String>>,
+}
+
+/// GTK-thread-only state, looked up by view id from the closures sent across threads.
+struct GtkSide {
+    overlay: gtk::Overlay,
+    picture: gtk::Picture,
+    /// The `<select>` dropdown and similar popup, drawn above the page. It sits in a `GtkFixed`
+    /// layer so it gets exactly the size and position CEF asks for (a bare picture would take
+    /// its natural size: the texture's pixel size).
+    popup: gtk::Picture,
+    popup_layer: gtk::Fixed,
+    display: gdk::Display,
+    on_event: Rc<dyn Fn(ViewEvent)>,
+    /// Called with every finished page frame (used by the latency measurement).
+    frame_hook: Option<Rc<dyn Fn(&gdk::Texture)>>,
+    cursor: String,
+    /// Every cursor the page has asked for, in order (the self-test looks for one it expects,
+    /// since the real pointer resting over the window can move the cursor on again).
+    cursor_log: Vec<String>,
+    tooltip: String,
+    selection: String,
+    popup_visible: bool,
+}
+
+thread_local! {
+    static VIEWS: RefCell<HashMap<u64, GtkSide>> = RefCell::new(HashMap::new());
+}
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Self-test only: ignore pointer events from the real mouse. A pointer resting over the window
+/// is re-delivered whenever the layout shifts (tab titles, spinners) and would race the signals
+/// the test emits.
+static SYNTHETIC_POINTER_ONLY: AtomicBool = AtomicBool::new(false);
+
+pub fn set_synthetic_pointer_only(on: bool) {
+    SYNTHETIC_POINTER_ONLY.store(on, Ordering::Relaxed);
+}
+
+fn ignore_pointer(current_event: Option<gdk::Event>) -> bool {
+    current_event.is_some() && SYNTHETIC_POINTER_ONLY.load(Ordering::Relaxed)
+}
+
+/// GTK thread: show a finished frame.
+fn present(id: u64, tex: gdk::Texture) {
+    let hook = VIEWS.with(|v| {
+        v.borrow().get(&id).and_then(|side| {
+            side.picture.set_paintable(Some(&tex));
+            side.frame_hook.clone()
+        })
+    });
+    if let Some(hook) = hook {
+        hook(&tex);
+    }
+}
+
+/// GTK thread: show a finished popup frame.
+fn present_popup(id: u64, tex: gdk::Texture) {
+    VIEWS.with(|v| {
+        if let Some(side) = v.borrow().get(&id) {
+            side.popup.set_paintable(Some(&tex));
+        }
+    });
+}
+
+/// GTK thread: run `f` on the view's GTK-side state.
+fn with_side<R>(id: u64, f: impl FnOnce(&mut GtkSide) -> R) -> Option<R> {
+    VIEWS.with(|v| v.borrow_mut().get_mut(&id).map(f))
+}
+
+/// GTK thread: deliver an event to the shell. The callback runs without the registry borrowed,
+/// so it may call back into the view.
+fn deliver(id: u64, event: ViewEvent) {
+    let cb = VIEWS.with(|v| v.borrow().get(&id).map(|s| s.on_event.clone()));
+    if let Some(cb) = cb {
+        cb(event);
+    }
+}
+
+/// Any thread: queue an event for the GTK thread.
+fn send(id: u64, event: ViewEvent) {
+    glib::MainContext::default().invoke(move || deliver(id, event));
+}
+
+wrap_render_handler! {
+    struct ViewRender { shared: Arc<Shared> }
+
+    impl RenderHandler {
+        fn view_rect(&self, _b: Option<&mut Browser>, rect: Option<&mut Rect>) {
+            let (w, h) = self.shared.view.lock().unwrap().device_size();
+            if let Some(rect) = rect {
+                *rect = Rect { x: 0, y: 0, width: w, height: h };
+            }
+        }
+
+        fn screen_info(&self, _b: Option<&mut Browser>, info: Option<&mut ScreenInfo>) -> ::std::os::raw::c_int {
+            let Some(info) = info else { return 0 };
+            let v = *self.shared.view.lock().unwrap();
+            let (w, h) = v.device_size();
+            let r = Rect { x: 0, y: 0, width: w, height: h };
+            // With device resolution the view is already device-sized, so CEF sees a 1x screen.
+            info.device_scale_factor = if v.k() > 1.0 { 1.0 } else { v.scale };
+            info.rect = r.clone();
+            info.available_rect = r;
+            1
+        }
+
+        // Readback path: the buffer is only valid during the call, so copy it.
+        fn on_paint(
+            &self,
+            _b: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty: Option<&[Rect]>,
+            buffer: *const u8,
+            width: ::std::os::raw::c_int,
+            height: ::std::os::raw::c_int,
+        ) {
+            let popup = type_ == PaintElementType::POPUP;
+            if (type_ != PaintElementType::VIEW && !popup) || buffer.is_null() {
+                return;
+            }
+            if !popup {
+                self.shared.frames.fetch_add(1, Ordering::Relaxed);
+            }
+            let id = self.shared.id;
+            let len = width as usize * height as usize * 4;
+            let bytes = glib::Bytes::from(unsafe { std::slice::from_raw_parts(buffer, len) });
+            glib::MainContext::default().invoke(move || {
+                let tex = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, width as usize * 4);
+                if popup {
+                    present_popup(id, tex.upcast());
+                } else {
+                    present(id, tex.upcast());
+                }
+            });
+        }
+
+        // Accelerated path: only the dmabuf plane descriptors cross to the GTK thread.
+        fn on_accelerated_paint(
+            &self,
+            _b: Option<&mut Browser>,
+            type_: PaintElementType,
+            _dirty: Option<&[Rect]>,
+            info: Option<&AcceleratedPaintInfo>,
+        ) {
+            let Some(info) = info else { return };
+            let popup = type_ == PaintElementType::POPUP;
+            if type_ != PaintElementType::VIEW && !popup {
+                return;
+            }
+            if !popup {
+                self.shared.frames.fetch_add(1, Ordering::Relaxed);
+            }
+            let id = self.shared.id;
+            if let Some(frame) = DmabufFrame::from_info(info) {
+                glib::MainContext::default().invoke(move || {
+                    let display = VIEWS.with(|v| v.borrow().get(&id).map(|s| s.display.clone()));
+                    if let Some(tex) = display.and_then(|d| import_frame(&d, frame)) {
+                        if popup {
+                            present_popup(id, tex);
+                        } else {
+                            present(id, tex);
+                        }
+                    }
+                });
+            }
+        }
+
+        // `<select>` dropdowns and similar are painted as a separate popup element.
+        fn on_popup_show(&self, _b: Option<&mut Browser>, show: ::std::os::raw::c_int) {
+            let id = self.shared.id;
+            let show = show != 0;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| {
+                    side.popup_visible = show;
+                    side.popup.set_visible(show);
+                    if !show {
+                        side.popup.set_paintable(None::<&gdk::Paintable>);
+                    }
+                });
+            });
+        }
+
+        fn on_popup_size(&self, _b: Option<&mut Browser>, rect: Option<&Rect>) {
+            let Some(rect) = rect else { return };
+            let k = self.shared.view.lock().unwrap().k();
+            // View pixels to logical pixels.
+            let (x, y, w, h) = (
+                (rect.x as f32 / k).round() as i32,
+                (rect.y as f32 / k).round() as i32,
+                (rect.width as f32 / k).round() as i32,
+                (rect.height as f32 / k).round() as i32,
+            );
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| {
+                    side.popup.set_size_request(w.max(1), h.max(1));
+                    side.popup_layer.move_(&side.popup, x.max(0) as f64, y.max(0) as f64);
+                });
+            });
+        }
+
+        // Kept so the shell can offer the text to the clipboard (see `BrowserView::selection`).
+        fn on_text_selection_changed(&self, _b: Option<&mut Browser>, selected_text: Option<&CefString>, _range: Option<&Range>) {
+            let text = selected_text.map(|t| t.to_string()).unwrap_or_default();
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| side.selection = text);
+            });
+        }
+    }
+}
+
+wrap_life_span_handler! {
+    struct ViewLife { shared: Arc<Shared> }
+
+    impl LifeSpanHandler {
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            let Some(browser) = browser else { return };
+            let Some(host) = browser.host() else { return };
+            host.was_hidden(self.shared.hidden.load(Ordering::Relaxed) as _);
+            host.was_resized();
+            *self.shared.host.lock().unwrap() = Some(HostHandle(host));
+            *self.shared.browser.lock().unwrap() = Some(BrowserHandle(browser.clone()));
+            if let Some(url) = self.shared.pending_url.lock().unwrap().take() {
+                if let Some(frame) = browser.main_frame() {
+                    frame.load_url(Some(&CefString::from(url.as_str())));
+                }
+            }
+            send(self.shared.id, ViewEvent::Ready);
+        }
+
+        // A page wants a new window. Windowless browsers have no window to give it, so cancel
+        // the popup and let the shell open the URL as a tab. Only for a user gesture: pages
+        // that open windows on their own (timers, load) are blocked.
+        fn on_before_popup(
+            &self,
+            _b: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: ::std::os::raw::c_int,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            _disposition: WindowOpenDisposition,
+            user_gesture: ::std::os::raw::c_int,
+            _features: Option<&PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<DictionaryValue>>,
+            _no_js_access: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            if user_gesture != 0 {
+                if let Some(url) = target_url.map(|u| u.to_string()).filter(|u| !u.is_empty()) {
+                    send(self.shared.id, ViewEvent::OpenUrl(url));
+                }
+            }
+            1
+        }
+
+        // The browser is gone: drop its GTK-side state so late events find nothing.
+        fn on_before_close(&self, _b: Option<&mut Browser>) {
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                VIEWS.with(|v| v.borrow_mut().remove(&id));
+            });
+        }
+    }
+}
+
+wrap_load_handler! {
+    struct ViewLoad { shared: Arc<Shared> }
+
+    impl LoadHandler {
+        fn on_loading_state_change(
+            &self,
+            _b: Option<&mut Browser>,
+            is_loading: ::std::os::raw::c_int,
+            can_go_back: ::std::os::raw::c_int,
+            can_go_forward: ::std::os::raw::c_int,
+        ) {
+            send(
+                self.shared.id,
+                ViewEvent::Loading { loading: is_loading != 0, can_back: can_go_back != 0, can_forward: can_go_forward != 0 },
+            );
+        }
+    }
+}
+
+wrap_display_handler! {
+    struct ViewDisplay { shared: Arc<Shared> }
+
+    impl DisplayHandler {
+        fn on_address_change(&self, _b: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
+            // Only the main frame's address is the page's address.
+            if frame.is_some_and(|f| f.is_main() != 0) {
+                if let Some(url) = url {
+                    send(self.shared.id, ViewEvent::Address(url.to_string()));
+                }
+            }
+        }
+
+        fn on_title_change(&self, _b: Option<&mut Browser>, title: Option<&CefString>) {
+            if let Some(title) = title {
+                send(self.shared.id, ViewEvent::Title(title.to_string()));
+            }
+        }
+
+        // The page's cursor (pointer, text, resize...): show the matching GTK cursor.
+        fn on_cursor_change(
+            &self,
+            _b: Option<&mut Browser>,
+            _cursor: ::std::os::raw::c_ulong,
+            type_: CursorType,
+            _custom: Option<&CursorInfo>,
+        ) -> ::std::os::raw::c_int {
+            let name = input::cursor_name(type_);
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| {
+                    side.cursor = name.to_owned();
+                    side.cursor_log.push(name.to_owned());
+                    side.overlay.set_cursor_from_name(Some(name));
+                });
+            });
+            1
+        }
+
+        // Page tooltips (the `title` attribute): show them as GTK tooltips. Empty text hides.
+        fn on_tooltip(&self, _b: Option<&mut Browser>, text: Option<&mut CefString>) -> ::std::os::raw::c_int {
+            let text = text.map(|t| t.to_string()).unwrap_or_default();
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| {
+                    side.tooltip = text.clone();
+                    side.overlay.set_tooltip_text(if text.is_empty() { None } else { Some(&text) });
+                });
+            });
+            1
+        }
+    }
+}
+
+wrap_context_menu_handler! {
+    struct ViewMenu { shared: Arc<Shared> }
+
+    impl ContextMenuHandler {
+        // Replace CEF's own (windowless: invisible) menu with ours, limited to the commands that
+        // work here.
+        fn run_context_menu(
+            &self,
+            _b: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            params: Option<&mut ContextMenuParams>,
+            model: Option<&mut MenuModel>,
+            callback: Option<&mut RunContextMenuCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(params), Some(model), Some(callback)) = (params, model, callback) else { return 0 };
+            let mut items: Vec<MenuItem> = Vec::new();
+            for i in 0..model.count() {
+                let id = model.command_id_at(i);
+                if model.type_at(i) == MenuItemType::SEPARATOR {
+                    // No leading or doubled separators.
+                    if items.last().is_some_and(|l| !l.separator) {
+                        items.push(MenuItem { id: 0, label: String::new(), enabled: false, separator: true });
+                    }
+                } else if model.is_visible_at(i) != 0 && supported(id) {
+                    let label = CefString::from(&model.label_at(i)).to_string().replace('&', "");
+                    items.push(MenuItem { id, label, enabled: model.is_enabled_at(i) != 0, separator: false });
+                }
+            }
+            while items.last().is_some_and(|l| l.separator) {
+                items.pop();
+            }
+            if items.is_empty() {
+                callback.cancel();
+                return 1;
+            }
+            let k = self.shared.view.lock().unwrap().k() as f64;
+            let req = Arc::new(MenuRequest {
+                x: params.xcoord() as f64 / k,
+                y: params.ycoord() as f64 / k,
+                items,
+                callback: Mutex::new(Some(MenuCallback(callback.clone()))),
+            });
+            send(self.shared.id, ViewEvent::ContextMenu(req));
+            1
+        }
+    }
+}
+
+wrap_client! {
+    struct ViewClient {
+        render: RenderHandler,
+        life: LifeSpanHandler,
+        load: LoadHandler,
+        display: DisplayHandler,
+        menu: ContextMenuHandler,
+    }
+
+    impl Client {
+        fn render_handler(&self) -> Option<RenderHandler> { Some(self.render.clone()) }
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(self.life.clone()) }
+        fn load_handler(&self) -> Option<LoadHandler> { Some(self.load.clone()) }
+        fn display_handler(&self) -> Option<DisplayHandler> { Some(self.display.clone()) }
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(self.menu.clone()) }
+    }
+}
+
+/// The GTK input controllers, exposed so the self-test can emit their signals as a user would.
+pub struct Controllers {
+    pub motion: gtk::EventControllerMotion,
+    pub click: gtk::GestureClick,
+    pub scroll: gtk::EventControllerScroll,
+    pub key: gtk::EventControllerKey,
+    pub focus: gtk::EventControllerFocus,
+    pub im: gtk::IMMulticontext,
+}
+
+/// Input-method state while a key press is being filtered.
+#[derive(Default)]
+struct ImState {
+    /// Text committed by the input method during the current `filter_keypress` call.
+    committed: Vec<String>,
+    filtering: bool,
+    preediting: bool,
+}
+
+pub struct BrowserView {
+    /// The widget showing the page (and popups). Put it in the window.
+    pub widget: gtk::Overlay,
+    picture: gtk::Picture,
+    pub controllers: Controllers,
+    shared: Arc<Shared>,
+    im_state: RefCell<ImState>,
+    /// Last pointer position in widget (logical) coordinates, for wheel events.
+    pointer: Cell<(f64, f64)>,
+}
+
+impl BrowserView {
+    /// Create the browser and start loading `url`. `on_event` is called on the GTK thread.
+    pub fn new(
+        display: gdk::Display,
+        mode: Mode,
+        device_resolution: bool,
+        frame_rate: i32,
+        url: &str,
+        on_event: impl Fn(ViewEvent) + 'static,
+    ) -> Rc<BrowserView> {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let picture = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Fill)
+            .can_shrink(true)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let popup = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Fill)
+            .can_shrink(true)
+            .can_target(false)
+            .visible(false)
+            .build();
+        let popup_layer = gtk::Fixed::new();
+        popup_layer.set_can_target(false);
+        popup_layer.put(&popup, 0.0, 0.0);
+        let widget = gtk::Overlay::new();
+        widget.set_child(Some(&picture));
+        widget.add_overlay(&popup_layer);
+        widget.set_hexpand(true);
+        widget.set_vexpand(true);
+        widget.set_focusable(true);
+        widget.set_focus_on_click(true);
+
+        let shared = Arc::new(Shared {
+            id,
+            view: Mutex::new(View { size: (1280, 800), scale: 1.0, backing: device_resolution }),
+            browser: Mutex::new(None),
+            host: Mutex::new(None),
+            frames: AtomicU64::new(0),
+            hidden: AtomicBool::new(false),
+            pending_url: Mutex::new(None),
+        });
+        VIEWS.with(|v| {
+            v.borrow_mut().insert(
+                id,
+                GtkSide {
+                    overlay: widget.clone(),
+                    picture: picture.clone(),
+                    popup,
+                    popup_layer,
+                    display,
+                    on_event: Rc::new(on_event),
+                    frame_hook: None,
+                    cursor: "default".into(),
+                    cursor_log: Vec::new(),
+                    tooltip: String::new(),
+                    selection: String::new(),
+                    popup_visible: false,
+                },
+            );
+        });
+
+        let controllers = Controllers {
+            motion: gtk::EventControllerMotion::new(),
+            click: gtk::GestureClick::builder().button(0).build(),
+            scroll: gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES),
+            key: gtk::EventControllerKey::new(),
+            focus: gtk::EventControllerFocus::new(),
+            im: gtk::IMMulticontext::new(),
+        };
+        let view = Rc::new(BrowserView {
+            widget: widget.clone(),
+            picture: picture.clone(),
+            controllers,
+            shared: shared.clone(),
+            im_state: RefCell::new(ImState::default()),
+            pointer: Cell::new((0.0, 0.0)),
+        });
+        view.connect_input();
+
+        // A view that is not on screen (a background tab) stops rendering; showing it again
+        // wakes it (the first fresh frame arrives within about 10 ms: docs/research).
+        widget.connect_map({
+            let w = Rc::downgrade(&view);
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    v.set_hidden(false);
+                }
+            }
+        });
+        widget.connect_unmap({
+            let w = Rc::downgrade(&view);
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    v.set_hidden(true);
+                }
+            }
+        });
+
+        // Track the widget's size and scale; CEF renders at the matching device resolution.
+        {
+            let view = view.clone();
+            picture.add_tick_callback(move |w, _| {
+                let (pw, ph) = (w.width(), w.height());
+                let scale = w.native().and_then(|n| n.surface()).map(|s| s.scale() as f32).unwrap_or(1.0);
+                let changed = {
+                    let mut v = view.shared.view.lock().unwrap();
+                    let changed = pw > 0 && ph > 0 && (v.size != (pw, ph) || v.scale != scale);
+                    if changed {
+                        v.size = (pw, ph);
+                        v.scale = scale;
+                    }
+                    changed
+                };
+                if changed {
+                    if let Some(h) = view.shared.host.lock().unwrap().as_ref() {
+                        h.0.was_resized();
+                    }
+                    view.apply_zoom();
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+
+        let window_info = WindowInfo {
+            windowless_rendering_enabled: 1,
+            shared_texture_enabled: (mode == Mode::Accel) as _,
+            runtime_style: RuntimeStyle::from(sys::cef_runtime_style_t::CEF_RUNTIME_STYLE_ALLOY),
+            ..Default::default()
+        };
+        let settings = BrowserSettings { windowless_frame_rate: frame_rate, ..Default::default() };
+        let mut client = ViewClient::new(
+            ViewRender::new(shared.clone()),
+            ViewLife::new(shared.clone()),
+            ViewLoad::new(shared.clone()),
+            ViewDisplay::new(shared.clone()),
+            ViewMenu::new(shared),
+        );
+        browser_host_create_browser(
+            Some(&window_info),
+            Some(&mut client),
+            Some(&CefString::from(url)),
+            Some(&settings),
+            None,
+            None,
+        );
+        view
+    }
+
+    fn with_browser(&self, f: impl FnOnce(&Browser)) {
+        if let Some(b) = self.shared.browser.lock().unwrap().as_ref() {
+            f(&b.0);
+        }
+    }
+
+    fn with_host(&self, f: impl FnOnce(&BrowserHost)) {
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            f(&h.0);
+        }
+    }
+
+    /// Load `url`. Before the browser exists (a tab just opened) it is remembered and loaded
+    /// as soon as the browser is created.
+    pub fn navigate(&self, url: &str) {
+        // Decide under the lock (so it cannot race with the browser being created), but call
+        // into CEF outside it.
+        let browser = {
+            let guard = self.shared.browser.lock().unwrap();
+            match guard.as_ref() {
+                Some(b) => Some(b.0.clone()),
+                None => {
+                    *self.shared.pending_url.lock().unwrap() = Some(url.to_owned());
+                    None
+                }
+            }
+        };
+        if let Some(frame) = browser.and_then(|b| b.main_frame()) {
+            frame.load_url(Some(&CefString::from(url)));
+        }
+    }
+
+    pub fn go_back(&self) {
+        self.with_browser(|b| b.go_back());
+    }
+
+    pub fn go_forward(&self) {
+        self.with_browser(|b| b.go_forward());
+    }
+
+    pub fn reload(&self) {
+        self.with_browser(|b| b.reload());
+    }
+
+    pub fn stop(&self) {
+        self.with_browser(|b| b.stop_load());
+    }
+
+    /// Tell CEF whether the widget has the keyboard focus. Needed once the browser exists: a new
+    /// tab is focused before its browser is created, so the focus event had nowhere to go.
+    pub fn sync_focus(&self) {
+        let focused = self.widget.has_focus();
+        self.with_host(|h| h.set_focus(focused as _));
+    }
+
+    /// Tell CEF whether the view is on screen. Posted to CEF's UI thread.
+    fn set_hidden(&self, hidden: bool) {
+        self.shared.hidden.store(hidden, Ordering::Relaxed);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                h.0.was_hidden(hidden as _);
+                if !hidden {
+                    h.0.invalidate(PaintElementType::VIEW);
+                }
+            });
+        }
+    }
+
+    /// Whether CEF has been told the view is hidden (a background tab).
+    pub fn is_hidden(&self) -> bool {
+        self.shared.hidden.load(Ordering::Relaxed)
+    }
+
+    /// Frames CEF has delivered so far (used by the self-test).
+    pub fn frames(&self) -> u64 {
+        self.shared.frames.load(Ordering::Relaxed)
+    }
+
+    /// Whether a page frame has been shown.
+    pub fn has_frame(&self) -> bool {
+        self.picture.paintable().is_some()
+    }
+
+    /// The cursor the page asked for (GTK cursor name).
+    pub fn cursor(&self) -> String {
+        with_side(self.shared.id, |s| s.cursor.clone()).unwrap_or_default()
+    }
+
+    /// How many cursor changes have happened so far (a mark for `cursor_seen`).
+    pub fn cursor_mark(&self) -> usize {
+        with_side(self.shared.id, |s| s.cursor_log.len()).unwrap_or(0)
+    }
+
+    /// Whether the page asked for cursor `name` after `mark`.
+    pub fn cursor_seen(&self, mark: usize, name: &str) -> bool {
+        with_side(self.shared.id, |s| s.cursor_log.iter().skip(mark).any(|c| c == name)).unwrap_or(false)
+    }
+
+    /// The page's current tooltip text (empty when none).
+    pub fn tooltip(&self) -> String {
+        with_side(self.shared.id, |s| s.tooltip.clone()).unwrap_or_default()
+    }
+
+    /// The text currently selected in the page.
+    pub fn selection(&self) -> String {
+        with_side(self.shared.id, |s| s.selection.clone()).unwrap_or_default()
+    }
+
+    /// Whether a popup (a `<select>` dropdown) is showing.
+    pub fn popup_visible(&self) -> bool {
+        with_side(self.shared.id, |s| s.popup_visible).unwrap_or(false)
+    }
+
+    /// Whether the popup has received a frame.
+    pub fn popup_has_frame(&self) -> bool {
+        with_side(self.shared.id, |s| s.popup.paintable().is_some()).unwrap_or(false)
+    }
+
+    /// Call `hook` with every finished page frame, on the GTK thread.
+    pub fn set_frame_hook(&self, hook: Option<Rc<dyn Fn(&gdk::Texture)>>) {
+        with_side(self.shared.id, |s| s.frame_hook = hook);
+    }
+
+    /// With device resolution the page believes the display is 1x, so zoom by the scale to keep
+    /// CSS pixels the same logical size (CEF zoom factor is 1.2^level). Navigating to another
+    /// host resets the zoom, so call this again after address changes and when loading ends.
+    pub fn apply_zoom(&self) {
+        let k = self.shared.view.lock().unwrap().k();
+        let level = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
+        self.with_host(|h| h.set_zoom_level(level));
+    }
+
+    /// Ask CEF to close the browser. Call before shutting CEF down.
+    pub fn close(&self) {
+        self.with_host(|h| h.close_browser(1));
+    }
+
+    // ---- input ------------------------------------------------------------------------------
+
+    /// Render scale: view pixels per logical pixel.
+    fn k(&self) -> f32 {
+        self.shared.view.lock().unwrap().k()
+    }
+
+    fn mouse_event(&self, x: f64, y: f64, state: gdk::ModifierType) -> MouseEvent {
+        let k = self.k() as f64;
+        MouseEvent { x: (x * k).round() as i32, y: (y * k).round() as i32, modifiers: input::modifiers(state) }
+    }
+
+    fn connect_input(self: &Rc<Self>) {
+        let c = &self.controllers;
+        let weak = Rc::downgrade(self);
+
+        // Mouse movement, entering and leaving.
+        c.motion.connect_motion({
+            let w = weak.clone();
+            move |ctrl, x, y| {
+                if ignore_pointer(ctrl.current_event()) {
+                    return;
+                }
+                if let Some(v) = w.upgrade() {
+                    v.pointer.set((x, y));
+                    let ev = v.mouse_event(x, y, ctrl.current_event_state());
+                    v.with_host(|h| h.send_mouse_move_event(Some(&ev), 0));
+                }
+            }
+        });
+        c.motion.connect_enter({
+            let w = weak.clone();
+            move |ctrl, x, y| {
+                if ignore_pointer(ctrl.current_event()) {
+                    return;
+                }
+                if let Some(v) = w.upgrade() {
+                    v.pointer.set((x, y));
+                    let ev = v.mouse_event(x, y, ctrl.current_event_state());
+                    v.with_host(|h| h.send_mouse_move_event(Some(&ev), 0));
+                }
+            }
+        });
+        c.motion.connect_leave({
+            let w = weak.clone();
+            move |ctrl| {
+                if ignore_pointer(ctrl.current_event()) {
+                    return;
+                }
+                if let Some(v) = w.upgrade() {
+                    let (x, y) = v.pointer.get();
+                    let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
+                    v.with_host(|h| h.send_mouse_move_event(Some(&ev), 1));
+                }
+            }
+        });
+
+        // Buttons. Pressing focuses the page, like clicking in any browser.
+        c.click.connect_pressed({
+            let w = weak.clone();
+            move |g, n_press, x, y| {
+                if let Some(v) = w.upgrade() {
+                    v.widget.grab_focus();
+                    v.click(g.current_button(), n_press, x, y, g.current_event_state(), false);
+                }
+            }
+        });
+        c.click.connect_released({
+            let w = weak.clone();
+            move |g, n_press, x, y| {
+                if let Some(v) = w.upgrade() {
+                    v.click(g.current_button(), n_press, x, y, g.current_event_state(), true);
+                }
+            }
+        });
+
+        // Wheel and touchpad scrolling.
+        c.scroll.connect_scroll({
+            let w = weak.clone();
+            move |ctrl, dx, dy| {
+                let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
+                let (x, y) = v.pointer.get();
+                let ev = v.mouse_event(x, y, ctrl.current_event_state());
+                let k = v.k();
+                let (px, py) = (input::wheel_delta(dx, ctrl.unit(), k), input::wheel_delta(dy, ctrl.unit(), k));
+                v.with_host(|h| h.send_mouse_wheel_event(Some(&ev), px, py));
+                glib::Propagation::Stop
+            }
+        });
+
+        // Keyboard.
+        c.key.connect_key_pressed({
+            let w = weak.clone();
+            move |ctrl, key, keycode, state| match w.upgrade() {
+                Some(v) if v.key(true, key, keycode, state, ctrl.current_event()) => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        c.key.connect_key_released({
+            let w = weak.clone();
+            move |ctrl, key, keycode, state| {
+                if let Some(v) = w.upgrade() {
+                    v.key(false, key, keycode, state, ctrl.current_event());
+                }
+            }
+        });
+
+        // Focus: tell CEF and the input method.
+        c.focus.connect_enter({
+            let w = weak.clone();
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    v.controllers.im.focus_in();
+                    v.with_host(|h| h.set_focus(1));
+                }
+            }
+        });
+        c.focus.connect_leave({
+            let w = weak.clone();
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    v.controllers.im.focus_out();
+                    v.with_host(|h| h.set_focus(0));
+                }
+            }
+        });
+
+        // Input method: composed or IME text arrives through `commit`; the in-progress
+        // composition through `preedit-changed`.
+        c.im.set_client_widget(Some(&self.widget));
+        c.im.set_use_preedit(true);
+        c.im.connect_commit({
+            let w = weak.clone();
+            move |_, text| {
+                if let Some(v) = w.upgrade() {
+                    v.im_commit(text);
+                }
+            }
+        });
+        c.im.connect_preedit_changed({
+            let w = weak.clone();
+            move |im| {
+                if let Some(v) = w.upgrade() {
+                    let (text, _attrs, cursor) = im.preedit_string();
+                    v.im_state.borrow_mut().preediting = !text.is_empty();
+                    v.with_host(|h| {
+                        let range = Range { from: u32::MAX, to: u32::MAX };
+                        let sel = Range { from: cursor as u32, to: cursor as u32 };
+                        h.ime_set_composition(Some(&CefString::from(text.as_str())), None, Some(&range), Some(&sel));
+                    });
+                }
+            }
+        });
+
+        self.widget.add_controller(c.motion.clone());
+        self.widget.add_controller(c.click.clone());
+        self.widget.add_controller(c.scroll.clone());
+        self.widget.add_controller(c.key.clone());
+        self.widget.add_controller(c.focus.clone());
+    }
+
+    pub(super) fn click(&self, button: u32, n_press: i32, x: f64, y: f64, state: gdk::ModifierType, up: bool) {
+        let kind = match button {
+            1 => MouseButtonType::LEFT,
+            2 => MouseButtonType::MIDDLE,
+            3 => MouseButtonType::RIGHT,
+            // 0 = no current event (synthetic signal emission in the self-test): treat as left.
+            0 => MouseButtonType::LEFT,
+            _ => return,
+        };
+        self.pointer.set((x, y));
+        let ev = self.mouse_event(x, y, state);
+        self.with_host(|h| h.send_mouse_click_event(Some(&ev), kind, up as _, n_press.max(1)));
+    }
+
+    /// Text from the input method. Either an ordinary character that the input method handled on
+    /// the way through (handled as a normal key press by `key`), or composed text for the page.
+    fn im_commit(&self, text: &str) {
+        let mut st = self.im_state.borrow_mut();
+        if st.filtering {
+            st.committed.push(text.to_owned());
+            return;
+        }
+        drop(st);
+        self.commit_text(text);
+    }
+
+    fn commit_text(&self, text: &str) {
+        let range = Range { from: u32::MAX, to: u32::MAX };
+        self.with_host(|h| h.ime_commit_text(Some(&CefString::from(text)), Some(&range), 0));
+    }
+
+    /// Copy, cut and paste go through GTK's clipboard. Windowless Chromium cannot reach the
+    /// Wayland clipboard itself (it has no surface of its own to take clipboard focus), so its
+    /// own copy stays inside the browser. Copy and cut also send the key so the page deletes (cut)
+    /// as usual; paste is handled here and not sent, or the page would paste its own copy too.
+    /// Returns whether the key was fully handled.
+    fn clipboard_shortcut(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> bool {
+        use gdk::ModifierType as M;
+        if !state.contains(M::CONTROL_MASK) || state.intersects(M::ALT_MASK | M::SUPER_MASK) {
+            return false;
+        }
+        let clipboard = self.widget.display().clipboard();
+        match key {
+            gdk::Key::c | gdk::Key::C | gdk::Key::x | gdk::Key::X => {
+                let sel = self.selection();
+                if !sel.is_empty() {
+                    clipboard.set_text(&sel);
+                }
+                false // still sent to the page (cut removes the selection)
+            }
+            gdk::Key::v | gdk::Key::V => {
+                if !clipboard.formats().contains_type(glib::GString::static_type()) {
+                    return false; // not text: let the page handle it
+                }
+                self.paste_from_clipboard();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Show a context menu as a popover at the pointer. Copy, cut and paste use the clipboard
+    /// bridge (see `clipboard_shortcut`) instead of Chromium's own clipboard.
+    pub fn show_context_menu(self: &Rc<Self>, req: Arc<MenuRequest>) {
+        use sys::cef_menu_id_t as M;
+        let popover = gtk::Popover::new();
+        popover.set_parent(&self.widget);
+        popover.set_has_arrow(false);
+        popover.set_halign(gtk::Align::Start);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(req.x as i32, req.y as i32, 1, 1)));
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for item in &req.items {
+            if item.separator {
+                list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+                continue;
+            }
+            let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).build();
+            let button = gtk::Button::builder().child(&label).has_frame(false).sensitive(item.enabled).build();
+            let (view, req, id) = (Rc::downgrade(self), req.clone(), item.id);
+            let popover_weak = popover.downgrade();
+            button.connect_clicked(move |_| {
+                // Answer CEF first: closing the popover cancels the request if still unanswered.
+                let close = || {
+                    if let Some(p) = popover_weak.upgrade() {
+                        p.popdown();
+                    }
+                };
+                let Some(view) = view.upgrade() else {
+                    req.cancel();
+                    return close();
+                };
+                if id == M::MENU_ID_COPY as i32 {
+                    let sel = view.selection();
+                    if !sel.is_empty() {
+                        view.widget.display().clipboard().set_text(&sel);
+                    }
+                    req.cancel();
+                } else if id == M::MENU_ID_PASTE as i32 {
+                    view.paste_from_clipboard();
+                    req.cancel();
+                } else if id == M::MENU_ID_CUT as i32 {
+                    let sel = view.selection();
+                    if !sel.is_empty() {
+                        view.widget.display().clipboard().set_text(&sel);
+                    }
+                    req.run(id);
+                } else {
+                    req.run(id);
+                }
+                close();
+            });
+            list.append(&button);
+        }
+        popover.set_child(Some(&list));
+        popover.connect_closed({
+            let req = req.clone();
+            move |p| {
+                req.cancel(); // chosen items have already answered; this covers dismissal
+                p.unparent();
+            }
+        });
+        popover.popup();
+    }
+
+    fn paste_from_clipboard(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.widget.display().clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
+            if let (Ok(Some(text)), Some(v)) = (res, weak.upgrade()) {
+                v.insert_text(text.as_str());
+            }
+        });
+    }
+
+    /// Insert text into the focused field (paste, composed text).
+    pub fn insert_text(&self, text: &str) {
+        self.commit_text(text);
+    }
+
+    /// Handle a key press or release. Returns whether the event was consumed.
+    fn key(self: &Rc<Self>, press: bool, key: gdk::Key, keycode: u32, state: gdk::ModifierType, event: Option<gdk::Event>) -> bool {
+        if press && input::is_shell_shortcut(key, state) {
+            return false; // the window's accelerators handle it
+        }
+        if press && self.clipboard_shortcut(key, state) {
+            return true;
+        }
+        // Give the input method first refusal (compose sequences, IME). Ordinary characters
+        // pass through it too, and come back as a commit of exactly the key's own character:
+        // those are sent to the page as normal key events (a page sees keydown/keypress), while
+        // anything else the input method produced goes in as composed text.
+        let mut typed: Option<char> = input::typed_char(key, state);
+        if let Some(ev) = event.as_ref() {
+            {
+                let mut st = self.im_state.borrow_mut();
+                st.committed.clear();
+                st.filtering = true;
+            }
+            let handled = self.controllers.im.filter_keypress(ev);
+            let (committed, preediting) = {
+                let mut st = self.im_state.borrow_mut();
+                st.filtering = false;
+                (std::mem::take(&mut st.committed), st.preediting)
+            };
+            if handled {
+                let plain = !preediting
+                    && committed.len() == 1
+                    && committed[0].chars().count() == 1
+                    && committed[0].chars().next() == key.to_unicode();
+                if !plain {
+                    for t in committed {
+                        self.commit_text(&t);
+                    }
+                    return true;
+                }
+                typed = committed[0].chars().next();
+            }
+        }
+
+        let code = input::windows_key_code(key);
+        let ch = typed.map(|c| c as u32).filter(|c| *c <= 0xFFFF).unwrap_or(0) as u16;
+        let mut ev = KeyEvent {
+            size: std::mem::size_of::<KeyEvent>(),
+            type_: if press { KeyEventType::RAWKEYDOWN } else { KeyEventType::KEYUP },
+            modifiers: input::modifiers(state),
+            windows_key_code: code,
+            native_key_code: keycode as i32,
+            is_system_key: 0,
+            character: ch,
+            unmodified_character: ch,
+            focus_on_editable_field: 0,
+        };
+        self.with_host(|h| {
+            h.send_key_event(Some(&ev));
+            if press && ch != 0 {
+                // The character event is what inserts text into a field.
+                ev.type_ = KeyEventType::CHAR;
+                ev.windows_key_code = ch as i32;
+                h.send_key_event(Some(&ev));
+            }
+        });
+        // Only keys with a code are consumed; others (media keys...) are left to the system.
+        code != 0
+    }
+}

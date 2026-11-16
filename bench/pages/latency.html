@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>latency</title>
+<style>
+  html, body { margin: 0; }
+  /* A static page: nothing animates, so frames are only produced in response to input. */
+  body { background: #fff; height: 6000px; background-image: linear-gradient(#fff, #ccd 100%); }
+</style>
+<script>
+  // Any key press or mouse press flips the background, forcing a repaint of the whole view.
+  let dark = false;
+  const flip = () => { dark = !dark; document.documentElement.style.background = dark ? '#111' : '#eee'; document.body.style.backgroundColor = dark ? '#111' : '#eee'; };
+  addEventListener('keydown', flip);
+  addEventListener('mousedown', flip);
+</script>

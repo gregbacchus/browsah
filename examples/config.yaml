@@ -1,0 +1,23 @@
+# browsah configuration: every option, with its default. All options are optional.
+# Full documentation: docs/config/README.md
+
+# Page opened in a new window (a URL on the command line takes priority).
+home_page: https://duckduckgo.com/
+
+# Search used when the address bar text is not a URL. {query} is replaced by the text.
+search_url: https://duckduckgo.com/?q={query}
+
+window:
+  width: 1280   # initial size in logical pixels
+  height: 800
+
+rendering:
+  mode: accelerated        # accelerated (no copy) or readback (fallback, slower)
+  frame_rate: 60           # maximum fps, 1 to 120; lower saves power on animated pages
+  device_resolution: true  # render at physical resolution on HiDPI (false = blurry 1x)
+
+chromium:
+  flags: []                # extra Chromium switches, e.g. ["--disable-features=Foo"]
+
+gpu:
+  workarounds: true        # per-GPU environment fixes (AMD_DEBUG=nodcc on AMD)

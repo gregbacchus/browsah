@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>static sharpness test</title>
+<style>
+  body { margin: 0; padding: 24px; font: 16px/1.4 system-ui, sans-serif; background: #fff; color: #000; }
+  h1 { font-size: 28px; margin: 0 0 12px; }
+  .small { font-size: 11px; } .mono { font-family: monospace; font-size: 13px; }
+  .lines { display: flex; gap: 0; height: 60px; margin: 12px 0; }
+  .lines div { width: 1px; background: #000; margin-right: 1px; }       /* 1 CSS px lines */
+  .checker { width: 200px; height: 40px; margin: 12px 0;
+    background: repeating-linear-gradient(90deg, #000 0 1px, #fff 1px 2px); }
+  .box { display: inline-block; border: 1px solid #000; padding: 4px 8px; margin: 4px; }
+</style>
+<h1>Static sharpness test</h1>
+<p>The quick brown fox jumps over the lazy dog. 0123456789 — if this text is crisp, rendering is sharp.</p>
+<p class="small">Small text 11px: The quick brown fox jumps over the lazy dog. 0123456789</p>
+<p class="mono">monospace 13px: fn main() { println!("hello, world"); }</p>
+<div class="lines"><script>for(let i=0;i<60;i++)document.currentScript.parentNode.appendChild(document.createElement('div'))</script></div>
+<div class="checker"></div>
+<span class="box">1px border box</span><span class="box">another</span>
+<p id="info" class="mono"></p>
+<script>
+  const show = () => info.textContent =
+    `innerWidth ${innerWidth} x ${innerHeight}  devicePixelRatio ${devicePixelRatio}`;
+  show(); addEventListener('resize', show);
+</script>

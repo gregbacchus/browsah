@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>tab benchmark page</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+  #t { padding: 8px; font: 13px monospace; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; padding: 8px; }
+  .c { height: 64px; background: hsl(var(--h) 60% 60%); }
+  .live .c { animation: pulse 2s ease-in-out infinite alternate; }
+  @keyframes pulse { to { transform: scale(.9); opacity: .7; } }
+</style>
+<div id="t"></div><div class="grid"></div>
+<script>
+  // ?i=<tab id>&mode=live|static. "live" mimics a busy page (compositor animations + a 100 ms
+  // timer); "static" mimics an idle background page. Both keep some heap so tabs have a
+  // realistic footprint.
+  const q = new URLSearchParams(location.search);
+  const id = +q.get('i') || 0, live = q.get('mode') !== 'static';
+  document.body.classList.toggle('live', live);
+  const g = document.querySelector('.grid');
+  for (let i = 0; i < 360; i++) {
+    const d = document.createElement('div'); d.className = 'c';
+    d.style.setProperty('--h', (i * 7 + id * 37) % 360);
+    d.style.animationDelay = (i % 20) * 0.1 + 's';
+    g.appendChild(d);
+  }
+  window.junk = Array.from({ length: 200000 }, (_, i) => ({ i, s: 'x'.repeat(20) }));
+  t.textContent = 'tab ' + id + (live ? ' (live)' : ' (static)');
+  if (live) { let n = 0; setInterval(() => { t.textContent = 'tab ' + id + ' ticks ' + (++n); }, 100); }
+</script>

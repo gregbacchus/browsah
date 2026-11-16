@@ -1,0 +1,15 @@
+[package]
+name = "browsah"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A custom web browser: a GTK4 shell around Chromium (CEF) windowless rendering, native Wayland"
+repository = "https://github.com/gregbacchus/browsah"
+
+[dependencies]
+adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
+cef = "156.5.0"
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+libc = "0.2.191"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"

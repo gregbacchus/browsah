@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>browsah scroll benchmark</title>
+<style>
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; }
+  section { height: 600px; padding: 24px; box-sizing: border-box;
+            background: linear-gradient(135deg, hsl(var(--h) 70% 55%), hsl(calc(var(--h) + 60) 70% 35%)); color: #fff; }
+  section p { column-count: 3; column-gap: 32px; text-shadow: 0 1px 2px #0008; }
+  .spin { width: 80px; height: 80px; background: #fff8; border-radius: 12px; animation: spin 3s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+<body>
+<script>
+  // Tall, paint-heavy page; scrolls itself so every frame is a full-viewport change.
+  const lorem = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ';
+  for (let i = 0; i < 200; i++) {
+    const s = document.createElement('section');
+    s.style.setProperty('--h', (i * 23) % 360);
+    s.innerHTML = '<h2>Section ' + i + '</h2><div class="spin"></div><p>' + lorem.repeat(18) + '</p>';
+    document.body.appendChild(s);
+  }
+  // Scroll down at a steady 1200 px/s, then bounce back, forever.
+  let dir = 1, last = performance.now();
+  function step(now) {
+    const dt = now - last; last = now;
+    const max = document.documentElement.scrollHeight - innerHeight;
+    let y = scrollY + dir * 1.2 * dt;
+    if (y >= max) { y = max; dir = -1; } else if (y <= 0) { y = 0; dir = 1; }
+    scrollTo(0, y);
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>

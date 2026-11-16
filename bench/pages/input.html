@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>input test</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; background: #f4f4f4; }
+  .abs { position: absolute; box-sizing: border-box; }
+  #btn  { left: 20px;  top: 20px;  width: 120px; height: 40px; }
+  #hand { left: 200px; top: 20px;  width: 120px; height: 40px; background: #cde; cursor: pointer; }
+  #sel  { left: 360px; top: 20px;  width: 140px; height: 32px; }
+  #tip  { left: 360px; top: 90px;  width: 140px; height: 40px; background: #dec; }
+  #ta   { left: 20px;  top: 90px;  width: 300px; height: 80px; }
+  #ta2  { left: 20px;  top: 190px; width: 300px; height: 80px; }
+  #spacer { position: absolute; left: 0; top: 300px; width: 10px; height: 3000px; }
+</style>
+<button id="btn" class="abs">Click me</button>
+<div id="hand" class="abs">pointer here</div>
+<select id="sel" class="abs"><option value="a">alpha</option><option value="b">beta</option><option value="c">gamma</option></select>
+<textarea id="ta" class="abs"></textarea>
+<textarea id="ta2" class="abs"></textarea>
+<div id="tip" class="abs" title="tooltip text">hover for tip</div>
+<div id="spacer"></div>
+<script>
+  // The whole page state goes in the title, so the browser shell can read it back.
+  const st = { c: 0, h: 0, m: 0, kd: 0, kp: 0, ku: 0, wd: 0, k: '' };
+  const f = id => document.getElementById(id);
+  function show() {
+    const v = x => String(x).replace(/\n/g, '⏎');
+    document.title = ['c:' + st.c, 'h:' + st.h, 'm:' + st.m, 'w:' + Math.round(scrollY), 'wd:' + Math.round(st.wd),
+      'kd:' + st.kd, 'kp:' + st.kp, 'ku:' + st.ku, 'k:' + st.k, 't:' + v(f('ta').value), 't2:' + v(f('ta2').value),
+      's:' + f('sel').value, 'f:' + (document.activeElement.id || '-'), 'hf:' + document.hasFocus()].join(' | ');
+  }
+  f('btn').onclick = () => { st.c++; show(); };
+  f('hand').onmouseenter = () => { st.h++; show(); };
+  document.addEventListener('mousemove', () => { st.m++; });
+  document.addEventListener('wheel', e => { st.wd += e.deltaY; show(); }, { passive: true });
+  document.addEventListener('keydown', e => { st.kd++; st.k = e.key + (e.ctrlKey ? '^' : '') + (e.shiftKey ? '+' : ''); show(); });
+  document.addEventListener('keypress', () => { st.kp++; });
+  document.addEventListener('keyup', () => { st.ku++; show(); });
+  addEventListener('scroll', show);
+  addEventListener('focus', show); addEventListener('blur', show);
+  for (const id of ['ta', 'ta2', 'sel']) { f(id).addEventListener('input', show); f(id).addEventListener('change', show); f(id).addEventListener('focus', show); }
+  show();
+</script>
