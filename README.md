@@ -26,6 +26,21 @@ reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close ta
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number.
 
+Profiles: each profile is its own data directory, its own GNOME application (own `.desktop`
+entry and icon) and its own process. Several can run at once, and launching a running profile
+again, or opening a link with it, hands the work to the running process.
+
+```bash
+browsah profile add work --name "Work" --color "#4a2f80 #7a56c2"   # light then dark
+browsah profile list
+browsah profile remove work --yes
+browsah --profile=work https://example.com
+```
+
+With no `--profile`, the `default` profile is used. Choose a profile's entry as the default browser
+in GNOME's settings and links from other applications open in that profile. Details:
+[docs/config/profile.md](docs/config/profile.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

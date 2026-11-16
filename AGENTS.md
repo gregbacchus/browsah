@@ -51,6 +51,7 @@ take minutes.
 | `src/cef_rt.rs` | CEF start-up and settings, `HostHandle`/`BrowserHandle` |
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
+| `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
 | `src/cli.rs` | Command-line options |
 | `src/bench/` | `--bench=single|tabs|fps`, kept as a regression check for the rendering path |
@@ -70,6 +71,13 @@ take minutes.
 - Render at device resolution on HiDPI (`View::k`) and re-apply zoom after navigation.
 - **Licence:** browsah is MIT. Do not add a dependency whose licence is not permissive
   (MIT, Apache-2.0, BSD, ISC, Unicode, Zlib) without asking.
+- **One process per profile.** Chromium locks its cache directory, so a profile (`src/profile.rs`)
+  is one process with its own `GApplication` id (`nz.co.bacchus.browsah.<id>`). `main` registers
+  the application *before* starting CEF; if the profile is already running it forwards the URL
+  (`open`) or `activate` and exits. `--selftest`, `--latency` and benchmarks use the `selftest`
+  profile so they never touch a real profile or collide with a running browser. Profile config
+  (`profile.yaml`) has its own docs and example, with tests that check both (see
+  `docs/config/profile.md`, `examples/profile.yaml`).
 - **Tabs:** one `BrowserView` per tab inside an `adw::TabView`; the address bar and buttons are
   shared and show the selected tab (`Shell::refresh`). A view tells CEF it is hidden when its widget
   is unmapped (`BrowserView::set_hidden`, posted to CEF's UI thread). Events carry no tab: each tab

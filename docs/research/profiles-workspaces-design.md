@@ -204,6 +204,21 @@ BROWSAH_NET_WAIT_MS=40000 BROWSAH_NET_TEST=http://localhost:8765/caps.html ./tar
 6. Service workers, notifications, WebAuthn under CEF.
 7. Codec options (prebuilt CEF with codecs, licensing) and Teams with the available codecs.
 
+## Status of the build order
+
+Step 1 below is built (see `src/profile.rs`). Decisions taken while building it, not discussed
+before: the profile directory is `$XDG_DATA_HOME/browsah/profiles/<id>/` holding `profile.yaml` and
+`cef/` (Chromium's data); profile ids are lower case letters, digits, `-` and `_`, starting with a
+letter, so `nz.co.bacchus.browsah.<id>` is always a valid application id; `default` and `selftest`
+exist implicitly; `profile remove` refuses a running profile and needs `--yes` because it deletes
+data (`--keep-data` keeps it); the `.desktop` entry launches through `env LD_LIBRARY_PATH=<dir>`
+because the binary has no rpath yet, and records the current binary path, so a moved or rebuilt
+binary needs `profile add` repeated (or the file edited). Measured here: two profiles ran at the
+same time without CEF errors, and a second launch of a running profile handed over its link and
+exited in 34 ms. **Not verified:** the new link opening as a visible tab (the running process
+logged receiving it), GNOME listing the entries in its default-browser chooser, making an entry the
+default browser, the icon's look in the shell.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

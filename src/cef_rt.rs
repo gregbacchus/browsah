@@ -81,7 +81,7 @@ pub struct Runtime {
 }
 
 /// Run as a CEF subprocess if this is one, otherwise initialise CEF in the browser process.
-pub fn init(flags: Vec<String>) -> Init {
+pub fn init(flags: Vec<String>, cache: Option<std::path::PathBuf>) -> Init {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = cef::args::Args::new();
     let mut app = BrowsahApp::new(flags);
@@ -92,7 +92,8 @@ pub fn init(flags: Vec<String>) -> Init {
         return Init::Subprocess(code);
     }
 
-    let cache = glib::user_cache_dir().join("browsah");
+    // Chromium keeps cookies, storage and caches here: one directory per profile.
+    let cache = cache.unwrap_or_else(|| glib::user_cache_dir().join("browsah"));
     let settings = Settings {
         // TODO(M6): enable the Linux sandbox (setuid helper or user namespaces).
         no_sandbox: 1,

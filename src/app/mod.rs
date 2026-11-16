@@ -611,19 +611,55 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str) 
     shell
 }
 
-/// Run the browser. Returns the process exit code.
-pub fn run(opts: Rc<Options>, cfg: Config) -> i32 {
+/// Turn what a person typed (or another application passed) into a URL, as the address bar does.
+pub fn resolve_address(text: &str, search_url: &str) -> String {
+    nav::resolve(text, search_url)
+}
+
+/// Run the browser in this process, which owns its profile's application id. `app` is already
+/// registered (see `main`). Returns the process exit code.
+pub fn run(app: adw::Application, opts: Rc<Options>, cfg: Config, _profile: crate::profile::Profile) -> i32 {
     input::set_scroll_tuning(cfg.input.wheel_notch, cfg.input.touchpad_speed, cfg.input.touchpad_acceleration);
-    let app = adw::Application::builder()
-        .application_id("nz.co.bacchus.browsah")
-        // Each launch is its own browser for now (no single-instance forwarding).
-        .flags(gio::ApplicationFlags::NON_UNIQUE)
-        .build();
     let exit = Rc::new(Cell::new(0));
+    let cfg = Rc::new(cfg);
+    let shell: Rc<RefCell<Option<Rc<Shell>>>> = Rc::new(RefCell::new(None));
+
+    // The first window, on `start`. Later calls (another launch of this profile) raise it.
+    let make_shell = {
+        let (shell, opts, cfg, exit) = (shell.clone(), opts.clone(), cfg.clone(), exit.clone());
+        move |app: &adw::Application, start: &str| -> Rc<Shell> {
+            if let Some(s) = shell.borrow().as_ref() {
+                return s.clone();
+            }
+            let s = build(app, &opts, &cfg, start);
+            // Everything the window's widgets call back into holds the shell weakly, so something
+            // must own it for as long as the window lives. (Without this the address bar, buttons
+            // and shortcuts silently did nothing once start-up ended.)
+            s.window.connect_destroy({
+                let keep = s.clone();
+                move |_| {
+                    let _ = &keep;
+                }
+            });
+            s.window.present();
+            if opts.latency {
+                latency::spawn(app.clone(), s.clone(), cfg.rendering.frame_rate);
+            }
+            if opts.selftest {
+                selftest::spawn(app.clone(), s.clone(), exit.clone(), opts.mode.unwrap_or(cfg.rendering.mode.mode()) == Mode::Accel);
+            }
+            *shell.borrow_mut() = Some(s.clone());
+            s
+        }
+    };
 
     app.connect_activate({
-        let exit = exit.clone();
+        let (opts, cfg, shell, make_shell) = (opts.clone(), cfg.clone(), shell.clone(), make_shell.clone());
         move |app| {
+            if let Some(s) = shell.borrow().as_ref() {
+                s.window.present(); // another launch of this profile: show the window
+                return;
+            }
             let start = if opts.selftest {
                 selftest::start_url()
             } else if opts.latency {
@@ -631,23 +667,25 @@ pub fn run(opts: Rc<Options>, cfg: Config) -> i32 {
             } else {
                 nav::resolve(opts.url.as_deref().unwrap_or(&cfg.home_page), &cfg.search_url)
             };
-            let shell = build(app, &opts, &cfg, &start);
-            // Everything the window's widgets call back into holds the shell weakly, so something
-            // must own it for as long as the window lives. (Without this the address bar, buttons
-            // and shortcuts silently did nothing once start-up ended.)
-            shell.window.connect_destroy({
-                let keep = shell.clone();
-                move |_| {
-                    let _ = &keep;
-                }
-            });
-            shell.window.present();
-            if opts.latency {
-                latency::spawn(app.clone(), shell.clone(), cfg.rendering.frame_rate);
+            make_shell(app, &start);
+        }
+    });
+
+    // Links handed over by another launch of this profile (or by the desktop, when this profile's
+    // entry is the default browser): each opens as a tab.
+    app.connect_open({
+        let (cfg, shell, make_shell) = (cfg.clone(), shell.clone(), make_shell);
+        move |app, files, _hint| {
+            let urls: Vec<String> = files.iter().map(|f| nav::resolve(f.uri().as_str(), &cfg.search_url)).collect();
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: asked to open {urls:?}");
             }
-            if opts.selftest {
-                selftest::spawn(app.clone(), shell, exit.clone(), opts.mode.unwrap_or(cfg.rendering.mode.mode()) == Mode::Accel);
+            let first_open = shell.borrow().is_none();
+            let s = make_shell(app, urls.first().map(String::as_str).unwrap_or("about:blank"));
+            for url in urls.iter().skip(first_open as usize) {
+                s.open_tab(url, true);
             }
+            s.window.present();
         }
     });
 

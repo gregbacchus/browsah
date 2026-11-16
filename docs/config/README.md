@@ -28,6 +28,8 @@ implemented yet.)
 | `input` | [Options](options.md#input) |
 | `gpu` | [Options](options.md#gpu) |
 
+Profiles have their own file, [profile.yaml](profile.md) (name and colour; more will arrive with workspaces and routing).
+
 Command-line flags override the matching config options: `--mode=paint|accel`
 (`rendering.mode`), `--backing=off` (`rendering.device_resolution`), a bare URL or `--url=URL`
 (`home_page`). Any other `--flag` is passed to Chromium.

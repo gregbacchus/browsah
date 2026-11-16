@@ -35,6 +35,9 @@ pub struct Options {
     pub selftest: bool,
     /// Measure input latency and exit (`--latency`).
     pub latency: bool,
+    /// Profile to run (`--profile=ID`, or `BROWSAH_PROFILE`). Default: `default`; the self-test,
+    /// latency and benchmark runs use the throwaway `selftest` profile.
+    pub profile: Option<String>,
     /// Alternative config file (`--config=PATH`).
     pub config_path: Option<String>,
     /// Extra Chromium switches given on the command line.
@@ -53,6 +56,7 @@ impl Options {
             backing: None,
             selftest: false,
             latency: false,
+            profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
             config_path: None,
             flags: Vec::new(),
         };
@@ -70,6 +74,7 @@ impl Options {
                 _ if a.starts_with("--tab-mode=") => o.tab_mode = a[11..].to_string(),
                 _ if a.starts_with("--url=") => o.url = Some(a[6..].to_string()),
                 _ if a.starts_with("--seconds=") => o.seconds = a[10..].parse().unwrap_or(0),
+                _ if a.starts_with("--profile=") => o.profile = Some(a[10..].to_string()),
                 _ if a.starts_with("--config=") => o.config_path = Some(a[9..].to_string()),
                 _ if a.starts_with("--") => o.flags.push(a),
                 // A bare argument is a page to open.
