@@ -232,6 +232,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_restore(shell, r).await;
     run_locked(shell, r).await;
     run_bookmarks(shell, r).await;
+    run_send_to_workspace(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -990,4 +991,74 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
         let _ = s.delete_workspace("bm");
     }
     let _ = std::fs::remove_dir_all(&ws_dir);
+}
+
+/// The tab's right-click menu offers "Send to workspace", and sending moves the live tab.
+async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let home = page("a.html");
+    for (id, name) in [("s1", "Sender"), ("s2", "Receiver")] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        std::fs::write(dir.join("workspace.yaml"), format!("name: {name}\nhome_page: '{home}'\n")).expect("workspace.yaml");
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"s1".to_variant()));
+    let ok = wait_until(15_000, || find("s1").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page A"))).await;
+    r.check("the sending workspace opens on its home page", ok, || "not open".into());
+    let Some(s1) = find("s1") else { return };
+    let moving = s1.open_tab(&page("b.html"), true);
+    let _ = wait_until(15_000, || moving.state.borrow().title == "Page B").await;
+
+    // The menu for that tab.
+    s1.tab_view.emit_by_name::<()>("setup-menu", &[&moving.page]);
+    let menu = s1.tab_menu.clone();
+    let submenu_labels: Vec<String> = (0..menu.n_items())
+        .filter_map(|i| menu.item_link(i, "submenu"))
+        .flat_map(|sub| (0..sub.n_items()).filter_map(move |j| sub.item_attribute_value(j, "label", None).and_then(|v| v.get::<String>())).collect::<Vec<_>>())
+        .collect();
+    r.check("the tab menu has a send-to-workspace submenu listing the other workspaces and a new window", submenu_labels.contains(&"Receiver".to_string()) && submenu_labels.contains(&"New window".to_string()) && !submenu_labels.contains(&"Sender".to_string()), || format!("{submenu_labels:?}"));
+    let has_close = (0..menu.n_items()).filter_map(|i| menu.item_link(i, "section")).any(|sec| (0..sec.n_items()).any(|j| sec.item_attribute_value(j, "label", None).and_then(|v| v.get::<String>()).as_deref() == Some("Close tab")));
+    r.check("the tab menu also offers closing the tab", has_close, || "no close item".into());
+
+    // Send it.
+    ActionGroupExt::activate_action(&s1.window, "send-tab", Some(&"s2".to_variant()));
+    let ok = wait_until(15_000, || find("s2").is_some_and(|s| s.tab_count() == 1 && s.current().is_some_and(|t| t.uid == moving.uid))).await;
+    r.check("sending moves the tab to the other workspace's window", ok, || format!("{:?}", find("s2").map(|s| s.tab_count())));
+    r.check("the sent tab keeps running and belongs to its new window", moving.owner().zip(find("s2")).is_some_and(|(o, s)| Rc::ptr_eq(&o, &s)) && !moving.view().is_dormant(), || "owner not updated".into());
+    r.check("the sender no longer has it", s1.tab_count() == 1 && !s1.tabs().iter().any(|t| t.uid == moving.uid), || s1.tab_count().to_string());
+    moving.view().navigate(&page("popup.html"));
+    let ok = wait_until(15_000, || moving.page.title() == "Popup test").await;
+    r.check("the sent tab still updates in its new window", ok, || format!("{:?}", moving.page.title()));
+
+    // Send the sender's last tab to a new window: the emptied window closes.
+    let last = s1.current().expect("last tab");
+    s1.tab_view.emit_by_name::<()>("setup-menu", &[&last.page]);
+    let before = super::windows().len();
+    ActionGroupExt::activate_action(&s1.window, "send-tab", Some(&"".to_variant()));
+    let ok = wait_until(10_000, || find("s1").is_none() && super::windows().len() == before).await;
+    r.check("sending the last tab to a new window closes the emptied window", ok, || format!("{} windows (was {before})", super::windows().len()));
+    let ephemeral = super::windows().into_iter().find(|s| s.workspace.is_none() && s.tabs().iter().any(|t| t.uid == last.uid));
+    r.check("the tab is in a new ephemeral window", ephemeral.is_some(), || "not found".into());
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ["s1", "s2"] {
+        if let Ok(s) = crate::store::Store::open(&db) {
+            let _ = s.delete_workspace(id);
+        }
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
 }

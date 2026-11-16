@@ -76,6 +76,13 @@ thread_local! {
 }
 
 thread_local! {
+    /// Shows a workspace's window (opening it if needed); an empty URL adds no tab. Set by `run`.
+    static OPEN_WORKSPACE: RefCell<Option<Rc<dyn Fn(&str, &str) -> Result<Rc<Shell>, String>>>> = const { RefCell::new(None) };
+    /// The profile this process runs (for listing its workspaces).
+    static PROFILE: RefCell<Option<crate::profile::Profile>> = const { RefCell::new(None) };
+}
+
+thread_local! {
     /// Tabs detached from one window and not yet attached to another (a drag between windows).
     static IN_FLIGHT: RefCell<Vec<Rc<Tab>>> = const { RefCell::new(Vec::new()) };
 }
@@ -128,6 +135,9 @@ pub struct Shell {
     /// Which controls are shown and whether tabs can be opened (a workspace's `nav` and `tabs`).
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
+    /// The tab context menu (rebuilt each time it opens) and the page it was opened on.
+    tab_menu: gio::Menu,
+    menu_page: RefCell<Option<adw::TabPage>>,
     /// Bookmarks: the bar's container and the star button (workspace windows only).
     bookmark_bar: gtk::Box,
     bookmark_revealer: gtk::Revealer,
@@ -182,6 +192,62 @@ impl Shell {
         }
         adw::StyleManager::default().connect_dark_notify(move |_| apply());
         *self.color_css.borrow_mut() = Some(provider);
+    }
+
+    // ---- the tab context menu -------------------------------------------------------------------
+
+    /// Fill the right-click menu for `page` (None: the menu closed).
+    fn setup_tab_menu(&self, page: Option<&adw::TabPage>) {
+        *self.menu_page.borrow_mut() = page.cloned();
+        self.tab_menu.remove_all();
+        let Some(page) = page else { return };
+        if page.is_pinned() {
+            return; // a workspace's pinned tabs stay where they are
+        }
+        let send = gio::Menu::new();
+        let here = self.workspace.as_ref().map(|w| w.id.as_str());
+        if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
+            for w in crate::workspace::Workspace::list(&profile) {
+                if Some(w.id.as_str()) == here {
+                    continue;
+                }
+                let item = gio::MenuItem::new(Some(w.display_name()), None);
+                item.set_action_and_target_value(Some("win.send-tab"), Some(&w.id.to_variant()));
+                send.append_item(&item);
+            }
+        }
+        let new_window = gio::MenuItem::new(Some("New window"), None);
+        new_window.set_action_and_target_value(Some("win.send-tab"), Some(&"".to_variant()));
+        send.append_item(&new_window);
+        self.tab_menu.append_submenu(Some("Send to workspace"), &send);
+        let close = gio::Menu::new();
+        close.append(Some("Close tab"), Some("win.close-menu-tab"));
+        self.tab_menu.append_section(None, &close);
+    }
+
+    /// Move the tab the menu was opened on to workspace `id` (an empty id: a window of its own).
+    /// The tab keeps running: its page moves with its browser.
+    fn send_menu_tab(&self, id: &str) {
+        let Some(page) = self.menu_page.borrow().clone().or_else(|| self.tab_view.selected_page()) else { return };
+        if page.is_pinned() || self.workspace.as_ref().is_some_and(|w| w.id == id) {
+            return;
+        }
+        let target = if id.is_empty() {
+            NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| f(""))
+        } else {
+            match OPEN_WORKSPACE.with(|f| f.borrow().clone()).map(|f| f(id, "")) {
+                Some(Ok(s)) => Some(s),
+                Some(Err(e)) => {
+                    self.toast(&e);
+                    None
+                }
+                None => None,
+            }
+        };
+        let Some(target) = target else { return };
+        self.tab_view.transfer_page(&page, &target.tab_view, target.tab_view.n_pages());
+        target.tab_view.set_selected_page(&page);
+        target.window.present();
     }
 
     // ---- bookmarks ------------------------------------------------------------------------------
@@ -695,6 +761,15 @@ impl Shell {
         };
         if let Some(tab) = tab {
             IN_FLIGHT.with(|f| f.borrow_mut().push(tab));
+            // A window whose last tab was sent elsewhere has nothing left to show.
+            if self.tabs.borrow().is_empty() {
+                let window = self.window.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(w) = window.upgrade() {
+                        w.close();
+                    }
+                });
+            }
         }
     }
 
@@ -907,6 +982,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
 
     let tab_view = adw::TabView::new();
+    let tab_menu = gio::Menu::new();
+    tab_view.set_menu_model(Some(&tab_menu));
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
     new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new);
@@ -949,6 +1026,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
+        tab_menu: tab_menu.clone(),
+        menu_page: RefCell::new(None),
         bookmark_bar: bookmark_bar.clone(),
         bookmark_revealer: bookmark_revealer.clone(),
         star: star.clone(),
@@ -1001,6 +1080,35 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     new_tab_action.set_enabled(ws_config.tabs.allow_new);
+    let send_tab = gio::SimpleAction::new("send-tab", Some(glib::VariantTy::STRING));
+    send_tab.connect_activate({
+        let weak = weak.clone();
+        move |_, param| {
+            if let (Some(s), Some(id)) = (weak.upgrade(), param.and_then(|p| p.get::<String>())) {
+                s.send_menu_tab(&id);
+            }
+        }
+    });
+    window.add_action(&send_tab);
+    add_action(&window, "close-menu-tab", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                let page = s.menu_page.borrow().clone().or_else(|| s.tab_view.selected_page());
+                if let Some(p) = page {
+                    s.tab_view.close_page(&p);
+                }
+            }
+        }
+    });
+    tab_view.connect_setup_menu({
+        let weak = weak.clone();
+        move |_, page| {
+            if let Some(s) = weak.upgrade() {
+                s.setup_tab_menu(page);
+            }
+        }
+    });
     add_action(&window, "bookmark-page", {
         let weak = weak.clone();
         move || {
@@ -1300,10 +1408,10 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 
     // Show a workspace: raise its window if it is open, otherwise open one. `url` opens as a tab.
     let open_workspace = {
-        let (cfg, profile, new_window) = (cfg.clone(), profile.clone(), new_window.clone());
+        let (cfg, profile, new_window, opts) = (cfg.clone(), profile.clone(), new_window.clone(), opts.clone());
         move |app: &adw::Application, id: &str, url: Option<&str>| -> Result<Rc<Shell>, String> {
             if let Some(s) = windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id)) {
-                if let Some(u) = url {
+                if let Some(u) = url.filter(|u| !u.is_empty()) {
                     s.open_tab(u, true);
                 }
                 s.window.present();
@@ -1315,17 +1423,28 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             let remembered: Vec<TabRecord> = store().map(|s| s.load_tabs(&w.id)).unwrap_or_default().into_iter().filter(|r| !r.pinned).collect();
             let start = match url {
                 Some(u) => u.to_owned(),
-                None if remembered.is_empty() && w.config.tabs.pinned.is_empty() => cfg.borrow().home_page.clone(),
+                None if remembered.is_empty() && w.config.tabs.pinned.is_empty() => {
+                    // The workspace's own home page, if it sets one.
+                    let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+                    config::load_window(&app_file, &profile.dir.join("profile.yaml"), Some(&w.dir.join("workspace.yaml"))).map(|l| l.config.home_page).unwrap_or_else(|_| cfg.borrow().home_page.clone())
+                }
                 None => String::new(),
             };
             Ok(new_window(app, Some(w), &start, remembered))
         }
     };
 
+    PROFILE.with(|p| *p.borrow_mut() = Some(profile.clone()));
+
     // Lets a locked workspace (no new tabs) send a link or a popup to an ephemeral window.
     NEW_EPHEMERAL.with(|f| {
         let (new_window, app) = (new_window.clone(), app.clone());
         *f.borrow_mut() = Some(Rc::new(move |url: &str| new_window(&app, None, url, Vec::new())));
+    });
+
+    OPEN_WORKSPACE.with(|f| {
+        let (open_workspace, app) = (open_workspace.clone(), app.clone());
+        *f.borrow_mut() = Some(Rc::new(move |id: &str, url: &str| open_workspace(&app, id, Some(url))));
     });
 
     // Another window with no workspace (Ctrl+Shift+N): nothing about it is remembered.

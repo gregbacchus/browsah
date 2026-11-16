@@ -15,7 +15,11 @@ browsah --profile=work --workspace=mail [URL]           # open it (or raise it i
 `--profile` defaults to `default`. A plain start of a profile opens the workspaces that were open
 when it last ran (closing windows one at a time forgets them, except the last), else the profile's
 `default_workspace`, else a window with no workspace. Such an **ephemeral window** (also made with
-`Ctrl+Shift+N`) is not remembered. All options apply at startup unless stated otherwise.
+`Ctrl+Shift+N`) is not remembered.
+
+**Sending tabs.** Right-click a tab and choose *Send to workspace* to move it, still running, to another
+workspace's window (opened if needed) or to a new window. Pinned tabs cannot be sent. A window whose
+last tab is sent away closes. All options apply at startup unless stated otherwise.
 
 **What a workspace remembers.** When its window closes, the workspace's tabs (address, title,
 selection) are saved in the profile's database (`data.sqlite`), with a screenshot of each page. The
