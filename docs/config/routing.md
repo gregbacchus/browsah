@@ -26,6 +26,10 @@ path containing `device` with a `user_code`). A rule written by you is tried fir
 particular sign-ins elsewhere (`match: { app_sign_in: true }`), and `routing.app_sign_in` changes the
 default for the whole profile or application. `browsah route test` shows when it applied.
 
+Many applications finish by redirecting to their own scheme (`claude://...`). A sign-in window opened
+this way may hand an address with *that* scheme (and only that one) to the desktop, which starts the
+application; the window then closes by itself. Any other scheme a page tries to open is blocked.
+
 What counts as a request:
 
 | Kind | When |

@@ -98,6 +98,8 @@ pub enum ViewEvent {
     Address(String),
     Title(String),
     Loading { loading: bool, can_back: bool, can_forward: bool },
+    /// The page navigated to an expected non-web scheme and it was handed to the desktop.
+    ExternalLaunch { scheme: String, url: String, signin: bool },
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
     Route { action: crate::router::Action, url: String },
     /// A main-frame navigation left the view's scope and was cancelled (see `set_scope`): open it elsewhere.
@@ -167,6 +169,8 @@ struct Shared {
     scope: Mutex<Vec<String>>,
     /// The workspace this view's tab is in (`None`: an ephemeral window); the router's source.
     workspace: Mutex<Option<String>>,
+    /// URL schemes this view may hand to the desktop (see `on_protocol_execution`).
+    allowed_schemes: Mutex<Vec<String>>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -189,6 +193,7 @@ impl Shared {
             deferred_url: Mutex::new(None),
             scope: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
+            allowed_schemes: Mutex::new(Vec::new()),
             accel,
             frame_rate,
         })
@@ -645,11 +650,38 @@ wrap_cookie_access_filter! {
 }
 
 wrap_resource_request_handler! {
-    struct ViewResources { deny: Vec<String> }
+    struct ViewResources { deny: Vec<String>, shared: Arc<Shared> }
 
     impl ResourceRequestHandler {
         fn cookie_access_filter(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, _r: Option<&mut Request>) -> Option<CookieAccessFilter> {
+            if self.deny.iter().all(|d| d.is_empty()) {
+                return None;
+            }
             Some(CookieRules::new(self.deny.clone()))
+        }
+
+        // A page (a redirect at the end of a sign-in, say) navigates to an address with a scheme
+        // browsah does not handle. Hand it to the desktop only if this view was told that scheme is
+        // expected (`BrowserView::allow_scheme`, set for the callback of a sign-in another application
+        // started); anything else stays blocked.
+        fn on_protocol_execution(
+            &self,
+            _b: Option<&mut Browser>,
+            _f: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            allow_os_execution: Option<&mut ::std::os::raw::c_int>,
+        ) {
+            let (Some(request), Some(allow)) = (request, allow_os_execution) else { return };
+            let url = CefString::from(&request.url()).to_string();
+            let scheme = url.split_once(':').map(|(s, _)| s.to_lowercase()).unwrap_or_default();
+            let from_env = std::env::var("BROWSAH_ALLOW_SCHEMES").unwrap_or_default();
+            let signin = self.shared.allowed_schemes.lock().unwrap().iter().any(|s| *s == scheme);
+            let expected = signin || from_env.split(',').any(|s| !s.is_empty() && s == scheme);
+            // Chromium's own launching needs a prompt that does not exist here, so the shell does it.
+            *allow = 0;
+            if expected {
+                send(self.shared.id, ViewEvent::ExternalLaunch { scheme, url, signin });
+            }
         }
 
         // The default would be "cancel" (a zero return value), which fails every request.
@@ -766,10 +798,7 @@ wrap_request_handler! {
             _disable_default: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
             let deny: Vec<String> = std::env::var("BROWSAH_COOKIE_DENY").unwrap_or_default().split(',').map(str::to_owned).collect();
-            if deny.iter().all(|d| d.is_empty()) {
-                return None;
-            }
-            Some(ViewResources::new(deny))
+            Some(ViewResources::new(deny, self.shared.clone()))
         }
     }
 }
@@ -889,6 +918,11 @@ impl BrowserView {
         let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
         let mut client = make_client(shared.clone());
         browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+    }
+
+    /// Allow this view to hand addresses with `scheme` to the desktop (a sign-in's callback).
+    pub fn allow_scheme(&self, scheme: &str) {
+        self.shared.allowed_schemes.lock().unwrap().push(scheme.to_lowercase());
     }
 
     /// Tell the view which workspace it is in (the router's idea of where a link came from).

@@ -306,6 +306,31 @@ local server using two host names. **Not verified:** a Ctrl-click or middle-clic
 links; many rules (no performance test; the router runs on every navigation); the toast messages.
 Regular expressions and a "which application" selector are not offered.
 
+## Status: sign-ins started by other applications (2026-11-17)
+
+Requested: command-line tools and desktop applications (Claude, ChatGPT) open the browser to sign in;
+this should open an ephemeral window in the receiving profile. Built as `routing.app_sign_in` (default
+`ephemeral`) with a heuristic on the address alone (`router::looks_like_app_sign_in`: an OAuth address whose
+`redirect_uri` points at loopback or an application scheme and which has a `client_id`, `response_type` or
+`code_challenge`; or a device sign-in with a `user_code`), a rule selector `match.app_sign_in`, and
+`route test` support. Measured: unit tests over positive and negative addresses; the self-test sends a
+loopback-style OAuth address through the `open` path and an ephemeral window opens on it.
+
+Application-scheme callbacks: **measured with a throwaway scheme handler** (registered with a
+`.desktop` file, removed afterwards): a 302 to `browsah-cb://done?code=1` showed an error page and nothing
+reached the handler by default. Chromium calls the embedder's `on_protocol_execution` only for schemes
+that have an OS handler, and letting it launch the handler itself did nothing (it needs a prompt that
+a windowless browser does not have). What works: the handler cancels the navigation and the shell hands
+the address to the desktop with GIO; this is allowed only for the scheme in the sign-in's own
+`redirect_uri`, only in the window the sign-in opened, and then the window closes after 1.5 s. Verified by
+hand with the throwaway handler (the log showed the address); **not** in the self-test (it would need a
+registered scheme handler), and **not** with a real application. Risks: the heuristic can miss a flow
+(a `redirect_uri` that is not in the query, a non-standard parameter name) or catch an ordinary link;
+an application that checks the browser's user agent is unaffected; a sign-in that needs the same
+browser session as a normal profile window (a password manager, existing cookies) is opened in an
+ephemeral window of the same profile, which shares the profile's cookies (the profile is the storage
+unit), so existing sign-ins are available there.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

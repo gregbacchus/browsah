@@ -865,7 +865,29 @@ impl Shell {
                     self.adopt_tab(spec);
                 }
             }
-            ViewEvent::Route { action, url } => perform_route(&action, &url, Some(self)),
+            ViewEvent::Route { action, url } => {
+                perform_route(&action, &url, Some(self));
+            }
+            ViewEvent::ExternalLaunch { scheme, url, signin } => {
+                // The sign-in handed its result to the application: an ephemeral window with only
+                // this tab has nothing more to show.
+                if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                    eprintln!("browsah: handing a {scheme}: address to the desktop");
+                }
+                if std::env::var_os("BROWSAH_NO_OS_LAUNCH").is_none() {
+                    if let Err(e) = gio::AppInfo::launch_default_for_uri(&url, gio::AppLaunchContext::NONE) {
+                        self.toast(&format!("Cannot open {url}: {e}"));
+                    }
+                }
+                if signin && self.workspace.is_none() && self.tab_count() == 1 {
+                    let window = self.window.downgrade();
+                    glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+                        if let Some(w) = window.upgrade() {
+                            w.close();
+                        }
+                    });
+                }
+            }
             ViewEvent::OutOfScope(url) => {
                 if self.allow_new_tabs {
                     self.open_tab(&url, true);
@@ -1540,7 +1562,15 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                         return true;
                     }
                     let origin = windows().into_iter().next();
-                    perform_route(&decision.action, url, origin.as_deref());
+                    let opened = perform_route(&decision.action, url, origin.as_deref());
+                    // The window a sign-in opens may hand its result to the application that started it.
+                    if let (Some(s), Some(scheme)) = (opened, crate::router::sign_in_callback_scheme(url)) {
+                        if crate::router::looks_like_app_sign_in(url) {
+                            if let Some(t) = s.tabs().last() {
+                                t.view().allow_scheme(&scheme);
+                            }
+                        }
+                    }
                     false
                 });
                 if urls.is_empty() {
@@ -1595,7 +1625,7 @@ fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> S
 
 /// Carry out the router's decision for a link. `origin` is the window the link came from (for
 /// messages), if any. `Allow` is not handled here: it means "carry on as usual".
-fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shell>) {
+fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shell>) -> Option<Rc<Shell>> {
     use crate::router::Action;
     let say = |text: &str| {
         if let Some(s) = origin {
@@ -1607,11 +1637,11 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shel
         Action::Block => say(&format!("Blocked a link to {}", url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url))),
         Action::Ephemeral => {
             if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
-                f(url);
+                return Some(f(url));
             }
         }
         Action::Workspace(id) => match OPEN_WORKSPACE.with(|f| f.borrow().clone()).map(|f| f(id, url)) {
-            Some(Ok(_)) => {}
+            Some(Ok(s)) => return Some(s),
             Some(Err(e)) => say(&e),
             None => {}
         },
@@ -1627,7 +1657,7 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shel
         }
         Action::Profile { profile, workspace } => {
             // The other profile's process takes the link (it is started if it is not running).
-            let Ok(exe) = std::env::current_exe() else { return };
+            let Ok(exe) = std::env::current_exe() else { return None };
             let mut cmd = std::process::Command::new(exe);
             cmd.arg(format!("--profile={profile}"));
             if let Some(w) = workspace {
@@ -1639,6 +1669,7 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Shel
             }
         }
     }
+    None
 }
 
 /// The shell of a window.

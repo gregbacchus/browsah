@@ -175,6 +175,8 @@ fn query_pairs(url: &str) -> Vec<(String, String)> {
 ///   `code_challenge` (so an ordinary link that happens to carry a redirect is not caught);
 /// - device sign-in: a path containing `device` and a `user_code`.
 /// This is a heuristic: it only looks at the address.
+///
+/// See also `sign_in_callback_scheme`.
 pub fn looks_like_app_sign_in(url: &str) -> bool {
     let Some((scheme, rest)) = url.split_once("://") else { return false };
     if !matches!(scheme.to_lowercase().as_str(), "http" | "https") {
@@ -200,6 +202,14 @@ pub fn looks_like_app_sign_in(url: &str) -> bool {
         None => redirect.split_once(':').is_some_and(|(s, _)| s.contains('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')),
     };
     marker && target_is_local
+}
+
+/// The application's own scheme in a sign-in address's `redirect_uri` (for `myapp://callback`:
+/// `myapp`), if it has one. Loopback redirects have none.
+pub fn sign_in_callback_scheme(url: &str) -> Option<String> {
+    let redirect = query_pairs(url).into_iter().find(|(k, v)| (k == "redirect_uri" || k == "redirect_url") && !v.is_empty())?.1;
+    let scheme = redirect.split_once(':')?.0.to_lowercase();
+    (!scheme.is_empty() && scheme != "http" && scheme != "https").then_some(scheme)
 }
 
 // ---- configuration ----------------------------------------------------------------------------
@@ -670,6 +680,15 @@ mod tests {
         for u in no {
             assert!(!looks_like_app_sign_in(u), "{u}");
         }
+    }
+
+    #[test]
+    fn callback_schemes() {
+        let u = |r: &str| format!("https://a.example/authorize?client_id=1&redirect_uri={r}");
+        assert_eq!(sign_in_callback_scheme(&u("claude%3A%2F%2Fauth")), Some("claude".into()));
+        assert_eq!(sign_in_callback_scheme(&u("com.example.app%3A%2Fcb")), Some("com.example.app".into()));
+        assert_eq!(sign_in_callback_scheme(&u("http%3A%2F%2Flocalhost%3A1%2F")), None);
+        assert_eq!(sign_in_callback_scheme("https://a.example/"), None);
     }
 
     #[test]
