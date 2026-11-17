@@ -1539,6 +1539,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
+    shell.end_session_cookies(); // anything an earlier run left behind
     shell.rebuild_bookmarks();
 
     // A workspace's pinned tabs come first.

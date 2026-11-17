@@ -508,9 +508,9 @@ each other's. Applies to tabs created after the setting changes. **Session cooki
 visits the window's cookie store (the profile's, if no other window shares it; an isolated workspace's own)
 and deletes cookies whose domain a `session` rule matches, then flushes the store. CEF cannot rewrite a cookie's
 expiry in the filter, hence delete-on-close. Measured (`--selftest`, 3 checks, isolated workspaces): the cookie
-works while open, is gone after close and reopen; an `allow` one stays. Not measured: the profile's shared store
+works while open, is gone after close and reopen; an `allow` one stays. **Run binding:** cookies saved under a `session` rule are recorded in a per-process set (store, domain, name, path); the filter sends a session cookie only if it is in the set, so a stale one is never returned, and windows also purge at open. Measured (1 check): a cookie saved earlier under `allow` is not sent once the site is `session`; that check cannot tell the filter from the purge at open apart. Not measured: the profile's shared store
 (same code, `None` storage), quitting the whole browser (the delete runs on CEF's thread as the window closes and
-may race shutdown), and cookies a crash leaves (removed at the next close, not at start-up).
+may race shutdown), and cookies a crash leaves (never sent; deleted at the next window open).
 
 Not measured: persistence of an isolated
 workspace's cookies across a restart, and the disk space of many contexts. Caveat: permission answers Chromium

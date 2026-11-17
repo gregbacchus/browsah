@@ -1919,6 +1919,22 @@ async fn run_session_cookies(shell: &Rc<Shell>, r: &mut Report) {
         let want = if kept { "Cookies [ck=1]" } else { "Cookies []" };
         r.check(if kept { "an allowed cookie is still there after the window is reopened" } else { "a session cookie is gone after the window is closed and reopened" }, after == want, || after.clone());
     }
+    // A cookie an earlier run (here: the `ke1` rules that allowed it) left behind is never sent once its site is a
+    // `session` one, even though nothing has deleted it yet.
+    if let Some(w) = find("ke1") {
+        w.window.close();
+        let _ = wait_until(5_000, || find("ke1").is_none()).await;
+    }
+    let dir = profile.workspaces_dir().join("ke1");
+    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\nstorage: isolated\ncookies:\n  rules:\n    - match: ['localhost']\n      action: session\n")).expect("ws");
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"ke1".to_variant()));
+    wait_until(15_000, || find("ke1").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    if let Some(tab) = find("ke1").and_then(|s| s.current()) {
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-show"));
+        wait_until(15_000, || tab.state.borrow().title.starts_with("Cookies [") && !tab.state.borrow().loading).await;
+        let t = tab.state.borrow().title.clone();
+        r.check("a cookie from an earlier run is not sent once its site is a session one", t == "Cookies []", || t.clone());
+    }
     for w in super::windows() {
         if !Rc::ptr_eq(&w, shell) {
             w.window.close();

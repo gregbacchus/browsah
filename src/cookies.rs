@@ -62,6 +62,16 @@ impl CookiesConfig {
     }
 }
 
+/// Identifies one session cookie within one cookie store: the store, the cookie's domain (or, if it has
+/// none, the host of the request), its name and its path.
+pub fn session_key(store: &str, request_url: &str, domain: &str, name: &str, path: &str) -> String {
+    let host = request_url.split("://").nth(1).unwrap_or(request_url).split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit('@').next().unwrap_or(host).split(':').next().unwrap_or(host);
+    let domain = domain.trim().trim_start_matches('.');
+    let domain = if domain.is_empty() { host } else { domain };
+    format!("{store}\u{1}{}\u{1}{name}\u{1}{path}", domain.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +116,15 @@ mod tests {
         assert_eq!(c.decide("https://other.example/"), Action::Allow);
         assert!(!CookiesConfig::default().has_session_rules());
         assert!(cfg("default: session\n").has_session_rules());
+    }
+
+    #[test]
+    fn session_keys_ignore_how_the_domain_is_written() {
+        let k = |url: &str, d: &str| session_key("s", url, d, "ck", "/");
+        assert_eq!(k("https://News.Example:8443/a?x", ""), k("http://news.example/", ".news.example"));
+        assert_ne!(k("https://a.example/", ""), k("https://b.example/", ""));
+        assert_ne!(session_key("one", "https://a/", "", "n", "/"), session_key("two", "https://a/", "", "n", "/"), "stores differ");
+        assert_ne!(session_key("s", "https://a/", "", "n", "/"), session_key("s", "https://a/", "", "m", "/"));
     }
 
     #[test]

@@ -725,21 +725,50 @@ wrap_context_menu_handler! {
     }
 }
 
+/// The session cookies saved during this run of the browser. A cookie a `session` rule covers is sent only if
+/// it is in here: one left on disk by an earlier run (a crash, a failed delete) is never sent, whatever it holds.
+static RUN_SESSION_COOKIES: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
 wrap_cookie_access_filter! {
     struct CookieRules { shared: Arc<Shared> }
 
     impl CookieAccessFilter {
         // Cookies sent with a request, and cookies a response asks to save: allowed or denied by the site's
-        // address (`cookies:` in the configuration).
-        fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+        // address (`cookies:` in the configuration). `session` cookies are tied to this run.
+        fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (self.shared.cookies.lock().unwrap().decide(&url) != crate::cookies::Action::Deny) as _
+            match self.shared.cookies.lock().unwrap().decide(&url) {
+                crate::cookies::Action::Allow => 1,
+                crate::cookies::Action::Deny => 0,
+                crate::cookies::Action::Session => {
+                    let Some(c) = cookie else { return 0 };
+                    let key = self.session_key(&url, c);
+                    RUN_SESSION_COOKIES.lock().unwrap().as_ref().is_some_and(|set| set.contains(&key)) as _
+                }
+            }
         }
 
-        fn can_save_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _resp: Option<&mut Response>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+        fn can_save_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _resp: Option<&mut Response>, cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (self.shared.cookies.lock().unwrap().decide(&url) != crate::cookies::Action::Deny) as _
+            match self.shared.cookies.lock().unwrap().decide(&url) {
+                crate::cookies::Action::Allow => 1,
+                crate::cookies::Action::Deny => 0,
+                crate::cookies::Action::Session => {
+                    if let Some(c) = cookie {
+                        let key = self.session_key(&url, c);
+                        RUN_SESSION_COOKIES.lock().unwrap().get_or_insert_with(Default::default).insert(key);
+                    }
+                    1
+                }
+            }
         }
+    }
+}
+
+impl CookieRules {
+    fn session_key(&self, url: &str, c: &Cookie) -> String {
+        let store = self.shared.storage.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        crate::cookies::session_key(&store, url, &c.domain.to_string(), &c.name.to_string(), &c.path.to_string())
     }
 }
 
