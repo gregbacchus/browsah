@@ -18,9 +18,7 @@ declares the web handlers, so you can choose a single profile as the default ins
 question.)
 
 `browsah select [URL]` is what the entry runs. In the window, press `1` to `9`, click a profile or
-press `Enter` to choose, `Esc` to cancel. A profile that is running says so. The **default profile** is listed first and carries a *Default* badge: the profile named by
-`default_profile` in `config.yaml` if it exists, else the profile called `default` (what a plain `browsah` starts). (When
-`default_profile` is set the selector does not ask at all, see below, so in the list the badge is on `default`.)
+press `Enter` to choose, `Esc` to cancel. A profile that is running says so.
 
 It does not ask when it can already tell:
 

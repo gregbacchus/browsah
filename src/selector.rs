@@ -78,28 +78,11 @@ pub struct Row {
     pub name: String,
     pub icon: String,
     pub running: bool,
-    /// The profile the browser uses when none is named (marked with a badge, listed first).
-    pub is_default: bool,
 }
-
-/// The default profile first, then the others in their order.
-pub fn default_first(mut rows: Vec<Row>) -> Vec<Row> {
-    rows.sort_by_key(|r| !r.is_default); // stable: only moves the default to the front
-    rows
-}
-
-/// The badge text on a row (for the check).
-const DEFAULT_BADGE: &str = "Default";
 
 /// Build the chooser window. `on_pick` gets the chosen profile id.
 fn build_window(app: &adw::Application, rows: &[Row], url: Option<&str>, on_pick: Rc<dyn Fn(&str)>) -> (adw::ApplicationWindow, gtk::ListBox) {
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["boxed-list"]).build();
-    // The "Default" badge: a small rounded label in the accent colour.
-    let css = gtk::CssProvider::new();
-    css.load_from_string(".browsah-default-badge { color: @accent_color; background-color: alpha(@accent_bg_color, 0.18); border-radius: 99px; padding: 1px 9px; }");
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-    }
     let theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().expect("display"));
     for (i, r) in rows.iter().enumerate() {
         let row = adw::ActionRow::builder().title(glib::markup_escape_text(&r.name).as_str()).subtitle(if r.running { "running" } else { "" }).activatable(true).build();
@@ -107,10 +90,6 @@ fn build_window(app: &adw::Application, rows: &[Row], url: Option<&str>, on_pick
         let image = gtk::Image::from_icon_name(icon);
         image.set_pixel_size(32);
         row.add_prefix(&image);
-        if r.is_default {
-            let badge = gtk::Label::builder().label(DEFAULT_BADGE).valign(gtk::Align::Center).css_classes(["caption-heading", "browsah-default-badge"]).build();
-            row.add_suffix(&badge);
-        }
         if i < 9 {
             row.add_suffix(&gtk::Label::builder().label(format!("{}", i + 1)).css_classes(["dim-label", "caption"]).build());
         }
@@ -165,19 +144,11 @@ fn build_window(app: &adw::Application, rows: &[Row], url: Option<&str>, on_pick
     (window, list)
 }
 
-fn rows_for(profiles: &[Profile], default_id: &str) -> Vec<Row> {
-    default_first(
-        profiles
-            .iter()
-            .map(|p| Row { id: p.id.clone(), name: p.display_name().to_owned(), icon: p.app_id(), running: profile::is_running(p), is_default: p.id == default_id })
-            .collect(),
-    )
-}
-
-/// Which profile is the default: the configured `default_profile` if it exists, else the one named `default` (what a plain
-/// `browsah` starts).
-fn default_id(configured: Option<&str>, ids: &[String]) -> String {
-    configured.filter(|d| ids.iter().any(|p| p == d)).unwrap_or(profile::DEFAULT_ID).to_owned()
+fn rows_for(profiles: &[Profile]) -> Vec<Row> {
+    profiles
+        .iter()
+        .map(|p| Row { id: p.id.clone(), name: p.display_name().to_owned(), icon: p.app_id(), running: profile::is_running(p) })
+        .collect()
 }
 
 /// `browsah select [URL]`: choose a profile for a link. Returns the exit code.
@@ -200,13 +171,13 @@ pub fn run(url: Option<&str>) -> i32 {
                 1
             }
         },
-        Plan::Choose => show(&profiles, url, &default_id(loaded.config.default_profile.as_deref(), &ids)),
+        Plan::Choose => show(&profiles, url),
     }
 }
 
-fn show(profiles: &[Profile], url: Option<&str>, default_id: &str) -> i32 {
+fn show(profiles: &[Profile], url: Option<&str>) -> i32 {
     let app = adw::Application::builder().application_id(SELECTOR_APP_ID).flags(gio::ApplicationFlags::NON_UNIQUE).build();
-    let rows = rows_for(profiles, default_id);
+    let rows = rows_for(profiles);
     let url = url.map(str::to_owned);
     let code = Rc::new(std::cell::Cell::new(0));
     app.connect_activate({
@@ -241,10 +212,9 @@ fn check() -> i32 {
         let (picked, result) = (picked.clone(), result.clone());
         move |app| {
             let rows = vec![
-                Row { id: "alpha".into(), name: "Alpha".into(), icon: "no-such-icon".into(), running: false, is_default: false },
-                Row { id: "beta".into(), name: "Beta & <Co>".into(), icon: "no-such-icon".into(), running: true, is_default: true },
+                Row { id: "alpha".into(), name: "Alpha".into(), icon: "no-such-icon".into(), running: false },
+                Row { id: "beta".into(), name: "Beta & <Co>".into(), icon: "no-such-icon".into(), running: true },
             ];
-            let rows = default_first(rows); // beta is the default: it comes first
             let on_pick: Rc<dyn Fn(&str)> = Rc::new({
                 let picked = picked.clone();
                 move |id: &str| *picked.borrow_mut() = Some(id.to_owned())
@@ -252,48 +222,13 @@ fn check() -> i32 {
             let (window, list) = build_window(app, &rows, Some("https://example.com/path?q=1"), on_pick);
             window.present();
             let count = (0..).take_while(|i| list.row_at_index(*i).is_some()).count();
-            // The default comes first and carries the badge; the other row does not.
-            let has_badge = |row: &gtk::ListBoxRow| {
-                fn find(w: &gtk::Widget) -> bool {
-                    if w.downcast_ref::<gtk::Label>().is_some_and(|l| l.label() == DEFAULT_BADGE) {
-                        return true;
-                    }
-                    let mut c = w.first_child();
-                    while let Some(ch) = c {
-                        if find(&ch) {
-                            return true;
-                        }
-                        c = ch.next_sibling();
-                    }
-                    false
-                }
-                find(row.upcast_ref())
-            };
-            let first = list.row_at_index(0).expect("first row");
             let second = list.row_at_index(1);
-            let badges = (has_badge(&first), second.as_ref().is_some_and(has_badge));
             let named = second.as_ref().map(|r| r.widget_name().to_string());
             list.emit_by_name::<()>("row-activated", &[&second.expect("second row")]);
-            let ok = count == 2 && first.widget_name() == "beta" && badges == (true, false) && named.as_deref() == Some("alpha") && picked.borrow().as_deref() == Some("alpha");
-            println!("{} the chooser lists the default first with a badge and reports the one activated (rows {count}, badges {badges:?}, picked {:?})", if ok { "PASS" } else { "FAIL" }, picked.borrow());
+            let ok = count == 2 && named.as_deref() == Some("beta") && picked.borrow().as_deref() == Some("beta");
+            println!("{} the chooser lists the profiles and reports the one activated (rows {count}, picked {:?})", if ok { "PASS" } else { "FAIL" }, picked.borrow());
             result.set(if ok { 0 } else { 1 });
-            // With BROWSAH_SHOTS=<dir>, save a picture of the chooser first (for looking at it).
-            match std::env::var_os("BROWSAH_SHOTS") {
-                Some(dir) => {
-                    let (app, window) = (app.clone(), window.clone());
-                    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
-                        let _ = std::fs::create_dir_all(&dir);
-                        let paintable = gtk::WidgetPaintable::new(Some(&window));
-                        let snapshot = gtk::Snapshot::new();
-                        paintable.snapshot(&snapshot, paintable.intrinsic_width() as f64, paintable.intrinsic_height() as f64);
-                        if let (Some(node), Some(renderer)) = (snapshot.to_node(), window.native().and_then(|n| n.renderer())) {
-                            let _ = renderer.render_texture(&node, None).save_to_png(std::path::Path::new(&dir).join("selector.png"));
-                        }
-                        app.quit();
-                    });
-                }
-                None => app.quit(),
-            }
+            app.quit();
         }
     });
     app.run_with_args::<&str>(&[]);
@@ -420,19 +355,6 @@ mod tests {
         // A blocking rule drops the link; other actions (they refer to a profile's workspaces) do not decide.
         assert_eq!(decide(&two, Some("work"), &Action::Block), Plan::Ignore);
         assert_eq!(decide(&two, None, &Action::Workspace("mail".into())), Plan::Choose);
-    }
-
-    #[test]
-    fn the_default_profile_is_listed_first() {
-        let row = |id: &str, is_default: bool| Row { id: id.into(), name: id.into(), icon: String::new(), running: false, is_default };
-        let order = |rows: Vec<Row>| default_first(rows).into_iter().map(|r| r.id).collect::<Vec<_>>();
-        assert_eq!(order(vec![row("alpha", false), row("default", true), row("work", false)]), ["default", "alpha", "work"], "the default moves up, the rest keep their order");
-        assert_eq!(order(vec![row("default", true), row("home", false)]), ["default", "home"], "already first");
-        assert_eq!(order(vec![row("a", false), row("b", false)]), ["a", "b"], "no default marked: unchanged");
-        let ids = ["default".to_owned(), "home".to_owned(), "work".to_owned()];
-        assert_eq!(default_id(None, &ids), "default", "the profile a plain start uses");
-        assert_eq!(default_id(Some("home"), &ids), "home", "the configured default");
-        assert_eq!(default_id(Some("gone"), &ids), "default", "a configured default that does not exist is ignored");
     }
 
     #[test]
