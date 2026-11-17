@@ -147,6 +147,32 @@ Useful flags: `--mode=paint\|accel` (readback or dmabuf), `--backing=off` (rende
 `--flag` goes to Chromium. `BROWSAH_NO_GPU_WORKAROUNDS=1` skips the per-GPU environment fixes
 (see [docs/research/summary.md](docs/research/summary.md#workarounds-that-are-required)).
 
+## Install with Homebrew, and releasing
+
+```bash
+brew tap gregbacchus/tap
+brew install browsah
+browsah example.com
+```
+
+The brew package is a prebuilt directory (the binary with CEF's `libcef.so` and resources, about 500 MB
+installed, debug info stripped) that uses the **system** GTK 4 and libadwaita (Ubuntu 24.04 or newer, x86_64 or aarch64;
+`sudo apt install libgtk-4-1 libadwaita-1-0` if they are missing). `browsah` on the PATH is a small
+launcher that sets `LD_LIBRARY_PATH` to the install directory. Update with `brew upgrade browsah`.
+
+**Releasing** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow builds both architectures, publishes a GitHub release with the tarballs and checksums, and
+writes `Formula/browsah.rb` (from `packaging/homebrew/browsah.rb.in`) into the tap. It uses the same
+`homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret as paua-terminal; for this repository, add the
+secret (a fine-grained token with **Contents: read and write** on `homebrew-tap`). Without it the release
+still works and only the tap update is skipped. The first tagged build has not been run yet, so the
+formula and the tarball layout are untested.
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE). Dependencies are permissive (MIT, Apache-2.0, BSD, ISC, Unicode,
