@@ -142,14 +142,15 @@ impl Shell {
     // ---- downloads ----------------------------------------------------------------------------------
 
     /// A download started, progressed, finished or was cancelled.
-    pub fn download_event(self: &Rc<Self>, id: u32, name: &str, state: DownloadState) {
+    pub fn download_event(self: &Rc<Self>, id: u32, name: &str, url: &str, state: DownloadState, cancel: Option<Arc<super::view::DownloadCancel>>) {
+        self.downloads_update(id, name, url, &state, cancel);
         match state {
-            DownloadState::Progress(_) => {
+            DownloadState::Progress { .. } => {
                 if self.downloads_seen.borrow_mut().insert(id) && !name.is_empty() {
                     self.toast(&format!("Downloading {name}"));
                 }
             }
-            DownloadState::Done(path) => {
+            DownloadState::Done { path, .. } => {
                 self.downloads_seen.borrow_mut().remove(&id);
                 let toast = adw::Toast::builder().title(format!("Downloaded {name}")).button_label("Show in folder").build();
                 let folder = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -160,9 +161,9 @@ impl Shell {
                 self.toasts.add_toast(toast);
                 self.completed_downloads.borrow_mut().push(path);
             }
-            DownloadState::Canceled => {
+            DownloadState::Canceled | DownloadState::Failed => {
                 self.downloads_seen.borrow_mut().remove(&id);
-                self.toast(&format!("Download of {} was cancelled", if name.is_empty() { "a file" } else { name }));
+                self.toast(&format!("Download of {} {}", if name.is_empty() { "a file" } else { name }, if matches!(state, DownloadState::Failed) { "failed" } else { "was cancelled" }));
             }
         }
     }

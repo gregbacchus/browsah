@@ -54,3 +54,14 @@ site suggests with anything unsafe removed (folders in the name are dropped); a 
 `name (1).ext`, so nothing is overwritten. With `downloads.ask: true` a *Save as* question appears for each
 file, starting in that folder. A message shows when a download starts and, when it is done, with a *Show in
 folder* button. The folder and the question can be set per workspace.
+
+### The downloads list
+
+A downloads button appears in the header (a folder-download icon) once there is a download to show, and stays while the
+list is not empty. It opens a list of the profile's recent downloads, newest first, the same in every window: a running
+download shows a progress bar and the bytes received so far with a *Cancel* button; a finished one shows its size with
+*Open the file* and *Show in folder* (the desktop's default handlers); a cancelled or failed one says so; a file that has
+since been moved or deleted says that. *Remove* forgets a row and *Clear list* forgets all the finished ones; the files
+themselves are never touched. Finished and stopped downloads are remembered between runs (the last 50 are shown); one
+that was running when the browser closed is not.
+

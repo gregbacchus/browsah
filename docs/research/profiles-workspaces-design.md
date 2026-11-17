@@ -564,6 +564,21 @@ history from an earlier run (the section now clears it). **Not measured:** mouse
 and is placed (width, scrolling, theme), IME, typing speed with a large history (a `LIKE` scan on each keystroke; no
 index; the history window does the same).
 
+## Status: downloads list (2026-11-17)
+
+`app/downloads.rs`: one thread-local list of rows for the profile, shown by a header `MenuButton` and popover in each
+window (rebuilt on every change). `DownloadHandler::on_download_updated` now sends the URL, bytes received and
+percent, and a `DownloadCancel` that posts `DownloadItemCallback::cancel` to CEF's UI thread. Finished and stopped
+downloads are written to a new `downloads` table (schema 6) and the last 50 are loaded when the first window opens.
+Measured (`--selftest` section `downloads`, 9 new checks, a local server that streams 1 MB over about four
+seconds): finished downloads are listed by file name, each window's list matches, they are remembered in the
+database, *Clear list* empties list, table and button while the files stay, a running download is listed with bytes
+received, and cancelling it through the row's handle ends it as cancelled. A first version named a running download
+"download" after the cancel because the path is empty on the last event; the name is now kept from earlier events.
+**Not measured:** the button, popover and row layout by eye, the Open and Show-in-folder buttons (they hand to the
+desktop; the test sets `BROWSAH_NO_OS_LAUNCH`), a failed (interrupted) download, a download that outlives its window,
+resuming, drag-out, and the file-moved note.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

@@ -2,6 +2,7 @@
 
 mod input;
 mod history;
+mod downloads;
 mod install;
 mod suggest;
 mod latency;
@@ -165,6 +166,8 @@ pub struct Shell {
     session_owner: String,
     /// The address bar's suggestions.
     suggest: suggest::Popup,
+    /// The downloads button and its list.
+    pub downloads: Rc<downloads::Ui>,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -1071,7 +1074,7 @@ impl Shell {
             }
             ViewEvent::Permission(req) => self.prompt_permission(req),
             ViewEvent::PermissionDismissed(id) => self.dismiss_permission(id),
-            ViewEvent::Download { id, name, state } => self.download_event(id, &name, state),
+            ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
                 // The sign-in handed its result to the application: an ephemeral window with only
@@ -1207,6 +1210,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmarks_on = workspace.is_some() && nav.bookmarks_bar;
     let star = icon_button("non-starred-symbolic", "Bookmark this page (Ctrl+D)", "win.bookmark-page");
     star.set_visible(bookmarks_on);
+    let downloads_ui = downloads::Ui::new();
+    header.pack_end(&downloads_ui.button);
     header.pack_end(&star);
     let bookmark_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).margin_start(6).margin_end(6).margin_top(2).margin_bottom(2).build();
     let bookmark_scroll = gtk::ScrolledWindow::builder().child(&bookmark_bar).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::Automatic).build();
@@ -1271,6 +1276,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         pending_close_reason: RefCell::new(None),
         private: Cell::new(false),
         suggest: suggest::Popup::new(&entry),
+        downloads: downloads_ui.clone(),
         session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),

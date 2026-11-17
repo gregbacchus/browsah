@@ -69,7 +69,7 @@ take minutes.
 | Path | What lives there |
 |---|---|
 | `src/main.rs` | Entry: CEF subprocess handling, config, GPU workarounds, then the app or a benchmark |
-| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest) |
+| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest), `downloads.rs` (the downloads button and list; rows are the profile's, thread-local, remembered in the `downloads` table) |
 | `src/cef_rt.rs` | CEF start-up and settings, `HostHandle`/`BrowserHandle` |
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |

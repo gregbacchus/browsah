@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +28,21 @@ pub struct TabRecord {
 pub struct Bookmark {
     pub url: String,
     pub title: String,
+}
+
+/// A finished (or stopped) download, as remembered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadRecord {
+    pub id: i64,
+    pub workspace: Option<String>,
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    /// Unix time, seconds.
+    pub at: i64,
+    /// `done`, `cancelled` or `failed`.
+    pub state: String,
+    pub bytes: i64,
 }
 
 /// A page visit.
@@ -163,6 +178,20 @@ impl Store {
                 );",
             )?;
         }
+        if version < 6 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS downloads (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace TEXT,
+                    name      TEXT NOT NULL,
+                    path      TEXT NOT NULL,
+                    url       TEXT NOT NULL DEFAULT '',
+                    at        INTEGER NOT NULL,
+                    state     TEXT NOT NULL,
+                    bytes     INTEGER NOT NULL DEFAULT 0
+                );",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
     }
 
@@ -256,6 +285,29 @@ impl Store {
         }
     }
 
+    // ---- downloads ---------------------------------------------------------------------------------
+
+    pub fn record_download(&self, workspace: Option<&str>, name: &str, path: &str, url: &str, at: i64, state: &str, bytes: i64) -> rusqlite::Result<i64> {
+        self.conn.execute("INSERT INTO downloads (workspace, name, path, url, at, state, bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![workspace, name, path, url, at, state, bytes])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The remembered downloads, newest first.
+    pub fn downloads(&self, limit: usize) -> Vec<DownloadRecord> {
+        let Ok(mut stmt) = self.conn.prepare(&format!("SELECT id, workspace, name, path, url, at, state, bytes FROM downloads ORDER BY at DESC, id DESC LIMIT {limit}")) else { return Vec::new() };
+        stmt.query_map([], |r| Ok(DownloadRecord { id: r.get(0)?, workspace: r.get(1)?, name: r.get(2)?, path: r.get(3)?, url: r.get(4)?, at: r.get(5)?, state: r.get(6)?, bytes: r.get(7)? }))
+            .map(|r| r.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    /// Forget one remembered download (the file stays), or all of them with `None`.
+    pub fn remove_downloads(&self, id: Option<i64>) -> rusqlite::Result<usize> {
+        match id {
+            Some(id) => self.conn.execute("DELETE FROM downloads WHERE id = ?1", params![id]),
+            None => self.conn.execute("DELETE FROM downloads", []),
+        }
+    }
+
     // ---- history -----------------------------------------------------------------------------
 
     pub fn record_visit(&self, workspace: Option<&str>, url: &str, title: &str, at: i64) -> rusqlite::Result<()> {
@@ -343,6 +395,21 @@ mod tests {
 
     fn rec(uid: u64, url: &str, selected: bool) -> TabRecord {
         TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1") }
+    }
+
+    #[test]
+    fn downloads_are_remembered_newest_first_and_can_be_removed() {
+        let s = Store::open_memory();
+        let a = s.record_download(Some("w"), "a.txt", "/d/a.txt", "https://x/a", 10, "done", 5).unwrap();
+        let b = s.record_download(None, "b.zip", "/d/b.zip", "https://x/b", 20, "cancelled", 0).unwrap();
+        let all = s.downloads(10);
+        assert_eq!(all.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["b.zip", "a.txt"]);
+        assert_eq!((all[1].workspace.as_deref(), all[1].bytes, all[0].state.as_str()), (Some("w"), 5, "cancelled"));
+        assert_eq!(s.downloads(1).len(), 1);
+        s.remove_downloads(Some(a)).unwrap();
+        assert_eq!(s.downloads(10).iter().map(|d| d.id).collect::<Vec<_>>(), [b]);
+        s.remove_downloads(None).unwrap();
+        assert!(s.downloads(10).is_empty());
     }
 
     #[test]

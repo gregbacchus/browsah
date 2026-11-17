@@ -931,6 +931,17 @@ fn start_test_server() -> u16 {
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
             let path = req.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_owned();
+            if path == "/slow" {
+                // A download that takes a few seconds: 1 MB in ten pieces.
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"slow.bin\"\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n");
+                for _ in 0..10 {
+                    if stream.write_all(&[0u8; 100_000]).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                }
+                return;
+            }
             let (status, extra, body) = match path.as_str() {
                 "/scope.html" => (
                     "200 OK",
@@ -1856,6 +1867,24 @@ async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
     let files = std::fs::read_dir(tmp.join("asked")).map(|d| d.flatten().count()).unwrap_or(0);
     r.check("cancelling the question saves nothing", ok && files == 1, || format!("{files} files"));
 
+    // The downloads list.
+    let rows = super::downloads::rows();
+    let done: Vec<&str> = rows.iter().filter(|(_, s)| *s == super::downloads::RowState::Done).map(|(n, _)| n.as_str()).collect();
+    r.check("finished downloads are in the list", ["note.txt", "note (1).txt", "chosen.txt"].iter().all(|n| done.contains(n)), || format!("{rows:?}"));
+    r.check("the list shows a row for each and the button is shown", da.downloads.shown_rows() == rows.len() && da.downloads.button.is_visible(), || format!("{} rows widgets vs {}", da.downloads.shown_rows(), rows.len()));
+    let remembered = super::store().map(|s| s.downloads(50)).unwrap_or_default();
+    r.check("finished downloads are remembered in the database", remembered.iter().filter(|d| d.state == "done").count() >= 3 && remembered.iter().any(|d| d.path.ends_with("note.txt")), || format!("{remembered:?}"));
+    super::downloads::clear_all();
+    r.check("clearing the list empties it, the database and hides the button (the files stay)", super::downloads::rows().is_empty() && super::store().is_some_and(|s| s.downloads(50).is_empty()) && !da.downloads.button.is_visible() && first.is_file(), || format!("{:?}", super::downloads::rows()));
+
+    // A download in progress is listed with its progress and can be cancelled from the list.
+    dl.current().expect("tab").view().navigate(&format!("http://localhost:{port}/slow"));
+    let ok = wait_until(15_000, || super::downloads::rows().iter().any(|(n, s)| n == "slow.bin" && matches!(s, super::downloads::RowState::Active { received, .. } if *received > 0))).await;
+    r.check("a download in progress is listed with the bytes received so far", ok, || format!("{:?}", super::downloads::rows()));
+    r.check("the button shows while it runs", dl.downloads.button.is_visible() && dl.downloads.shown_rows() == 1, || format!("{}", dl.downloads.shown_rows()));
+    super::downloads::cancel_active();
+    let ok = wait_until(15_000, || super::downloads::rows().iter().any(|(n, s)| n == "slow.bin" && *s == super::downloads::RowState::Cancelled)).await;
+    r.check("cancelling it from the list stops it", ok, || format!("{:?}", super::downloads::rows()));
     for w in super::windows() {
         if !Rc::ptr_eq(&w, shell) {
             w.window.close();

@@ -103,7 +103,7 @@ pub enum ViewEvent {
     /// The page moved on: a question with this id (from `Permission`) is no longer wanted.
     PermissionDismissed(u64),
     /// A download changed.
-    Download { id: u32, name: String, state: DownloadState },
+    Download { id: u32, name: String, url: String, state: DownloadState, cancel: Option<Arc<DownloadCancel>> },
     /// A download is waiting for the person to say where to save it.
     DownloadAsk(Arc<DownloadQuestion>),
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
@@ -1146,10 +1146,34 @@ unsafe impl Send for DownloadCb {}
 
 #[derive(Debug, Clone)]
 pub enum DownloadState {
-    /// Percent complete (not shown yet; the toast only says a download began).
-    Progress(#[allow(dead_code)] i32),
-    Done(std::path::PathBuf),
+    /// Percent complete (-1 when the size is not known) and bytes received so far.
+    Progress { percent: i32, received: i64 },
+    Done { path: std::path::PathBuf, bytes: i64 },
     Canceled,
+    /// Stopped by an error (the connection dropped, the disk is full...).
+    Failed,
+}
+
+/// What stops a download (the item's callback, used from any thread: the call is posted to CEF's UI thread).
+pub struct DownloadCancel(Mutex<DownloadItemCb>);
+
+struct DownloadItemCb(DownloadItemCallback);
+unsafe impl Send for DownloadItemCb {}
+
+impl std::fmt::Debug for DownloadCancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DownloadCancel")
+    }
+}
+
+impl DownloadCancel {
+    pub fn cancel(&self) {
+        let cb = DownloadItemCb(self.0.lock().unwrap().0.clone());
+        on_ui(move || {
+            let cb = cb;
+            cb.0.cancel();
+        });
+    }
 }
 
 /// A file about to be downloaded that is waiting for the person to choose where it goes.
@@ -1214,18 +1238,23 @@ wrap_download_handler! {
             1
         }
 
-        fn on_download_updated(&self, _b: Option<&mut Browser>, item: Option<&mut DownloadItem>, _cb: Option<&mut DownloadItemCallback>) {
+        fn on_download_updated(&self, _b: Option<&mut Browser>, item: Option<&mut DownloadItem>, cb: Option<&mut DownloadItemCallback>) {
             let Some(item) = item else { return };
+            let cancel = cb.map(|c| Arc::new(DownloadCancel(Mutex::new(DownloadItemCb(c.clone())))));
+            let url = CefString::from(&item.url()).to_string();
             let path = std::path::PathBuf::from(CefString::from(&item.full_path()).to_string());
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let state = if item.is_canceled() != 0 || item.is_interrupted() != 0 {
+            let name = if name.is_empty() { CefString::from(&item.suggested_file_name()).to_string().rsplit(['/', '\\']).next().unwrap_or_default().to_owned() } else { name };
+            let state = if item.is_canceled() != 0 {
                 DownloadState::Canceled
+            } else if item.is_interrupted() != 0 {
+                DownloadState::Failed
             } else if item.is_complete() != 0 {
-                DownloadState::Done(path)
+                DownloadState::Done { path, bytes: item.received_bytes() }
             } else {
-                DownloadState::Progress(item.percent_complete())
+                DownloadState::Progress { percent: item.percent_complete(), received: item.received_bytes() }
             };
-            send(self.shared.id, ViewEvent::Download { id: item.id(), name, state });
+            send(self.shared.id, ViewEvent::Download { id: item.id(), name, url, state, cancel });
         }
     }
 }

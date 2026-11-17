@@ -234,9 +234,9 @@ impl Modal {
                     o.dismiss_permission(id);
                 }
             }
-            ViewEvent::Download { id, name, state } => {
+            ViewEvent::Download { id, name, url, state, cancel } => {
                 if let Some(o) = self.owner.upgrade() {
-                    o.download_event(id, &name, state);
+                    o.download_event(id, &name, &url, state, cancel);
                 }
             }
             ViewEvent::DownloadAsk(q) => {
