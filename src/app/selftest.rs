@@ -86,6 +86,29 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
     println!("shot {name}: {}", if ok { "saved" } else { "failed" });
 }
 
+/// The colours (r, g, b) of the window's pixels at the given points (window coordinates), as GTK renders them.
+fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8, u8)> {
+    let paintable = gtk::WidgetPaintable::new(Some(widget));
+    let (w, h) = (paintable.intrinsic_width(), paintable.intrinsic_height());
+    if w <= 0 || h <= 0 {
+        return Vec::new();
+    }
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, w as f64, h as f64);
+    let (Some(node), Some(renderer)) = (snapshot.to_node(), widget.native().and_then(|n| n.renderer())) else { return Vec::new() };
+    let texture = renderer.render_texture(&node, None);
+    let mut downloader = gtk::gdk::TextureDownloader::new(&texture);
+    downloader.set_format(gtk::gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, stride) = downloader.download_bytes();
+    points
+        .iter()
+        .filter_map(|&(x, y)| {
+            let i = y as usize * stride + x as usize * 4;
+            Some((*bytes.get(i)?, *bytes.get(i + 1)?, *bytes.get(i + 2)?))
+        })
+        .collect()
+}
+
 /// The sections `BROWSAH_SELFTEST_ONLY` can name, in the order they run (a test keeps this in step with `run`).
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
@@ -999,6 +1022,7 @@ fn start_test_server() -> u16 {
                 "/manifest.json" => ("200 OK", "Content-Type: application/manifest+json\r\n".to_owned(), "{\"name\":\"Test Manifest App\",\"start_url\":\"/pwa.html\",\"scope\":\"/\",\"display\":\"minimal-ui\",\"theme_color\":\"#336699\",\"icons\":[{\"src\":\"/icon.svg\",\"sizes\":\"any\",\"type\":\"image/svg+xml\",\"purpose\":\"any\"}]}".to_owned()),
                 "/icon.svg" => ("200 OK", "Content-Type: image/svg+xml\r\n".to_owned(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"#336699\"/></svg>".to_owned()),
                 "/find.html" => ("200 OK", String::new(), "<!doctype html><title>Find test</title><p>one needle here</p><p>another Needle there</p><p>and a third needle</p>".to_owned()),
+                "/white.html" => ("200 OK", String::new(), "<!doctype html><title>White</title><body style=\"background:#fff;color:#000\">white page".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -1047,6 +1071,27 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     });
     let new_tab = w.window.lookup_action("new-tab").and_then(|a| a.downcast::<gio::SimpleAction>().ok());
     r.check("new tabs are not allowed (action disabled)", new_tab.is_some_and(|a| !a.is_enabled()), || "enabled".into());
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&w.window, "workspace-colour");
+    // The colour covers the whole header and tab bar, with no dark line above or below (against a white page).
+    if let Some(t) = w.current() {
+        t.view().navigate(&format!("http://localhost:{port}/white.html"));
+    }
+    let _ = wait_until(15_000, || w.current().is_some_and(|t| t.state.borrow().title == "White" && !t.state.borrow().loading)).await;
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&w.window, "workspace-colour-white-page");
+    let bar_height = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.y() as i32).unwrap_or(86);
+    let ys = [0, 1, 2, 3, 20, 44, bar_height / 2, bar_height - 3, bar_height - 2, bar_height - 1];
+    let points: Vec<(i32, i32)> = ys.iter().map(|y| (200, *y)).collect();
+    let px = pixels(&w.window, &points);
+    let reference = px.get(4).copied().unwrap_or((0, 0, 0));
+    let near = |a: (u8, u8, u8), b: (u8, u8, u8)| (a.0 as i32 - b.0 as i32).abs() < 8 && (a.1 as i32 - b.1 as i32).abs() < 8 && (a.2 as i32 - b.2 as i32).abs() < 8;
+    let off: Vec<String> = ys.iter().zip(&px).filter(|(_, p)| !near(**p, reference)).map(|(y, p)| format!("y={y}: {p:?}")).collect();
+    r.check("the workspace colour covers the header and tab bar edge to edge (no dark line at the top or bottom)", px.len() == ys.len() && off.is_empty(), || format!("reference {reference:?}; differing: {off:?}"));
+    if let Some(t) = w.current() {
+        t.view().navigate(&format!("http://localhost:{port}/scope.html"));
+    }
+    let _ = wait_until(15_000, || w.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading)).await;
     r.check("the workspace colour is applied to the window", w.window.has_css_class("ws-locked"), || "no colour class".into());
 
     if let Ok(path) = std::env::var("BROWSAH_SCREENSHOT") {

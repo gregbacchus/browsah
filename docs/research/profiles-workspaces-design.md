@@ -699,6 +699,18 @@ in a temporary data directory with the real binary: a running profile with a wor
 although a workspace was remembered. **Not measured:** the launcher action in GNOME's dash (not installed for existing
 entries until `profile install`), the profile colour on screen, the menu on a small window.
 
+## Fix: dark lines around a coloured header (2026-11-17)
+
+Reported with a picture (yellow workspace, white page): thin dark lines above the header and below the tab bar. The
+colour was applied to the `headerbar` and the tab bar's inner box only; libadwaita's `ToolbarView` wraps the top bars in
+`revealer.top-bar > windowhandle`, which is 3 px taller at the top and bottom than the bars it holds, and those rows showed
+the window background. Found by a pixel check (`pixels()` in the self-test renders the window with GTK's renderer and reads
+points): rows 0 to 2 and 83 to 85 were the window's grey (44, 44, 44) while the bars were the tint. The style sheet now also
+colours `toolbarview > revealer.top-bar` and its `windowhandle`; the self-test section `locked` checks ten rows of the header
+and tab bar against the tint with a white page loaded (and the `workspace-colour-white-page` picture was looked at).
+**Not measured:** the light theme (the test machine was in the dark theme, so the dark variant of the tint was used), HiDPI,
+a bookmark bar showing under the tab bar, the same area with a web app's header.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

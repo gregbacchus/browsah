@@ -2266,6 +2266,7 @@ fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> S
     format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
          window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
+         window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
          window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}"
     )
 }
