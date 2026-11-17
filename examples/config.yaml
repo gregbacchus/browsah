@@ -17,6 +17,8 @@ routing:
       match: { scheme: [zoommtg] }
       open: system
 
+new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
+
 window:
   width: 1280   # initial size in logical pixels
   height: 800

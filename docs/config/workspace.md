@@ -34,7 +34,7 @@ A workspace can have its own home page: put `home_page: "https://..."` in its `w
 profile's and the application's, like any option below). The home page is what the workspace's window opens on
 when it has nothing else to show: no remembered tabs and no pinned tabs. A workspace that is reopened shows its
 remembered tabs instead, a workspace with pinned tabs opens on those, and a link sent to the workspace opens as
-a tab (without the home page). New tabs (`Ctrl+T`) open blank with the address bar focused.
+a tab (without the home page). New tabs (`Ctrl+T`) open blank with the address bar focused unless `new_tab_page` says otherwise: `new_tab_page: home` opens the home page in new tabs, an address opens that page, and `null` (the default) is blank.
 
 ## Overriding configuration
 

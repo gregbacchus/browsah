@@ -238,6 +238,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_history(shell, r).await;
     run_sweep(shell, r).await;
     run_closed_workspace_sweep(shell, r).await;
+    run_new_tab_page(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1533,4 +1534,46 @@ async fn run_closed_workspace_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let _ = store().delete_workspace("sx");
     let _ = store().clear_history(None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What a new tab opens is configurable: blank by default, the home page with `new_tab_page: home`.
+async fn run_new_tab_page(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let port = start_test_server();
+    let db = profile.dir.join("data.sqlite");
+    for id in ["nh", "nb"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+    }
+    let home = format!("http://localhost:{port}/scope.html");
+    std::fs::write(profile.workspaces_dir().join("nh/workspace.yaml"), format!("home_page: '{home}'\nnew_tab_page: home\n")).expect("nh");
+    std::fs::write(profile.workspaces_dir().join("nb/workspace.yaml"), format!("home_page: '{home}'\n")).expect("nb");
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+
+    for (id, wants_home) in [("nh", true), ("nb", false)] {
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let ok = wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+        let Some(w) = find(id) else { r.check("a workspace opens for the new-tab test", false, || format!("{id} not open")); continue };
+        r.check("a workspace opens for the new-tab test", ok, || format!("{id} not loaded"));
+        let _ = WidgetExt::activate_action(&w.window, "win.new-tab", None);
+        let ok = wait_until(10_000, || w.tab_count() == 2).await;
+        let new = w.current().expect("tab");
+        if wants_home {
+            let ok2 = wait_until(15_000, || new.state.borrow().title == "Scope test").await;
+            r.check("with new_tab_page: home a new tab opens the home page", ok && ok2, || format!("{:?}", new.state.borrow().address));
+        } else {
+            glib::timeout_future(Duration::from_millis(800)).await;
+            r.check("by default a new tab is blank", ok && new.state.borrow().address.is_empty() || new.state.borrow().address == "about:blank", || format!("{:?}", new.state.borrow().address));
+        }
+        w.window.close();
+        let _ = wait_until(5_000, || find(id).is_none()).await;
+    }
+    for id in ["nh", "nb"] {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
 }

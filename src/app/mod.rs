@@ -1250,8 +1250,18 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let (weak, entry) = (weak.clone(), entry.clone());
         move || {
             if let Some(s) = weak.upgrade() {
-                s.open_tab("about:blank", true);
-                entry.grab_focus();
+                // What a new tab opens is an option (`new_tab_page`): a blank tab with the address bar
+                // ready, the home page, or an address.
+                let page = s.settings.borrow().new_tab_url();
+                match page {
+                    Some(url) => {
+                        s.open_tab(&nav::resolve(&url, &s.search_url.borrow()), true);
+                    }
+                    None => {
+                        s.open_tab("about:blank", true);
+                        entry.grab_focus();
+                    }
+                }
             }
         }
     });

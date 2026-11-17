@@ -39,6 +39,8 @@ pub struct Config {
     /// The profile the selector opens links in without asking (application-only).
     pub default_profile: Option<String>,
     pub home_page: String,
+    /// What a new tab opens: `home` (the home page), an address, or nothing (null: a blank tab).
+    pub new_tab_page: Option<String>,
     pub search_url: String,
     pub window: WindowConfig,
     pub rendering: RenderingConfig,
@@ -115,6 +117,7 @@ impl Default for Config {
             watch_config: true,
             default_profile: None,
             home_page: DEFAULT_HOME_PAGE.into(),
+            new_tab_page: None,
             search_url: DEFAULT_SEARCH_URL.into(),
             window: WindowConfig::default(),
             rendering: RenderingConfig::default(),
@@ -157,6 +160,16 @@ impl Config {
         let mut cfg: Config = serde_yaml_ng::from_value(value)?;
         cfg.sanitize();
         Ok(cfg)
+    }
+
+    /// The address a new tab opens, or `None` for a blank tab. `home` means the home page; an empty
+    /// value means blank.
+    pub fn new_tab_url(&self) -> Option<String> {
+        match self.new_tab_page.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some("home") => Some(self.home_page.clone()),
+            Some(other) => Some(other.to_owned()),
+        }
     }
 
     /// Replace values that cannot work with usable ones, so a typo never leaves a broken window.
@@ -499,7 +512,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -658,6 +671,25 @@ mod tests {
         assert_eq!(l.overrides_of("profile"), ["chromium.flags", "input.wheel_notch", "search_url"]);
         // Without a workspace file the window is the profile's.
         assert_eq!(load_window(&app, &prof, None).unwrap().config.search_url, "https://b/?q={query}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn what_a_new_tab_opens() {
+        let url = |text: &str| Config::parse(text).unwrap().new_tab_url();
+        assert_eq!(url(""), None, "blank by default");
+        assert_eq!(url("new_tab_page: null"), None);
+        assert_eq!(url("new_tab_page: ''"), None);
+        assert_eq!(url("new_tab_page: home"), Some(DEFAULT_HOME_PAGE.into()));
+        assert_eq!(url("home_page: 'https://h.example/'\nnew_tab_page: home"), Some("https://h.example/".into()));
+        assert_eq!(url("new_tab_page: 'https://n.example/'"), Some("https://n.example/".into()));
+        // A workspace can undo what the profile set (a null in the upper layer replaces the lower value).
+        let d = temp_dir("newtab");
+        let (prof, ws) = (d.join("profile.yaml"), d.join("workspace.yaml"));
+        std::fs::write(&prof, "new_tab_page: home\n").unwrap();
+        std::fs::write(&ws, "new_tab_page: null\n").unwrap();
+        assert!(load_window(&d.join("none.yaml"), &prof, None).unwrap().config.new_tab_url().is_some());
+        assert!(load_window(&d.join("none.yaml"), &prof, Some(&ws)).unwrap().config.new_tab_url().is_none());
         let _ = std::fs::remove_dir_all(d);
     }
 

@@ -6,6 +6,7 @@ All options apply at startup. Defaults are shown; omit a key to get its default.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `new_tab_page` | `home`, an address, or `null` | `null` | What a new tab (`Ctrl+T`, the "+" button) opens. `null` (or leaving it out) is a blank tab with the address bar ready for typing; `home` opens the `home_page` (a workspace's own, if it sets one); an address opens that page. A profile or workspace can set its own, and `null` there undoes a lower layer's value. Applies immediately when the file is reloaded. |
 | `home_page` | string (URL) | `https://duckduckgo.com/` | The page opened in a new window. An empty value uses the default. A URL given on the command line takes priority. A profile can set its own, and so can a workspace (`home_page` in its `workspace.yaml`): see [Home page](workspace.md#home-page). |
 | `search_url` | string (URL) | `https://duckduckgo.com/?q={query}` | Search used when the address bar text is not a URL or a host name. `{query}` is replaced by the percent-encoded text. A value without `{query}` is rejected and the default is used. |
 
