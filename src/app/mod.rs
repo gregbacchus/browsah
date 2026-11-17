@@ -2218,6 +2218,8 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             // line is an explicit choice and skips it).
             if hint.is_empty() {
                 urls.retain(|url| {
+                    // A redirector (`google.com/url?q=...`) is judged, and opened, as the address it leads to.
+                    let url = &crate::router::unwrap_url(url);
                     let decision = crate::router::route(&crate::router::Request { url: url.clone(), source: crate::router::Source::External, kind: crate::router::Kind::External, target: crate::router::Target::SameTab });
                     if std::env::var_os("BROWSAH_DEBUG").is_some() {
                         eprintln!("browsah: router: {url} -> {:?} ({:?})", decision.action, decision.rule);

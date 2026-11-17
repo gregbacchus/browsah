@@ -30,6 +30,28 @@ Many applications finish by redirecting to their own scheme (`claude://...`). A 
 this way may hand an address with *that* scheme (and only that one) to the desktop, which starts the
 application; the window then closes by itself. Any other scheme a page tries to open is blocked.
 
+## Links that go through a redirector
+
+Many sites do not link straight to the destination: Google Docs, Gmail, Chat and Calendar wrap links as
+`https://www.google.com/url?q=<destination>&...`, Facebook as `l.facebook.com/l.php?u=<destination>`, Outlook as a
+`safelinks.protection.outlook.com` address, and so on. The click goes to the redirector, which then redirects, and redirects are
+not routed, so a rule for the destination never saw it. Two things handle this:
+
+1. **Unwrapping** (always on). Before the rules are applied, a redirector's address is replaced by the address in its query, so
+   the rules judge, and open, where the link really goes (`browsah route test` prints an `unwrapped:` line). Known redirectors:
+   Google (`google.<tld>/url`, parameters `q` or `url`), Facebook and Messenger (`l.php`, `u`), Outlook Safe Links (`url`),
+   Slack (`slack-redir.net/link`), LinkedIn (`/redir/redirect`, `/safety/go`), DuckDuckGo (`/l/`, `uddg`) and YouTube
+   (`/redirect`, `q`). Add your own with `routing.unwrap`, turn the list off with `routing.unwrap_known: false`. A link that no rule claims
+   is left alone: it goes to the redirector as before. Nothing is fetched: the tracking address is never requested for a link
+   that a rule sends elsewhere.
+2. **Following redirects** (`routing.follow_redirects: true`, off by default). For addresses that hide the destination (a link
+   shortener such as `t.co` or `bit.ly`), the only way to learn it is to follow the redirects. With this on, each redirect of a
+   **clicked link in the same tab** is judged like a click on the address it leads to; the first one a rule claims cancels the
+   navigation and opens there instead. Not followed: typed addresses, scripts, form posts, links that open a new tab, and anything
+   after the page has loaded. The redirector itself is requested (it has to be, to say where it leads). It is off by default because
+   sign-in flows are made of redirects: a sign-in started in one workspace that ends on an address a rule claims for another
+   would be moved there.
+
 What counts as a request:
 
 | Kind | When |
@@ -66,6 +88,11 @@ link from another application is first judged. `--from` is `external` (the defau
 | `routing.rules[].match.target` | list | any | `same_tab` or `new_tab`. |
 | `routing.rules[].match.app_sign_in` | bool | either | `true`: only addresses that look like another application's sign-in; `false`: only ones that do not (below). |
 | `routing.rules[].open` | action | required | What to do (below). |
+| `routing.unwrap` | list | none | Redirector addresses besides the known ones (see [Links that go through a redirector](#links-that-go-through-a-redirector)): each is a map with `url` and `param`. A profile's list is added to the application's. |
+| `routing.unwrap[].url` | list of text | required | Address patterns of the redirector: `host` or `host/path`, as for a pinned tab's scope (`example.com/out`). Any one may match. |
+| `routing.unwrap[].param` | text or list of text | required | The query parameter that holds the address it sends you to (the first one present whose value is a web address is used). |
+| `routing.unwrap_known` | bool | `true` | `false` turns off the built-in list of redirectors. A profile's value overrides the application's. |
+| `routing.follow_redirects` | bool | `false` | Also judge where a clicked link's **redirects** lead (see below). A profile's value overrides the application's. |
 
 **Actions** (`open:` and `routing.external`):
 

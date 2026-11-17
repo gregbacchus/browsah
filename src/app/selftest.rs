@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -395,6 +395,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("frame") {
         run_frame(shell, r).await;
+    }
+    if wants("redirects") {
+        run_redirects(shell, r).await;
     }
 }
 
@@ -1030,6 +1033,16 @@ fn start_test_server() -> u16 {
                 "/find.html" => ("200 OK", String::new(), "<!doctype html><title>Find test</title><p>one needle here</p><p>another Needle there</p><p>and a third needle</p>".to_owned()),
                 "/white.html" => ("200 OK", String::new(), "<!doctype html><title>White</title><body style=\"background:#fff;color:#000\">white page".to_owned()),
                 "/tall.html" => ("200 OK", String::new(), "<!doctype html><title>Tall</title><body style=\"background:#fff;color:#000;margin:0\"><div style=\"height:3000px\">tall page <button>button</button> <input value=text></div>".to_owned()),
+                "/go" => {
+                    // A redirector: a 302 to the address in `to`.
+                    let to = req.split_whitespace().nth(1).and_then(|t| t.split("to=").nth(1)).unwrap_or("").split('&').next().unwrap_or("").replace("%3A", ":").replace("%2F", "/");
+                    ("302 Found", format!("Location: {to}\r\n"), String::new())
+                }
+                "/rlinks.html" => (
+                    "200 OK",
+                    String::new(),
+                    format!("<!doctype html><title>Redirect links</title><a href=\"http://127.0.0.1:{port}/go?to=http%3A%2F%2Flocalhost%3A{port}%2Fb.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">via a redirect</a><a href=\"https://www.google.com/url?q=http%3A%2F%2Flocalhost%3A{port}%2Fb.html&sa=D\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">via google</a>"),
+                ),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -2881,4 +2894,74 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fr1"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Links that go through a redirector: a wrapped address (`google.com/url?q=...`) is judged as its destination; with
+/// `routing.follow_redirects` the redirects of a clicked link are judged too, and without it they are not.
+async fn run_redirects(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    for id in ["xa", "xb"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+    }
+    std::fs::write(profile.workspaces_dir().join("xa/workspace.yaml"), format!("name: A\nhome_page: 'http://127.0.0.1:{port}/rlinks.html'\n")).expect("xa");
+    std::fs::write(profile.workspaces_dir().join("xb/workspace.yaml"), "name: B\n").expect("xb");
+    let rules = std::env::temp_dir().join(format!("browsah-redirects-{}.yaml", std::process::id()));
+    let load = |follow: bool| {
+        std::fs::write(&rules, format!("routing:\n  follow_redirects: {follow}\n  rules:\n    - match: {{ url: ['localhost'] }}\n      open: workspace:xb\n")).expect("rules");
+        let router = crate::router::Router::load(&rules, Some(&profile));
+        let warnings = router.warnings.clone();
+        crate::router::install(router);
+        warnings
+    };
+    let w = load(true);
+    r.check("the redirect rules load without warnings", w.is_empty(), || format!("{w:?}"));
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"xa".to_variant()));
+    let ok = wait_until(15_000, || find("xa").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Redirect links" && t.view().has_frame()))).await;
+    r.check("workspace A opens on a page of links", ok, || "not open".into());
+    let Some(xa) = find("xa") else { return };
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let d = Driver { shell: &xa };
+
+    // A link whose address wraps its destination (google.com/url?q=...): judged as the destination, no network needed.
+    d.click(40.0, 110.0);
+    let ok = wait_until(15_000, || find("xb").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B"))).await;
+    r.check("a link wrapped in a redirector address is routed by its destination", ok, || format!("{:?}", find("xb").map(|s| s.tab_count())));
+    r.check("the clicked tab stayed where it was", xa.current().is_some_and(|t| t.state.borrow().title == "Redirect links"), || format!("{:?}", xa.current().map(|t| t.state.borrow().title.clone())));
+    let Some(xb) = find("xb") else { return };
+    let tabs = xb.tab_count();
+
+    // A link that redirects to the destination: followed, because routing.follow_redirects is on.
+    d.click(40.0, 45.0);
+    let ok = wait_until(15_000, || xb.tab_count() == tabs + 1).await;
+    r.check("with follow_redirects a clicked link's redirect to a routed address is routed", ok, || format!("xb tabs {} (was {tabs})", xb.tab_count()));
+    r.check("and the clicked tab did not navigate", xa.current().is_some_and(|t| t.state.borrow().title == "Redirect links"), || format!("{:?}", xa.current().map(|t| t.state.borrow().title.clone())));
+
+    // The same link without the option: the redirects are not routed, so the tab goes there itself.
+    let w = load(false);
+    let tabs = xb.tab_count();
+    d.click(40.0, 45.0);
+    let ok = wait_until(15_000, || xa.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading)).await;
+    r.check("without follow_redirects the redirect is not routed: the tab follows it", ok && w.is_empty() && xb.tab_count() == tabs, || format!("{:?}, xb tabs {} (was {tabs})", xa.current().map(|t| t.state.borrow().title.clone()), xb.tab_count()));
+
+    // Put the self-test profile's own router back.
+    crate::router::install(crate::router::Router::load(&crate::config::default_path(), Some(&profile)));
+    let _ = std::fs::remove_file(&rules);
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ["xa", "xb"] {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
 }

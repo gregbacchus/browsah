@@ -10,6 +10,10 @@ default_workspace: mail     # opened by a plain start when no workspace was open
 
 # Where links go (docs/config/routing.md). Tried before the application's rules.
 routing:
+  follow_redirects: false   # also route where a clicked link's redirects lead (shorteners); see docs/config/routing.md
+  unwrap:                   # redirectors besides the known ones (Google, Facebook, Outlook...): the parameter holds the destination
+    - url: ["go.example.com/out"]
+      param: u
   external: workspace:mail            # links from other applications with no rule
   rules:
     - name: Work chat

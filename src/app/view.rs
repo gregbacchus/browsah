@@ -211,6 +211,8 @@ struct Shared {
     user_zoom: Mutex<f64>,
     /// The last find-in-page result: (matches, active one).
     find_result: Mutex<(i32, i32)>,
+    /// The main-frame navigation under way began as a clicked link (so its redirects may be routed too).
+    link_nav: AtomicBool,
     /// Whether developer tools were open after the last toggle (read on CEF's UI thread, kept here).
     dev_tools: AtomicBool,
     /// Who the session cookies of this view belong to (its window), and the sites whose cookies the rules
@@ -327,6 +329,7 @@ impl Shared {
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
             user_zoom: Mutex::new(1.0),
             find_result: Mutex::new((0, 0)),
+            link_nav: AtomicBool::new(false),
             dev_tools: AtomicBool::new(false),
             session_owner: Mutex::new(String::new()),
             blocked_cookies: Mutex::new(Default::default()),
@@ -663,6 +666,7 @@ wrap_load_handler! {
         fn on_load_start(&self, b: Option<&mut Browser>, frame: Option<&mut Frame>, _transition: TransitionType) {
             if let (Some(b), Some(frame)) = (b, frame) {
                 if frame.is_main() != 0 {
+                    self.shared.link_nav.store(false, Ordering::Relaxed); // the navigation committed: its redirects are over
                     forget_in_chromium(b, &CefString::from(&frame.url()).to_string());
                 }
             }
@@ -893,13 +897,15 @@ fn routed_elsewhere(shared: &Shared, url: &str, kind: crate::router::Kind, targe
     use crate::router::{route, Action, Request, Source};
     let source = Source::Tab(shared.workspace.lock().unwrap().clone());
     let ws = if let Source::Tab(w) = &source { w.clone() } else { None };
-    let decision = route(&Request { url: url.to_owned(), source, kind, target });
+    // A redirector (`google.com/url?q=...`) is judged, and opened, as the address it leads to.
+    let url = crate::router::unwrap_url(url);
+    let decision = route(&Request { url: url.clone(), source, kind, target });
     match decision.action {
         Action::Allow => false,
         // Already where it is told to go.
         Action::Workspace(ref w) if ws.as_deref() == Some(w.as_str()) => false,
         action => {
-            send(shared.id, ViewEvent::Route { action, url: url.to_owned() });
+            send(shared.id, ViewEvent::Route { action, url });
             true
         }
     }
@@ -946,9 +952,21 @@ wrap_request_handler! {
             is_redirect: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let (Some(frame), Some(request)) = (frame, request) else { return 0 };
-            if frame.is_main() == 0 || is_redirect != 0 {
+            if frame.is_main() == 0 {
                 return 0;
             }
+            if is_redirect != 0 {
+                // A hop of the redirects of a clicked link: with `routing.follow_redirects`, judge where it leads (a tracking or
+                // shortening address that sends you to a site a rule claims).
+                if self.shared.link_nav.load(Ordering::Relaxed) && crate::router::follow_redirects() {
+                    let hop = CefString::from(&request.url()).to_string();
+                    if routed_elsewhere(&self.shared, &hop, crate::router::Kind::Link, crate::router::Target::SameTab) {
+                        return 1;
+                    }
+                }
+                return 0;
+            }
+            self.shared.link_nav.store(false, Ordering::Relaxed);
             self.shared.blocked_cookies.lock().unwrap().clear(); // a new page: its blocked cookies start afresh
             let target = CefString::from(&request.url()).to_string();
             let current = CefString::from(&frame.url()).to_string();
@@ -967,6 +985,8 @@ wrap_request_handler! {
                     if routed_elsewhere(&self.shared, &target, kind, crate::router::Target::SameTab) {
                         return 1;
                     }
+                    // Only a clicked link has its redirects followed (not typed addresses, scripts or forms).
+                    self.shared.link_nav.store(kind == crate::router::Kind::Link, Ordering::Relaxed);
                 }
             }
             let scope = self.shared.scope.lock().unwrap().clone();

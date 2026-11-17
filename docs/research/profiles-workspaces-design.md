@@ -727,6 +727,31 @@ header still tinted; fullscreen shows only the page. The first thickness (8 px) 
 light theme, a window with no colour (unchanged, no frame), tiled windows, HiDPI beyond the test machine's scale 2, the find bar
 footer by eye, the web app window with its tab bar hidden.
 
+## Routing links that go through a redirector (2026-11-17)
+
+Reported: Google makes links point at a tracking address (`https://www.google.com/url?q=<destination>&...`) that redirects to
+the destination, so a rule for the destination never fired (the router only saw the first address, and redirects are
+deliberately not routed so sign-in flows work). Two mechanisms:
+
+1. **Unwrap** (always on): `router::unwrap_url` replaces a known redirector's address by the address in its query before the
+   rules are applied and the destination is what gets opened. Built-in: Google (`google.<tld>/url`, `q` or `url`; the host is
+   checked strictly, so `google.evil.example` is not treated as Google), Facebook/Messenger `l.php`, Outlook Safe Links, Slack,
+   LinkedIn, DuckDuckGo, YouTube; plus `routing.unwrap` entries; nested up to three levels; only web-address values count
+   (`javascript:` is ignored). No request is made to the tracker for a link that a rule sends elsewhere.
+2. **Follow redirects** (`routing.follow_redirects`, off by default): for opaque shorteners (`t.co`, `bit.ly`) nothing in the
+   address names the destination, so each redirect hop of a **clicked same-tab link** is judged like a click on that address
+   (`on_before_browse` is called with `is_redirect` for server redirects: measured). It is off by default because sign-in flows
+   are chains of redirects and one that ends on a rule's address would be moved to that workspace.
+
+Measured: unit tests (known redirectors, the strictness cases, configured redirectors, switching the list off), `browsah route test`
+against a real profile (a Google-wrapped Miro link goes to the Miro workspace from another application and from another workspace;
+a wrapped link to elsewhere is left alone), and `--selftest` section `redirects` (clicks on a wrapped link, on a link that
+302-redirects with the option on and off; 17 checks; with routing, modals, locked and send-to-workspace 62 checks). **Not measured:**
+real Google pages (the shape of their links was taken from reports of Docs, Gmail and Chat links, not captured; current result pages
+mostly link straight to the destination and report clicks with a `ping` attribute, which needs no handling), new-tab links through
+a shortener (not followed: the new tab's first load is never routed), client-side (script) redirects, `t.co` or `bit.ly`
+themselves (no network in the tests).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

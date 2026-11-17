@@ -230,7 +230,39 @@ pub struct RoutingConfig {
     /// What to do with a link from another application that looks like a sign-in (default
     /// `ephemeral`: a window of its own that is forgotten); `allow` turns the detection off.
     pub app_sign_in: Option<String>,
+    /// Redirector addresses that carry their destination in a query parameter (see `UnwrapConfig`), besides the known ones.
+    pub unwrap: Vec<UnwrapConfig>,
+    /// `false` turns off the built-in list of known redirectors (Google, Facebook, Outlook Safe Links...).
+    pub unwrap_known: Option<bool>,
+    /// Also route where a clicked link's redirects lead (default `false`; see `Router::follow_redirects`).
+    pub follow_redirects: Option<bool>,
     pub rules: Vec<RuleConfig>,
+}
+
+/// One `routing.unwrap` entry: addresses (`host` or `host/path`, as for a pinned tab's scope) that are redirectors, and the
+/// query parameter(s) that hold the address they send you to.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct UnwrapConfig {
+    pub url: Vec<String>,
+    pub param: OneOrMany,
+}
+
+/// A text, or a list of them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn list(&self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s.clone()],
+            OneOrMany::Many(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -357,6 +389,10 @@ pub struct Router {
     sign_in: Option<Action>,
     /// A label for the profile layer (`route test` output).
     profile_label: String,
+    /// Redirectors written in the configuration, the built-in list switched off, and whether redirects are followed.
+    unwrappers: Vec<Unwrapper>,
+    no_known_unwrap: bool,
+    follow_redirects: bool,
     /// Problems found while loading (invalid rules are skipped).
     pub warnings: Vec<String>,
 }
@@ -401,6 +437,9 @@ impl Router {
         router.app = compile_all("application", app_file, &app_cfg, &mut warnings);
         let mut external = app_cfg.external.clone();
         let mut sign_in = app_cfg.app_sign_in.clone();
+        let mut unwrappers: Vec<Unwrapper> = app_cfg.unwrap.iter().map(Unwrapper::from_config).collect();
+        let mut unwrap_known = app_cfg.unwrap_known;
+        let mut follow = app_cfg.follow_redirects;
         if let Some(p) = profile {
             let file = p.dir.join("profile.yaml");
             let cfg = read_routing(&file, &mut warnings);
@@ -411,6 +450,9 @@ impl Router {
             if cfg.app_sign_in.is_some() {
                 sign_in = cfg.app_sign_in.clone();
             }
+            unwrappers.extend(cfg.unwrap.iter().map(Unwrapper::from_config));
+            unwrap_known = cfg.unwrap_known.or(unwrap_known);
+            follow = cfg.follow_redirects.or(follow);
             for w in Workspace::list(p) {
                 let file = w.dir.join("workspace.yaml");
                 let cfg = read_routing(&file, &mut warnings);
@@ -420,6 +462,9 @@ impl Router {
                 }
             }
         }
+        router.unwrappers = unwrappers;
+        router.no_known_unwrap = unwrap_known == Some(false);
+        router.follow_redirects = follow == Some(true);
         router.external = external.and_then(|e| match Action::parse(&e) {
             Ok(a) => Some(a),
             Err(err) => {
@@ -436,6 +481,20 @@ impl Router {
         });
         router.warnings = warnings;
         router
+    }
+
+    /// Replace a redirector address (`https://www.google.com/url?q=<target>`) by the address it sends you to, so that the
+    /// rules judge where the link really goes. Up to three levels deep; an address that is not a redirector comes back as it is.
+    pub fn unwrap(&self, url: &str) -> String {
+        let mut current = url.to_owned();
+        for _ in 0..3 {
+            let next = (!self.no_known_unwrap).then(|| builtin_unwrap(&current)).flatten().or_else(|| self.unwrappers.iter().find_map(|u| u.apply(&current)));
+            match next {
+                Some(n) if n != current => current = n,
+                _ => break,
+            }
+        }
+        current
     }
 
     /// Decide where `req` goes.
@@ -518,6 +577,70 @@ impl Router {
     }
 }
 
+// ---- redirectors: links that wrap their destination -----------------------------------------------------
+
+/// A configured redirector.
+#[derive(Debug, Clone)]
+struct Unwrapper {
+    patterns: Vec<String>,
+    params: Vec<String>,
+}
+
+impl Unwrapper {
+    fn from_config(c: &UnwrapConfig) -> Unwrapper {
+        Unwrapper { patterns: c.url.clone(), params: c.param.list() }
+    }
+
+    fn apply(&self, url: &str) -> Option<String> {
+        if !self.patterns.iter().any(|p| crate::workspace::scope_matches(p, url)) {
+            return None;
+        }
+        first_web_param(url, &self.params)
+    }
+}
+
+/// The first of `params` in `url`'s query whose value is a web address.
+fn first_web_param(url: &str, params: &[impl AsRef<str>]) -> Option<String> {
+    let pairs = query_pairs(url);
+    params.iter().find_map(|p| pairs.iter().find(|(k, v)| k == p.as_ref() && (v.starts_with("http://") || v.starts_with("https://"))).map(|(_, v)| v.clone()))
+}
+
+/// Is `host` one of Google's search sites (`google.com`, `www.google.co.nz`...)?
+fn is_google(host: &str) -> bool {
+    let h = host.strip_prefix("www.").unwrap_or(host);
+    match h.strip_prefix("google.") {
+        Some(tld) => !tld.is_empty() && tld.split('.').count() <= 2 && tld.split('.').all(|l| (2..=3).contains(&l.len())),
+        None => false,
+    }
+}
+
+/// The well-known redirectors: addresses that go to a tracking or safety service which then redirects to the real
+/// destination, named in the query.
+fn builtin_unwrap(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let host = crate::cookies::host_of(url);
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let path = path.find('/').map(|i| path[i..].to_lowercase()).unwrap_or_default();
+    let params: &[&str] = if is_google(&host) && path == "/url" {
+        &["q", "url"] // Docs, Gmail, Chat, Calendar and some result pages
+    } else if matches!(host.as_str(), "l.facebook.com" | "lm.facebook.com" | "l.messenger.com") && path == "/l.php" {
+        &["u"]
+    } else if host.ends_with(".safelinks.protection.outlook.com") {
+        &["url"]
+    } else if host == "slack-redir.net" && path == "/link" {
+        &["url"]
+    } else if matches!(host.as_str(), "www.linkedin.com" | "linkedin.com") && matches!(path.as_str(), "/redir/redirect" | "/redir/redirect/" | "/safety/go" | "/safety/go/") {
+        &["url"]
+    } else if host == "duckduckgo.com" && path.starts_with("/l/") {
+        &["uddg"]
+    } else if matches!(host.as_str(), "www.youtube.com" | "youtube.com" | "m.youtube.com") && path == "/redirect" {
+        &["q"]
+    } else {
+        return None;
+    };
+    first_web_param(url, params)
+}
+
 // ---- the process-wide router --------------------------------------------------------------------
 
 static CURRENT: RwLock<Option<Arc<Router>>> = RwLock::new(None);
@@ -527,6 +650,21 @@ pub fn install(router: Router) {
     if let Ok(mut g) = CURRENT.write() {
         *g = Some(Arc::new(router));
     }
+}
+
+/// Replace a redirector address by its destination (see `Router::unwrap`); the known redirectors are handled even before a
+/// router is installed.
+pub fn unwrap_url(url: &str) -> String {
+    let router = CURRENT.read().ok().and_then(|g| g.clone());
+    match router {
+        Some(r) => r.unwrap(url),
+        None => Router::default().unwrap(url),
+    }
+}
+
+/// Whether redirects of a clicked link are routed as well (`routing.follow_redirects`).
+pub fn follow_redirects() -> bool {
+    CURRENT.read().ok().and_then(|g| g.clone()).is_some_and(|r| r.follow_redirects)
 }
 
 /// Like `route`, with modal rules skipped (see `Router::route_ignoring_modal`).
@@ -635,9 +773,13 @@ pub fn cli(args: &[String]) -> i32 {
             }
         }
     }
-    let req = Request { url: url.clone(), source: source.clone(), kind, target };
+    let effective = router.unwrap(&url);
+    let req = Request { url: effective.clone(), source: source.clone(), kind, target };
     let (decision, trace) = router.explain(&req);
     println!("address:  {url}");
+    if effective != url {
+        println!("unwrapped: {effective}   (a redirector; the rules judge where it leads)");
+    }
     println!("from:     {from}   kind: {kind:?}   target: {target:?}");
     println!("rules:    {}", match &profile {
         Some(p) => format!("application + profile {:?}{}", p.id, if p.id == DEFAULT_ID { " (default)" } else { "" }),
@@ -858,6 +1000,68 @@ mod tests {
     }
 
     #[test]
+    fn known_redirectors_are_unwrapped() {
+        let r = Router::default();
+        let u = |s: &str| r.unwrap(s);
+        let dest = "https://miro.com/app/board/uXj=/";
+        let enc = "https%3A%2F%2Fmiro.com%2Fapp%2Fboard%2FuXj%3D%2F";
+        assert_eq!(u(&format!("https://www.google.com/url?q={enc}&sa=D&usg=abc")), dest, "Docs, Gmail, Chat");
+        assert_eq!(u(&format!("https://www.google.co.nz/url?sa=t&url={enc}&ved=1")), dest, "another Google site, the url parameter");
+        assert_eq!(u(&format!("https://l.facebook.com/l.php?u={enc}&h=AT0")), dest);
+        assert_eq!(u(&format!("https://eur01.safelinks.protection.outlook.com/?url={enc}&data=x")), dest);
+        assert_eq!(u(&format!("https://slack-redir.net/link?url={enc}")), dest);
+        assert_eq!(u(&format!("https://www.linkedin.com/safety/go/?url={enc}")), dest);
+        assert_eq!(u(&format!("https://duckduckgo.com/l/?uddg={enc}&rut=1")), dest);
+        assert_eq!(u(&format!("https://www.youtube.com/redirect?q={enc}&event=video")), dest);
+        // Two levels (a redirector inside a redirector).
+        let inner = format!("https://www.google.com/url?q={enc}");
+        let outer = format!("https://l.facebook.com/l.php?u={}", inner.replace(':', "%3A").replace('/', "%2F").replace('?', "%3F").replace('=', "%3D"));
+        assert_eq!(u(&outer), dest, "nested");
+    }
+
+    #[test]
+    fn only_real_redirectors_with_a_web_destination_are_unwrapped() {
+        let r = Router::default();
+        for same in [
+            "https://miro.com/app/board/x/",
+            "https://www.google.com/search?q=https%3A%2F%2Fmiro.com", // a search, not /url
+            "https://www.google.com/url?sa=D",                       // no destination
+            "https://www.google.com/url?q=javascript%3Aalert(1)",    // not a web address
+            "https://google.evil.example/url?q=https%3A%2F%2Fmiro.com", // not a Google site
+            "https://notgoogle.com/url?q=https%3A%2F%2Fmiro.com",
+            "https://l.facebook.com/other?u=https%3A%2F%2Fmiro.com",
+        ] {
+            assert_eq!(r.unwrap(same), same, "{same}");
+        }
+        // The known list can be switched off.
+        let off = Router { no_known_unwrap: true, ..Router::default() };
+        let g = "https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F";
+        assert_eq!(off.unwrap(g), g);
+    }
+
+    #[test]
+    fn redirectors_can_be_added_in_the_configuration() {
+        let dir = std::env::temp_dir().join(format!("browsah-unwrap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.yaml");
+        std::fs::write(&file, "routing:\n  follow_redirects: true\n  unwrap:\n    - url: ['go.example.com/out', '**.tracker.example']\n      param: [to, dest]\n    - url: ['x.example']\n      param: u\n").unwrap();
+        let r = Router::load(&file, None);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(r.follow_redirects);
+        assert_eq!(r.unwrap("https://go.example.com/out?to=https%3A%2F%2Fmiro.com%2F"), "https://miro.com/");
+        assert_eq!(r.unwrap("https://a.tracker.example/c?dest=https%3A%2F%2Fmiro.com%2F"), "https://miro.com/");
+        assert_eq!(r.unwrap("https://x.example/?u=https%3A%2F%2Fmiro.com%2F"), "https://miro.com/", "a single parameter name");
+        assert_eq!(r.unwrap("https://go.example.com/other?to=https%3A%2F%2Fmiro.com%2F"), "https://go.example.com/other?to=https%3A%2F%2Fmiro.com%2F", "a different path");
+        // Known redirectors still work alongside.
+        assert_eq!(r.unwrap("https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F"), "https://miro.com/");
+        std::fs::write(&file, "routing:\n  unwrap_known: false\n").unwrap();
+        let r = Router::load(&file, None);
+        assert!(!r.follow_redirects);
+        assert_eq!(r.unwrap("https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F"), "https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn docs_cover_every_routing_option() {
         let docs = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/config/routing.md")).expect("docs/config/routing.md exists");
         fn fields<T: serde::de::DeserializeOwned>() -> Vec<String> {
@@ -867,6 +1071,7 @@ mod tests {
         let mut paths: Vec<String> = fields::<RoutingConfig>().into_iter().map(|f| format!("routing.{f}")).collect();
         paths.extend(fields::<RuleConfig>().into_iter().map(|f| format!("routing.rules[].{f}")));
         paths.extend(fields::<MatchConfig>().into_iter().map(|f| format!("routing.rules[].match.{f}")));
+        paths.extend(fields::<UnwrapConfig>().into_iter().map(|f| format!("routing.unwrap[].{f}")));
         assert!(paths.len() >= 9, "{paths:?}");
         for p in paths {
             assert!(docs.contains(&format!("| `{p}`")), "routing option {p} is not documented in docs/config/routing.md");

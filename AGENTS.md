@@ -174,6 +174,11 @@ take minutes.
   the shell carries it out (`perform_route`). Redirects, form posts and sized popups are never routed.
   `routing:` is stripped from the option layers (`strip_routing`) and read only by the router; the
   router and its docs test live in `router.rs` / `docs/config/routing.md`.
+- **Redirectors:** a link that wraps its destination (`google.com/url?q=`) is *unwrapped* before routing (`router::unwrap_url`,
+  called in `routed_elsewhere` and the external-link handler; built-in list in `builtin_unwrap`, plus `routing.unwrap`), so rules judge
+  and open the destination. `routing.follow_redirects` (off by default) also routes the redirect hops of a clicked same-tab link:
+  `on_before_browse` with `is_redirect` is judged while `Shared::link_nav` is set (a link click began the navigation; cleared when it
+  commits). Redirects are otherwise never routed (sign-in flows).
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the
