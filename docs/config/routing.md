@@ -70,7 +70,7 @@ working. A link a rule sends elsewhere is cancelled in the tab it came from.
 Try rules without a browser: `browsah route test <url> [--profile ID] [--from SOURCE] [--kind KIND]
 [--target TARGET] [--explain]`. Without `--profile` only the application's rules apply, which is how a
 link from another application is first judged. `--from` is `external` (the default),
-`ephemeral`, or `workspace:<id>`; `--explain` shows how every rule fared.
+`ephemeral`, `workspace:<id>` or `app:<id>`; `--explain` shows how every rule fared.
 
 ## Options
 
@@ -83,7 +83,7 @@ link from another application is first judged. `--from` is `external` (the defau
 | `routing.rules[].match` | map | everything | When the rule applies: all the keys given must match (`match.*` below). With no `match` the rule applies to every link of the default kinds. |
 | `routing.rules[].match.url` | list of text | any address | Address patterns: `host` or `host/path`, as for a pinned tab's scope (`*.example.com`, `**.example.com`, `example.com/app/*`; web addresses only, scheme and port ignored). Any one may match. |
 | `routing.rules[].match.scheme` | list of text | any scheme | URL schemes, such as `mailto` or `zoommtg`. Any one may match. |
-| `routing.rules[].match.from` | list of text | any source | Where the request came from: `external`, `ephemeral` (a window with no workspace) or `workspace:<id>`. Any one may match. |
+| `routing.rules[].match.from` | list of text | any source | Where the request came from: `external`, `ephemeral` (a window with no workspace), `workspace:<id>` or `app:<id>` (a tab of a [web app](webapp.md)). Any one may match. |
 | `routing.rules[].match.kind` | list | `link` and `external` | `external`, `link` or `typed`. |
 | `routing.rules[].match.target` | list | any | `same_tab` or `new_tab`. |
 | `routing.rules[].match.app_sign_in` | bool | either | `true`: only addresses that look like another application's sign-in; `false`: only ones that do not (below). |
@@ -100,6 +100,7 @@ link from another application is first judged. `--from` is `external` (the defau
 |---|---|
 | `allow` (or `current`) | carry on as usual: a clicked link goes where it was going, an external link opens as a tab in the active window |
 | `workspace:<id>` | open in that workspace's window, as a new tab (the window is opened if needed). From a tab already in that workspace this is the same as `allow` |
+| `app:<id>` | open in that [web app](webapp.md): a new tab of its most recent window if it has `multiple_tabs`, else a new window if it has `multiple_windows`, else its one window loads the address (Back returns to the page before). The app is opened if it is not. Only addresses inside the app's `scope` go to it: a rule for an address outside is skipped (`route test --explain` says so), and a link clicked in the app itself is not sent back to it |
 | `ephemeral` | open in a window with no workspace |
 | `modal` | open as a [modal](#modals) over the window the link came from (the active window for a link from another application) |
 | `system` | hand to the desktop's handler. Only for schemes other than `http` and `https`; for a web address it acts like `allow` (the desktop would send it straight back here) |

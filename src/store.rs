@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +100,14 @@ impl Scope<'_> {
             Scope::Ephemeral => ("workspace IS NULL".into(), None),
         }
     }
+}
+
+/// A web app window's remembered size (when not maximized) and whether it was maximized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowState {
+    pub width: i32,
+    pub height: i32,
+    pub maximized: bool,
 }
 
 pub struct Store {
@@ -222,7 +230,27 @@ impl Store {
         if version < 9 {
             self.conn.execute_batch("CREATE TABLE IF NOT EXISTS favicons (origin TEXT PRIMARY KEY, png BLOB NOT NULL, at INTEGER NOT NULL);")?;
         }
+        if version < 10 {
+            self.conn.execute_batch("CREATE TABLE IF NOT EXISTS app_windows (app TEXT PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL, maximized INTEGER NOT NULL DEFAULT 0);")?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    }
+
+    // ---- web app windows ----------------------------------------------------------------------------
+
+    /// The size and state the app's window had when it was last used.
+    pub fn app_window(&self, app: &str) -> Option<WindowState> {
+        self.conn
+            .query_row("SELECT width, height, maximized FROM app_windows WHERE app = ?1", params![app], |r| Ok(WindowState { width: r.get(0)?, height: r.get(1)?, maximized: r.get::<_, i64>(2)? != 0 }))
+            .ok()
+    }
+
+    pub fn save_app_window(&self, app: &str, state: WindowState) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO app_windows (app, width, height, maximized) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(app) DO UPDATE SET width = ?2, height = ?3, maximized = ?4",
+            params![app, state.width, state.height, state.maximized as i64],
+        )?;
+        Ok(())
     }
 
     // ---- permissions -------------------------------------------------------------------------------
@@ -470,6 +498,7 @@ impl Store {
         self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM visits WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM closed_tabs WHERE workspace = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM app_windows WHERE app = ?1", params![workspace])?;
         Ok(())
     }
 }
@@ -647,6 +676,20 @@ mod tests {
         assert_eq!(s.remembered_permissions().len(), 1);
         assert_eq!(s.forget_permissions(None).unwrap(), 1);
         assert!(s.remembered_permissions().is_empty());
+    }
+
+    #[test]
+    fn an_apps_window_state_is_remembered_per_app() {
+        let s = Store::open_memory();
+        assert_eq!(s.app_window("mail"), None);
+        s.save_app_window("mail", WindowState { width: 900, height: 700, maximized: false }).unwrap();
+        s.save_app_window("chat", WindowState { width: 400, height: 800, maximized: true }).unwrap();
+        s.save_app_window("mail", WindowState { width: 1000, height: 650, maximized: true }).unwrap();
+        assert_eq!(s.app_window("mail"), Some(WindowState { width: 1000, height: 650, maximized: true }));
+        assert_eq!(s.app_window("chat").map(|w| w.width), Some(400));
+        s.delete_workspace("mail").unwrap();
+        assert_eq!(s.app_window("mail"), None);
+        assert!(s.app_window("chat").is_some());
     }
 
     #[test]

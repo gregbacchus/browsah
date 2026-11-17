@@ -469,7 +469,9 @@ pub fn profile_layer(file: &std::path::Path) -> Layer<'_> {
 
 /// The workspace layer, as a `Layer`.
 pub fn workspace_layer(file: &std::path::Path) -> Layer<'_> {
-    Layer { name: "workspace", file, identity: crate::workspace::IDENTITY_KEYS, ignored: WORKSPACE_IGNORED }
+    // A web app's `app.yaml` is this layer too, with its own identity keys.
+    let is_app = file.file_name().is_some_and(|n| n == "app.yaml");
+    Layer { name: "workspace", file, identity: if is_app { crate::webapp::APP_IDENTITY_KEYS } else { crate::workspace::IDENTITY_KEYS }, ignored: WORKSPACE_IGNORED }
 }
 
 /// The application file with the profile's file merged over it (the configuration of the process).
@@ -680,7 +682,7 @@ mod tests {
         add("tabs", field_names::<crate::workspace::TabsConfig>());
         add("tabs.pinned[]", field_names::<crate::workspace::PinnedTab>());
         add("modals", field_names::<crate::workspace::ModalsConfig>());
-        add("app", field_names::<crate::workspace::AppConfig>());
+        add("", field_names::<crate::webapp::AppConfig>());
         add("sweep", field_names::<crate::sweep::SweepConfig>());
         add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
         add("sweep.rules[].match", field_names::<crate::sweep::MatchConfig>());

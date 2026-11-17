@@ -136,18 +136,4 @@ cannot be collapsed. Groups are remembered with the workspace's tabs (collapsed 
 the next start; a tab dragged to another window leaves its group, and pinned tabs cannot be grouped. Ephemeral windows
 have groups while they are open but remember nothing.
 
-
-A web app is a workspace for one site: a window with the page and little else, its own icon and its own
-entry in GNOME's launcher and dash. Make one with `browsah app add` ([webapp.md](webapp.md)), or add an
-`app:` section to any `workspace.yaml`. The window then has the app's start page as its only (pinned) tab, no
-new tabs, popups shown as modals, and controls chosen by `app.display`; whatever the file itself sets under
-`nav`, `tabs` and the like is kept.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `app` | section | none | Present when the workspace is a web app. |
-| `app.url` | text | none (required) | The page the app opens on. |
-| `app.scope` | list of text | the start URL's site | Where the app may navigate, as for a pinned tab's scope. A link outside it opens in a window of its own (or where a routing rule sends it). |
-| `app.display` | `standalone`, `minimal` or `browser` | `standalone` | `standalone`: only the page (back, forward and reload remain, the address is hidden). `minimal`: also the address, read-only. `browser`: the usual controls, with the tab bar. |
-| `app.icon` | text | a generated icon | A file in the app's directory used as its icon (`icon.png`, `icon.svg`). |
-| `app.id` | text | none | The web manifest's `id`, kept so a later import can recognise the same app. |
+A window for one site with its own icon and launcher entry is not a workspace but a web app: see [webapp.md](webapp.md).

@@ -28,4 +28,15 @@ impl Shell {
         };
         Some(open(&url))
     }
+
+    /// Write the built-in edge-feature test page (`bench/pages/edge.html`) next to the documentation and open it in a tab.
+    pub fn open_test_page(self: &Rc<Self>) {
+        let dir = site_dir();
+        let path = dir.join("edge-test.html");
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, include_str!("../../bench/pages/edge.html"))) {
+            self.toast(&format!("Could not write the test page: {e}"));
+            return;
+        }
+        self.open_tab(&format!("file://{}", path.display()), true);
+    }
 }

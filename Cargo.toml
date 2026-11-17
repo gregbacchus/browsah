@@ -1,6 +1,6 @@
 [package]
 name = "browsah"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "A custom web browser: a GTK4 shell around Chromium (CEF) windowless rendering, native Wayland"
@@ -17,3 +17,7 @@ rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
+# Reads a site's page and web manifest for `browsah app add`. The rustls provider is chosen here and certificates come from
+# the system (no bundled root list), so the licences stay MIT/Apache-2.0/ISC.
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

@@ -56,7 +56,7 @@ Settings come in layers, each a YAML file with the same option names as [options
 3. a workspace's file, `.../profiles/<id>/workspaces/<id>/workspace.yaml` (see [workspace.md](workspace.md)),
    for that workspace's window only.
 
-A web app is a workspace with an `app:` section, so it uses the workspace layer ([webapp.md](webapp.md)). The upper layer is merged over the lower:
+A web app's file, `.../profiles/<id>/apps/<id>/app.yaml` ([webapp.md](webapp.md)), is the third layer in the same way, for that app's windows only. The upper layer is merged over the lower:
 
 - maps merge key by key, so a profile can change one option inside `input` and keep the rest;
 - a value or a list in the upper layer replaces the lower one;
@@ -79,7 +79,7 @@ says what happened. An invalid file is reported and the running settings are kep
 | immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*` |
 | next start (the message says so) | `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
-Permissions and downloads are described in [permissions.md](permissions.md). Cookie rules and `storage` are in [options.md](options.md). Web apps (a workspace for one site with its own launcher entry) are in [webapp.md](webapp.md).
+Permissions and downloads are described in [permissions.md](permissions.md). Cookie rules and `storage` are in [options.md](options.md). Web apps (one site in a window of its own, with its own launcher entry; their own `app.yaml`) are in [webapp.md](webapp.md).
 
 Where links go is configured under `routing:` in any of these files: see [routing.md](routing.md).
 

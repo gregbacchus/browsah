@@ -59,71 +59,10 @@ pub struct WorkspaceConfig {
     pub modals: ModalsConfig,
     /// Tidying up tabs that are not used.
     pub sweep: crate::sweep::SweepConfig,
-    /// Present when the workspace is a web app: one site in a window of its own, with its own icon.
-    pub app: Option<AppConfig>,
-}
-
-/// How much browser a web app shows around its page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AppDisplay {
-    /// Just the page, with back and reload (the default, as for an installed web app).
-    #[default]
-    Standalone,
-    /// As standalone, plus the address, which cannot be changed.
-    Minimal,
-    /// The usual controls.
-    Browser,
-}
-
-/// A workspace that is a web app (`app:` in `workspace.yaml`).
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
-pub struct AppConfig {
-    /// The page the app opens on (its start URL).
-    pub url: String,
-    /// Where the app may navigate; anything else opens in a window of its own. Default: the start URL's site.
-    #[serde(default)]
-    pub scope: Vec<String>,
-    /// How much of the browser's interface the window shows.
-    #[serde(default)]
-    pub display: AppDisplay,
-    /// An icon file inside the app's directory (`icon.png`, `icon.svg`). Default: a generated one.
-    #[serde(default)]
-    pub icon: Option<String>,
-    /// The web manifest's `id`, kept so a later import can tell it is the same app.
-    #[serde(default)]
-    #[allow(dead_code)] // kept in the file for a later import to compare against
-    pub id: Option<String>,
-}
-
-impl WorkspaceConfig {
-    /// Fill in what a web app implies: its start page as the one pinned tab (limited to its scope), no new
-    /// tabs, popups as modals, and controls by `display`. Anything the file sets itself is kept.
-    fn apply_app(&mut self) {
-        let Some(app) = &self.app else { return };
-        if self.tabs.pinned.is_empty() {
-            let scope = if app.scope.is_empty() { vec![crate::cookies::host_of(&app.url)] } else { app.scope.clone() };
-            self.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, scope });
-        }
-        self.tabs.allow_new = false;
-        if self.tabs.popups == PopupPolicy::Tab {
-            self.tabs.popups = PopupPolicy::Modal;
-        }
-        if self.nav == NavConfig::default() {
-            self.nav = NavConfig {
-                address_bar: match app.display {
-                    AppDisplay::Standalone => AddressBar::Hidden,
-                    AppDisplay::Minimal => AddressBar::Readonly,
-                    AppDisplay::Browser => AddressBar::Editable,
-                },
-                new_tab_button: false,
-                tab_bar: app.display == AppDisplay::Browser,
-                bookmarks_bar: false,
-                ..NavConfig::default()
-            };
-        }
-    }
+    /// Set when this window context is a web app (read from the app's `app.yaml`, see `webapp.rs`; never from a
+    /// `workspace.yaml`).
+    #[serde(skip)]
+    pub app: Option<crate::webapp::AppConfig>,
 }
 
 /// How the address bar behaves.
@@ -254,7 +193,7 @@ pub fn in_scope(patterns: &[String], url: &str) -> bool {
 }
 
 /// The keys of `workspace.yaml` that are not configuration overrides.
-pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs", "modals", "sweep", "app"];
+pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs", "modals", "sweep"];
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -271,6 +210,58 @@ impl Workspace {
 
     pub fn display_name(&self) -> &str {
         self.config.name.as_deref().unwrap_or(&self.id)
+    }
+
+    /// The file this window context reads: a workspace's `workspace.yaml`, a web app's `app.yaml`.
+    pub fn config_file(&self) -> PathBuf {
+        self.dir.join(if self.is_app() { "app.yaml" } else { "workspace.yaml" })
+    }
+
+    /// The workspace or the web app called `id` (their ids share one namespace: see `id_taken`).
+    pub fn resolve_any(profile: &Profile, id: &str) -> Result<Workspace, String> {
+        Self::resolve(profile, id).or_else(|e| Self::resolve_app(profile, id).map_err(|a| if a.starts_with("no web app") { e } else { a }))
+    }
+
+    /// Is `id` used by a workspace or a web app of the profile? (Remembered tabs, session cookies and windows
+    /// are keyed by the id alone, so the two kinds may not share one.)
+    pub fn id_taken(profile: &Profile, id: &str) -> bool {
+        profile.workspaces_dir().join(id).join("workspace.yaml").exists() || profile.apps_dir().join(id).join("app.yaml").exists()
+    }
+
+    /// The web app called `id`: its `app.yaml` is read into the window context the shell uses.
+    pub fn resolve_app(profile: &Profile, id: &str) -> Result<Workspace, String> {
+        Self::resolve_app_in(&profile.apps_dir(), &profile.id, id)
+    }
+
+    fn resolve_app_in(root: &Path, profile_id: &str, id: &str) -> Result<Workspace, String> {
+        if !valid_id(id) {
+            return Err(format!("{id:?} is not a valid app id (lower case letters, digits, - and _, starting with a letter)"));
+        }
+        let dir = root.join(id);
+        let file = dir.join("app.yaml");
+        match std::fs::read_to_string(&file) {
+            Ok(text) => {
+                let app = crate::webapp::parse_app(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+                Ok(Workspace { id: id.to_owned(), config: crate::webapp::window_config(app), dir })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(format!("no web app {id:?} in profile {profile_id:?}; create it with: browsah app add {id} --url URL --profile={profile_id}"))
+            }
+            Err(e) => Err(format!("{}: {e}", file.display())),
+        }
+    }
+
+    /// All web apps of a profile, by id.
+    pub fn list_apps(profile: &Profile) -> Vec<Workspace> {
+        let root = profile.apps_dir();
+        let mut out: Vec<Workspace> = std::fs::read_dir(&root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| Self::resolve_app_in(&root, &profile.id, &e.file_name().to_string_lossy()).ok())
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 
     pub fn resolve(profile: &Profile, id: &str) -> Result<Workspace, String> {
@@ -323,9 +314,7 @@ pub fn parse_config(text: &str) -> Result<WorkspaceConfig, String> {
             }
         }
     }
-    let mut cfg: WorkspaceConfig = serde_yaml_ng::from_value(serde_yaml_ng::Value::Mapping(own)).map_err(|e| e.to_string())?;
-    cfg.apply_app();
-    Ok(cfg)
+    serde_yaml_ng::from_value(serde_yaml_ng::Value::Mapping(own)).map_err(|e| e.to_string())
 }
 
 // ---- command line -----------------------------------------------------------------------------
@@ -385,7 +374,7 @@ pub fn first_positional(args: &[String]) -> Option<&String> {
     while i < args.len() {
         let a = &args[i];
         if a.starts_with("--") {
-            i += if a.contains('=') || a == "--yes" || a == "--explain" { 1 } else { 2 };
+            i += if a.contains('=') || matches!(a.as_str(), "--yes" | "--explain" | "--write" | "--remove" | "--no-manifest" | "--new-window") { 1 } else { 2 };
         } else {
             return Some(a);
         }
@@ -403,8 +392,8 @@ fn add(profile: &Profile, args: &[String]) -> i32 {
         return 2;
     }
     let dir = profile.workspaces_dir().join(id);
-    if dir.join("workspace.yaml").exists() {
-        eprintln!("workspace {id:?} already exists in profile {:?}", profile.id);
+    if Workspace::id_taken(profile, id) {
+        eprintln!("{id:?} already exists in profile {:?} (as a workspace or a web app)", profile.id);
         return 1;
     }
     let color = match flag_value(args, "--color").map(|c| ColorPair::parse(&c)) {
@@ -573,39 +562,11 @@ mod tests {
         paths.extend(fields::<crate::sweep::SweepConfig>().into_iter().map(|f| format!("sweep.{f}")));
         paths.extend(fields::<crate::sweep::RuleConfig>().into_iter().map(|f| format!("sweep.rules[].{f}")));
         paths.extend(fields::<crate::sweep::MatchConfig>().into_iter().map(|f| format!("sweep.rules[].match.{f}")));
-        paths.extend(fields::<AppConfig>().into_iter().map(|f| format!("app.{f}")));
         paths.extend(fields::<PinnedTab>().into_iter().map(|f| format!("tabs.pinned[].{f}")));
         assert!(paths.len() >= 28, "{paths:?}");
         for p in paths {
             assert!(docs.contains(&format!("| `{p}`")), "workspace option {p} is not documented in docs/config/workspace.md");
         }
-    }
-
-    #[test]
-    fn a_web_app_implies_its_window() {
-        let c = parse_config("app:\n  url: https://mail.example.com/inbox\n").unwrap();
-        assert!(!c.tabs.allow_new && c.tabs.popups == PopupPolicy::Modal);
-        assert_eq!(c.tabs.pinned.len(), 1);
-        assert_eq!(c.tabs.pinned[0].scope, ["mail.example.com"], "the site, by default");
-        assert!(c.nav.address_bar == AddressBar::Hidden && !c.nav.tab_bar && c.nav.back && c.nav.reload);
-        let m = parse_config("app:\n  url: https://a.example/\n  scope: ['a.example', 'b.example']\n  display: minimal\n").unwrap();
-        assert_eq!(m.tabs.pinned[0].scope, ["a.example", "b.example"]);
-        assert!(m.nav.address_bar == AddressBar::Readonly);
-        let b = parse_config("app:\n  url: https://a.example/\n  display: browser\n").unwrap();
-        assert!(b.nav.address_bar == AddressBar::Editable && b.nav.tab_bar && !b.nav.new_tab_button);
-        // What the file sets itself wins.
-        let o = parse_config("nav: { forward: false }\napp:\n  url: https://a.example/\ntabs:\n  pinned:\n    - url: https://a.example/x\n").unwrap();
-        assert!(!o.nav.forward && o.nav.address_bar == AddressBar::Editable);
-        assert_eq!(o.tabs.pinned[0].url, "https://a.example/x");
-        assert!(parse_config("app: { scope: [a] }").is_err(), "a start URL is required");
-        assert!(parse_config("").unwrap().app.is_none());
-    }
-
-    #[test]
-    fn example_web_app_loads() {
-        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/webapp.yaml")).expect("examples/webapp.yaml exists");
-        let c = parse_config(&text).expect("the example must parse with deny_unknown_fields");
-        assert!(c.app.is_some());
     }
 
     #[test]

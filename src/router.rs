@@ -77,6 +77,9 @@ pub enum Action {
     /// link would come straight back here).
     System,
     Workspace(String),
+    /// A web app of the profile: a new window, a new tab or its existing window, by the app's `multiple_windows` and
+    /// `multiple_tabs`. Only for addresses inside the app's scope (a rule for one outside it is skipped).
+    App(String),
     /// A modal over the window the link came from (the active window for an external link): a page to
     /// view and close, with a button to move it to the workspace the router would choose.
     Modal,
@@ -99,6 +102,10 @@ impl Action {
                     if crate::profile::valid_id(id) {
                         return Ok(Action::Workspace(id.to_owned()));
                     }
+                } else if let Some(id) = t.strip_prefix("app:") {
+                    if crate::profile::valid_id(id) {
+                        return Ok(Action::App(id.to_owned()));
+                    }
                 } else if let Some(rest) = t.strip_prefix("profile:") {
                     let (profile, workspace) = match rest.split_once('/') {
                         Some((p, w)) => (p, w.strip_prefix("workspace:")),
@@ -109,7 +116,7 @@ impl Action {
                         return Ok(Action::Profile { profile: profile.to_owned(), workspace: workspace.map(str::to_owned) });
                     }
                 }
-                Err(format!("unknown action {text:?} (use allow, block, ephemeral, modal, system, workspace:<id>, profile:<id> or profile:<id>/workspace:<id>)"))
+                Err(format!("unknown action {text:?} (use allow, block, ephemeral, modal, system, workspace:<id>, app:<id>, profile:<id> or profile:<id>/workspace:<id>)"))
             }
         }
     }
@@ -122,6 +129,7 @@ impl Action {
             Action::Modal => "open as a modal".into(),
             Action::System => "hand to the desktop".into(),
             Action::Workspace(w) => format!("open in workspace {w:?}"),
+            Action::App(a) => format!("open in web app {a:?}"),
             Action::Profile { profile, workspace: None } => format!("open in profile {profile:?}"),
             Action::Profile { profile, workspace: Some(w) } => format!("open in profile {profile:?}, workspace {w:?}"),
         }
@@ -285,7 +293,8 @@ pub struct MatchConfig {
     pub url: Vec<String>,
     /// URL schemes (`mailto`, `zoommtg`); any one matches.
     pub scheme: Vec<String>,
-    /// Sources: `external`, `workspace:<id>`, `ephemeral` (a window with no workspace); any one matches.
+    /// Sources: `external`, `workspace:<id>` or `app:<id>` (a tab of a workspace or a web app), `ephemeral` (a window with
+    /// no workspace); any one matches.
     pub from: Vec<String>,
     /// Kinds of navigation; default `link` and `external`.
     pub kind: Vec<Kind>,
@@ -327,9 +336,10 @@ impl Rule {
                 "ephemeral" => Ok(FromSel::Ephemeral),
                 t => t
                     .strip_prefix("workspace:")
+                    .or_else(|| t.strip_prefix("app:"))
                     .filter(|id| crate::profile::valid_id(id))
                     .map(|id| FromSel::Workspace(id.to_owned()))
-                    .ok_or_else(|| format!("unknown source {f:?} (use external, ephemeral or workspace:<id>)")),
+                    .ok_or_else(|| format!("unknown source {f:?} (use external, ephemeral, workspace:<id> or app:<id>)")),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let kinds = if cfg.matches.kind.is_empty() { vec![Kind::Link, Kind::External] } else { cfg.matches.kind.clone() };
@@ -382,6 +392,8 @@ impl Rule {
 #[derive(Debug, Clone, Default)]
 pub struct Router {
     by_workspace: HashMap<String, Vec<Rule>>,
+    /// Each web app's scope (patterns of `workspace::scope_matches`): a rule that opens an app only takes addresses in it.
+    app_scopes: HashMap<String, Vec<String>>,
     profile: Vec<Rule>,
     app: Vec<Rule>,
     external: Option<Action>,
@@ -453,8 +465,13 @@ impl Router {
             unwrappers.extend(cfg.unwrap.iter().map(Unwrapper::from_config));
             unwrap_known = cfg.unwrap_known.or(unwrap_known);
             follow = cfg.follow_redirects.or(follow);
-            for w in Workspace::list(p) {
-                let file = w.dir.join("workspace.yaml");
+            for w in Workspace::list_apps(p) {
+                if let Some(app) = &w.config.app {
+                    router.app_scopes.insert(w.id.clone(), crate::webapp::route_patterns(app));
+                }
+            }
+            for w in Workspace::list(p).into_iter().chain(Workspace::list_apps(p)) {
+                let file = w.config_file();
                 let cfg = read_routing(&file, &mut warnings);
                 let rules = compile_all(&format!("workspace {}", w.id), &file, &cfg, &mut warnings);
                 if !rules.is_empty() {
@@ -532,7 +549,10 @@ impl Router {
                     continue;
                 }
                 let outcome = match rule.mismatch(req) {
-                    None => "matched".to_owned(),
+                    None => match self.app_refusal(&rule.action, req) {
+                        Some(why) => format!("no ({why})"),
+                        None => "matched".to_owned(),
+                    },
                     Some(why) => format!("no ({why})"),
                 };
                 let matched = outcome == "matched";
@@ -543,7 +563,7 @@ impl Router {
             }
         }
         // A sign-in another application started: its own window, unless told otherwise.
-        let not_modal = |a: Option<Action>| a.filter(|a| !(skip_modal && *a == Action::Modal));
+        let not_modal = |a: Option<Action>| a.filter(|a| !(skip_modal && *a == Action::Modal) && self.app_refusal(a, req).is_none());
         let sign_in_action = not_modal(self.sign_in.clone().or(Some(Action::Ephemeral))).unwrap_or(Action::Allow);
         let decision = decision.or_else(|| {
             (req.kind == Kind::External && sign_in_action != Action::Allow && looks_like_app_sign_in(&req.url))
@@ -555,6 +575,26 @@ impl Router {
             _ => Decision { action: Action::Allow, rule: None },
         });
         (decision, trace)
+    }
+
+    /// Why an action cannot take the request: it opens a web app and the address is outside that app's scope, or
+    /// the link comes from that app itself (it would only open itself again).
+    fn app_refusal(&self, action: &Action, req: &Request) -> Option<String> {
+        let Action::App(id) = action else { return None };
+        if req.source == Source::Tab(Some(id.clone())) {
+            return Some(format!("the link is in web app {id:?} already"));
+        }
+        let scope = self.app_scopes.get(id)?; // an unknown app is reported when the rules load
+        (!crate::workspace::in_scope(scope, &req.url)).then(|| format!("outside the scope of web app {id:?}"))
+    }
+
+    /// The web apps that rules open (to warn about ones that do not exist).
+    pub fn referenced_apps(&self) -> Vec<String> {
+        let all = self.by_workspace.values().flatten().chain(self.profile.iter()).chain(self.app.iter()).map(|r| &r.action);
+        let mut out: Vec<String> = all.chain([&self.external, &self.sign_in].into_iter().flatten()).filter_map(|a| if let Action::App(id) = a { Some(id.clone()) } else { None }).collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Whether a rule that opens `workspace` exists but the workspace does not (for warnings).
@@ -734,10 +774,10 @@ pub fn cli(args: &[String]) -> i32 {
     let source = match from.as_str() {
         "external" => Source::External,
         "ephemeral" => Source::Tab(None),
-        f => match f.strip_prefix("workspace:") {
+        f => match f.strip_prefix("workspace:").or_else(|| f.strip_prefix("app:")) {
             Some(w) => Source::Tab(Some(w.to_owned())),
             None => {
-                eprintln!("--from: expected external, ephemeral or workspace:<id>, got {f:?}");
+                eprintln!("--from: expected external, ephemeral, workspace:<id> or app:<id>, got {f:?}");
                 return 2;
             }
         },
@@ -770,6 +810,12 @@ pub fn cli(args: &[String]) -> i32 {
         for w in router.referenced_workspaces() {
             if !known.contains(&w) {
                 eprintln!("warning: a rule opens workspace {w:?}, which does not exist in profile {:?}", p.id);
+            }
+        }
+        let apps: Vec<String> = Workspace::list_apps(p).into_iter().map(|w| w.id).collect();
+        for a in router.referenced_apps() {
+            if !apps.contains(&a) {
+                eprintln!("warning: a rule opens web app {a:?}, which does not exist in profile {:?}", p.id);
             }
         }
     }
@@ -936,6 +982,25 @@ mod tests {
         assert!(!blocked(req("https://a.com/", Source::Tab(None), Kind::Typed, Target::SameTab)), "typing an address is not routed unless asked");
         assert!(blocked(req("https://t.com/", Source::Tab(None), Kind::Typed, Target::SameTab)));
         assert!(!blocked(click("https://t.com/", "w")));
+    }
+
+    #[test]
+    fn rules_can_open_web_apps_within_their_scope() {
+        assert_eq!(Action::parse("app:mail").unwrap(), Action::App("mail".into()));
+        assert!(Action::parse("app:Bad Id").is_err());
+        let mut r = rules("external: app:mail\nrules:\n  - name: mail\n    match: { url: ['mail.example.com', 'other.example'] }\n    open: app:mail\n  - name: from app\n    match: { from: ['app:mail'], url: ['x.com'] }\n    open: block\n");
+        r.app_scopes.insert("mail".into(), vec!["mail.example.com".into()]);
+        assert_eq!(r.route(&ext("https://mail.example.com/inbox")).action, Action::App("mail".into()));
+        assert_eq!(r.route(&click("https://mail.example.com/inbox", "w")).action, Action::App("mail".into()));
+        // An address outside the app's scope is not delivered to it: the rule is skipped.
+        let (d, trace) = r.explain(&ext("https://other.example/"));
+        assert_eq!(d.action, Action::Allow, "neither the rule nor `external` can deliver an address outside the scope");
+        assert!(trace.iter().any(|t| t.3.contains("outside the scope of web app")), "{trace:?}");
+        // A link clicked in the app itself is not sent to the app again.
+        assert_eq!(r.route(&click("https://mail.example.com/inbox", "mail")).action, Action::Allow);
+        // A rule can be about links from an app, and apps are named in the warnings about missing ones.
+        assert_eq!(r.route(&click("https://x.com/", "mail")).action, Action::Block);
+        assert_eq!(r.referenced_apps(), ["mail"]);
     }
 
     #[test]

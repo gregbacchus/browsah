@@ -1,16 +1,22 @@
-# A web app is a workspace (workspace.yaml in a directory under the profile's workspaces/) with an `app:`
-# section. Make one with: browsah app add mail --url https://mail.example.com/ --name "Mail"
+# A web app's configuration (one site in a window of its own, with its own icon and launcher entry):
+# ~/.local/share/browsah/profiles/<profile>/apps/<id>/app.yaml
+# Created for you by `browsah app add mail --url https://mail.example.com/`; every option and its meaning: docs/config/webapp.md
+
 name: Mail
-color: "#2a6f97 #61a5c2"          # the icon's colours when there is no icon file
+color: "#2a6f97 #61a5c2"          # the generated icon's colour when there is no icon file (else the profile's colour)
 
-app:
-  url: https://mail.example.com/inbox     # the page it opens on
-  scope: ["mail.example.com", "accounts.example.com/signin/*"]   # where it may navigate (default: the url's site)
-  display: standalone                     # standalone (just the page) | minimal (plus a read-only address) | browser
-  icon: icon.png                          # a file in this directory (default: a generated icon)
-  id: https://mail.example.com/           # the web manifest's id, when it was installed from one
+url: https://mail.example.com/inbox     # the page it opens on (required)
+scope: ["mail.example.com", "accounts.example.com/signin/*"]   # where it may navigate (default: the url's site)
+display: standalone                     # standalone (just the page) | minimal (plus a read-only address) | browser
+icon: icon.png                          # a file in this directory (default: a generated icon)
+manifest_id: https://mail.example.com/  # the web manifest's id, when it was installed from one
+multiple_windows: true                  # more than one window of the app (the launcher's "New Window"); default true
+multiple_tabs: false                    # more than one tab in a window; default false
+modals:
+  style: overlay                        # how popups and viewed links show: overlay (over the window) | window
 
-# Any option of config.yaml can follow, as in a workspace; for example this app keeps its cookies apart:
+# Any option of config.yaml can follow, as in a workspace; for example this app keeps its cookies apart
+# (by default an app shares the profile's cookies and sign-ins):
 storage: isolated
 cookies:
   rules:

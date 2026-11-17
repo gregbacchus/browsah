@@ -40,6 +40,8 @@ pub struct Options {
     pub profile: Option<String>,
     /// Workspace to open (`--workspace=ID`).
     pub workspace: Option<String>,
+    /// `workspace` names a web app (`--app=ID`), not a workspace.
+    pub app: bool,
     /// Open a window with no workspace instead of the remembered workspaces (`--new-window`).
     pub new_window: bool,
     /// Do not reload config files when they change (`--no-watch`).
@@ -64,6 +66,7 @@ impl Options {
             latency: false,
             profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
             workspace: None,
+            app: false,
             new_window: false,
             no_watch: false,
             config_path: None,
@@ -86,6 +89,10 @@ impl Options {
                 _ if a.starts_with("--url=") => o.url = Some(a[6..].to_string()),
                 _ if a.starts_with("--seconds=") => o.seconds = a[10..].parse().unwrap_or(0),
                 _ if a.starts_with("--workspace=") => o.workspace = Some(a[12..].to_string()),
+                _ if a.starts_with("--app=") => {
+                    o.workspace = Some(a[6..].to_string());
+                    o.app = true;
+                }
                 _ if a.starts_with("--profile=") => o.profile = Some(a[10..].to_string()),
                 _ if a.starts_with("--config=") => o.config_path = Some(a[9..].to_string()),
                 _ if a.starts_with("--") => o.flags.push(a),

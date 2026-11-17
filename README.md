@@ -89,8 +89,8 @@ allowed, denied or asked about by rules (per kind and per site, in any layer), a
 remember are kept per profile (`browsah permissions list`). Downloads go to a configurable folder per profile or
 workspace, optionally asking where to save each file. See [docs/config/permissions.md](docs/config/permissions.md).
 
-Web apps: `browsah app add mail --url https://mail.example.com/` makes a window for one site with its own
-launcher entry and icon (a workspace with an `app:` section). See [docs/config/webapp.md](docs/config/webapp.md).
+Web apps: `browsah app add --url https://mail.example.com/` reads the site's web manifest and makes a window for one site with its own
+launcher entry and icon (its own `app.yaml`, not a workspace). See [docs/config/webapp.md](docs/config/webapp.md).
 
 Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
 profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.
@@ -114,6 +114,8 @@ every option are in [examples/](examples/): `config.yaml`, `profile.yaml`, `work
 The main menu's **Documentation** shows the docs rendered as a site, and **Application / Profile / Workspace config (all
 options)** shows your file padded out with every option, its default and its explanation (a copy you can save over the
 real file); `browsah config full [--profile=ID [--workspace=ID]]` prints the same.
+
+The main menu's **Browser test page** opens `bench/pages/edge.html`: buttons for popups, JS dialogs, permissions, downloads, file pickers, drag and drop, context menus, TLS and HTTP errors, storage and more, with a log of what each did.
 
 ## Tests
 

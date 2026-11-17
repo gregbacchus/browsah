@@ -20,8 +20,10 @@ pub enum Level {
     Application,
     /// A profile's `profile.yaml`
     Profile,
-    /// A workspace's (or web app's) `workspace.yaml`
+    /// A workspace's `workspace.yaml`
     Workspace,
+    /// A web app's `app.yaml`
+    App,
 }
 
 impl Level {
@@ -30,6 +32,7 @@ impl Level {
             Level::Application => "Application",
             Level::Profile => "Profile",
             Level::Workspace => "Workspace",
+            Level::App => "Web app",
         }
     }
 
@@ -39,6 +42,7 @@ impl Level {
             Level::Application => "config.yaml",
             Level::Profile => "profile.yaml",
             Level::Workspace => "workspace.yaml",
+            Level::App => "app.yaml",
         }
     }
 
@@ -47,7 +51,7 @@ impl Level {
         match self {
             Level::Application => &[],
             Level::Profile => crate::config::APP_ONLY,
-            Level::Workspace => crate::config::WORKSPACE_IGNORED,
+            Level::Workspace | Level::App => crate::config::WORKSPACE_IGNORED,
         }
     }
 }
@@ -238,7 +242,11 @@ fn template_for(level: Level) -> Vec<Node> {
         }
         Level::Workspace => {
             let mut nodes = parse_template(WORKSPACE_TEMPLATE);
-            merge(&mut nodes, parse_template(WEBAPP_TEMPLATE), false);
+            merge(&mut nodes, app, true);
+            nodes
+        }
+        Level::App => {
+            let mut nodes = parse_template(WEBAPP_TEMPLATE);
             merge(&mut nodes, app, true);
             nodes
         }
@@ -410,7 +418,7 @@ mod tests {
 
     #[test]
     fn nothing_set_gives_a_file_with_no_settings() {
-        for level in [Level::Application, Level::Profile, Level::Workspace] {
+        for level in [Level::Application, Level::Profile, Level::Workspace, Level::App] {
             let text = generate(level, "x", None).unwrap();
             assert!(value(&text).is_null(), "{level:?} must set nothing:\n{text}");
             assert!(text.contains("# window:") || level != Level::Application, "{text}");
@@ -425,7 +433,7 @@ mod tests {
             (Level::Application, "examples/config.yaml"),
             (Level::Profile, "examples/profile.yaml"),
             (Level::Workspace, "examples/workspace.yaml"),
-            (Level::Workspace, "examples/webapp.yaml"),
+            (Level::App, "examples/webapp.yaml"),
         ] {
             let original = std::fs::read_to_string(root().join(file)).unwrap();
             let text = generate(level, "x", Some(&original)).unwrap();
@@ -451,11 +459,16 @@ mod tests {
     #[test]
     fn a_workspace_is_not_offered_what_it_ignores() {
         let text = generate(Level::Workspace, "Mail", None).unwrap();
-        for ignored in ["# watch_config:", "# default_profile:", "# chromium:", "# gpu:", "# nav:", "# sweep:", "# app:"] {
+        for ignored in ["# watch_config:", "# default_profile:", "# chromium:", "# gpu:", "# nav:", "# sweep:", "# app:", "# url:"] {
             let shown = text.contains(ignored);
-            assert_eq!(shown, matches!(ignored, "# nav:" | "# sweep:" | "# app:"), "{ignored}:\n{text}");
+            assert_eq!(shown, matches!(ignored, "# nav:" | "# sweep:"), "{ignored}:\n{text}");
         }
         assert!(!text.contains("device_resolution") && !text.contains("# mode:"), "{text}");
+        // A web app's file offers its own keys, and none of a workspace's tab rules.
+        let app = generate(Level::App, "Mail", None).unwrap();
+        for (key, shown) in [("# url:", true), ("# multiple_windows:", true), ("# storage:", true), ("# nav:", false), ("# tabs:", false), ("# sweep:", false), ("# gpu:", false)] {
+            assert_eq!(app.contains(key), shown, "{key}:\n{app}");
+        }
     }
 
     /// The expansion of a real file must still load with the real types.

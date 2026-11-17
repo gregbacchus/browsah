@@ -259,14 +259,9 @@ pub fn desktop_entry(exe: &Path, libs: &Path) -> String {
     )
 }
 
-/// A plain icon for the selector.
+/// The selector's icon: the default colour of [`crate::appicon`].
 pub fn icon_svg() -> String {
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\">\n\
-     <defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#3a7bd5\"/><stop offset=\"1\" stop-color=\"#1c3f8f\"/></linearGradient></defs>\n\
-     <rect x=\"8\" y=\"8\" width=\"112\" height=\"112\" rx=\"26\" fill=\"url(#g)\"/>\n\
-     <circle cx=\"46\" cy=\"64\" r=\"16\" fill=\"#ffffff\" opacity=\"0.9\"/><circle cx=\"82\" cy=\"46\" r=\"12\" fill=\"#ffffff\" opacity=\"0.65\"/><circle cx=\"82\" cy=\"82\" r=\"12\" fill=\"#ffffff\" opacity=\"0.65\"/>\n\
-     </svg>\n"
-        .to_owned()
+    crate::appicon::svg(None)
 }
 
 const USAGE: &str = "usage:

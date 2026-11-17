@@ -96,7 +96,7 @@ impl Shell {
         // The workspaces to choose from.
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
             let here = self.workspace.as_ref().map(|w| w.id.clone());
-            for w in crate::workspace::Workspace::list(&profile).into_iter().filter(|w| !w.is_app()) {
+            for w in crate::workspace::Workspace::list(&profile) {
                 let b = gtk::Button::builder().label(w.display_name()).has_frame(false).build();
                 let (m, id, popover) = (Rc::downgrade(&modal), w.id.clone(), popover.downgrade());
                 b.connect_clicked(move |_| {
@@ -245,6 +245,17 @@ impl Modal {
                     o.show_js_dialog(q);
                 }
             }
+            // The page closed itself (`window.close()`, as a sign-in popup does when it is done): the modal goes too,
+            // otherwise its last frame stays frozen over the window.
+            ViewEvent::Closed => self.dismiss(),
+            ViewEvent::CloseCancelled => {}
+            ViewEvent::FileDialog(q) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.show_file_dialog(q);
+                } else {
+                    q.cancel();
+                }
+            }
             ViewEvent::JsDialogDismissed(view) => {
                 if let Some(o) = self.owner.upgrade() {
                     o.dismiss_js_dialog(view);
@@ -296,7 +307,8 @@ impl Modal {
                     Action::Ephemeral => NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| f("")),
                     Action::Block => None,
                     // Another profile or the desktop takes the address, not the running page.
-                    Action::System | Action::Profile { .. } => {
+                    // (and a web app is handed the address too: it delivers it as its own settings say)
+                    Action::System | Action::Profile { .. } | Action::App(_) => {
                         perform_route(&decision.action, &url, Some(&owner));
                         self.dismiss();
                         return;

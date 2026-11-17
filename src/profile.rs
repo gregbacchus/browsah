@@ -125,6 +125,11 @@ impl Profile {
         self.dir.join("workspaces")
     }
 
+    /// Where the profile's web apps live (one directory each, with an `app.yaml`).
+    pub fn apps_dir(&self) -> PathBuf {
+        self.dir.join("apps")
+    }
+
     fn state_file(&self) -> PathBuf {
         self.dir.join("state.yaml")
     }
@@ -277,31 +282,10 @@ pub fn desktop_entry(p: &Profile, exe: &Path, libs: &Path) -> String {
     )
 }
 
-/// A simple scalable icon: a rounded square shading from the light to the dark colour, with the
-/// profile's initial.
+/// The profile's icon: a circle in its colour (the light one; the pair is for the windows) with four swishes, see
+/// [`crate::appicon`]. Without a colour it is the profile picker's blue.
 pub fn icon_svg(p: &Profile) -> String {
-    icon_svg_for(&p.id, p.display_name(), p.config.color.as_ref())
-}
-
-/// The same icon for anything with an id, a name and maybe colours (a web app).
-pub fn icon_svg_for(id: &str, name: &str, color: Option<&ColorPair>) -> String {
-    let (light, dark) = match color {
-        Some(c) => (c.light.clone(), c.dark.clone()),
-        None => {
-            // No colour chosen: derive one from the id so profiles still look different.
-            let h = id.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
-            (format!("hsl({h} 55% 55%)"), format!("hsl({h} 55% 32%)"))
-        }
-    };
-    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "B".into());
-    let initial = initial.replace('&', "&amp;").replace('<', "&lt;");
-    format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\">\n\
-         <defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"{light}\"/><stop offset=\"1\" stop-color=\"{dark}\"/></linearGradient></defs>\n\
-         <rect x=\"8\" y=\"8\" width=\"112\" height=\"112\" rx=\"26\" fill=\"url(#g)\"/>\n\
-         <text x=\"64\" y=\"86\" font-family=\"sans-serif\" font-size=\"68\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#ffffff\">{initial}</text>\n\
-         </svg>\n"
-    )
+    crate::appicon::svg(p.config.color.as_ref().map(|c| c.light.as_str()))
 }
 
 /// Write the profile's `profile.yaml` (if new), `.desktop` entry and icon.
@@ -648,12 +632,12 @@ mod tests {
         assert!(d.contains("--profile=work %U"));
         assert!(d.contains("x-scheme-handler/https;"));
         assert!(d.contains("\"/opt/my apps/browsah\""), "paths with spaces are quoted: {d}");
+        // The circle is shaded from the profile's (light) colour; without a colour it is the picker's blue.
         let svg = icon_svg(&p);
-        assert!(svg.contains("#4a2f80") && svg.contains("#7a56c2") && svg.contains(">W<"));
-        // Without a colour the icon is still coloured, deterministically.
+        assert!(svg.contains("<circle") && svg.contains(&crate::appicon::palette(Some("#4a2f80")).0));
         let q = Profile { config: ProfileConfig::default(), ..p };
-        assert_eq!(icon_svg(&q), icon_svg(&q));
-        assert!(icon_svg(&q).contains("hsl("));
+        assert_eq!(icon_svg(&q), crate::appicon::svg(None));
+        assert_ne!(icon_svg(&q), svg);
     }
 
     #[test]

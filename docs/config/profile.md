@@ -29,6 +29,18 @@ is used by `--selftest` and the benchmarks so they never touch a real profile). 
 
 `name`, `color` and `default_workspace` are read at startup; overrides of other options apply as described in [Layers and reloading](README.md#layers-and-reloading). Unknown keys are ignored (in release builds).
 
+## The generated icon
+
+`browsah profile add` (and `profile install`), `browsah app add` for an app with no icon of its own, and `browsah selector install`
+write a scalable icon: a circle in the **primary colour** with four swishes. The primary colour is the profile's `color` (its light
+colour); an app uses its own `color` (from the site's `theme_color` when it was created), else its profile's; with none it is a
+default blue (`#2b5db2`, the middle of the profile selector's blue), which is also the selector's icon. The circle shades a little
+lighter toward the top left and a little darker toward the bottom right. The swishes are a tint of the primary colour toward white
+on a dark circle or toward black on a light one, never pure white or black, so they always contrast without looking stark.
+
+Icons are written when the entry is installed, and a running profile rewrites its stale generated icons (its own, the selector's and
+its apps') at start, so changing `color` shows after the next start. An app's own icon file is never replaced.
+
 ## Overriding configuration
 
 Besides the options below, `profile.yaml` can contain any option from [options.md](options.md)
@@ -50,7 +62,7 @@ chromium:
 |---|---|---|---|
 | `name` | text | the profile id | Display name, used in the `.desktop` entry (`Browsah (Work)`) and the icon's initial. |
 | `default_workspace` | text | none | The [workspace](workspace.md) opened when the profile starts with no workspace named and none remembered from the last run. Must be the id of an existing workspace. |
-| `color` | colour pair | derived from the id | The profile's icon colour, which also tints the windows that have no colour of their own (windows with no workspace, and workspaces that set none); a workspace's own colour wins in its window. Either one colour, two colours in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. Colours are `#rgb` or `#rrggbb`. |
+| `color` | colour pair | none (the icon is the default blue) | The profile's icon colour (the light one, see [the generated icon](#the-generated-icon)), which also tints the windows that have no colour of their own (windows with no workspace, and workspaces that set none); a workspace's own colour wins in its window. Either one colour, two colours in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. Colours are `#rgb` or `#rrggbb`. |
 
 ```yaml
 name: Work

@@ -11,7 +11,7 @@ a worked example with a comment.
 | [Options](config/options.md) | The application file (`config.yaml`): search, theme, window, rendering, chromium, input, history, permissions, downloads, cookies, print, gpu |
 | [Profiles: `profile.yaml`](config/profile.md) | Name, colour, default workspace; the `browsah profile` command |
 | [Workspaces: `workspace.yaml`](config/workspace.md) | Navigation controls, pinned tabs, popups, modals, groups; the `browsah workspace` command |
-| [Web apps](config/webapp.md) | A workspace with an `app:` section, its launcher entry and icon; installing from a page |
+| [Web apps](config/webapp.md) | `app.yaml`: one site in a window of its own, its launcher entry and icon; installing from a page |
 | [Routing](config/routing.md) | Where links go: rules, redirectors, sign-ins, modals, `browsah route test` |
 | [Permissions and downloads](config/permissions.md) | What pages may do, remembered answers, the downloads folder |
 | [History](config/history.md) | What is remembered, retention, address-bar suggestions, the history window |
@@ -27,7 +27,7 @@ Examples (each is checked by the test suite, so every key in it is real):
 | [`examples/config.yaml`](../examples/config.yaml) | the application file, every option |
 | [`examples/profile.yaml`](../examples/profile.yaml) | a profile's file, with overrides and routing |
 | [`examples/workspace.yaml`](../examples/workspace.yaml) | a workspace's file: navigation, pinned tabs, sweeping, routing |
-| [`examples/webapp.yaml`](../examples/webapp.yaml) | a web app (a workspace with `app:`) |
+| [`examples/webapp.yaml`](../examples/webapp.yaml) | a web app (`app.yaml`) |
 
 These pages are **exhaustive and must stay in sync with the code.** Tests fail when an option is missing from
 the docs, documented but gone, or missing from the examples. See [`AGENTS.md`](../AGENTS.md).

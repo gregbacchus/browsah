@@ -35,7 +35,7 @@ these to get around the refusal; setting them is only for the two cases above.
 ## Rule: keep the configuration documentation and examples up to date
 
 Whenever you add, rename, remove or change the meaning, type, range, default or reload behaviour of ANY option
-(in `src/config.rs` or in any other config struct: profile, workspace, web app `app:`, `routing`, `sweep`,
+(in `src/config.rs` or in any other config struct: profile, workspace, web app `app.yaml`, `routing`, `sweep`,
 `permissions`, `cookies`, `downloads`, ...), update ALL of these in the same change. Passing tests are not
 proof the docs are right: the tests only check that paths exist.
 
@@ -117,7 +117,8 @@ take minutes.
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs, `app`), scope patterns, the `browsah workspace` command line |
-| `src/webapp.rs` | Web apps (a workspace with an `app:` section): application id, `.desktop` entry and icon, the `browsah app` command line |
+| `src/manifest.rs` | What a page says about itself as an app (`AppInfo`): read from Chromium's `Page.getAppManifest` answer (install from a tab) or from the manifest file itself (`parse_raw_manifest`, `page_links`, `resolve`; `browsah app add`) (pure, tested) |
+| `src/webapp.rs` | Web apps (`apps/<id>/app.yaml`, not a workspace): the `AppConfig` schema and `window_config` (what it implies for a window), application id, `.desktop` entry (with the "New Window" action) and icon, the `browsah app` command line (`add`, `list`, `install`, `route`, `remove`); `create` is the one way an app is made (CLI and install from a page); `info_from_site` fetches with `ureq` (rustls, system certificates, no bundled root list) |
 | `src/groups.rs` | Tab group model: palette, ids, the dot icon, where a joining tab goes, collapsed title (pure, tested); the window side is `app/groups.rs` |
 | `src/suggest.rs` | Address-bar suggestion ranking (pure, tested); the popover is `app/suggest.rs` |
 | `src/cookies.rs` | Cookie rules (`cookies:`): `allow`/`session`/`deny` per site, session-cookie keys, allow-rule YAML for blocked sites |
@@ -159,7 +160,7 @@ take minutes.
   change (the compositor resizes later), and start by maximizing (it may remember either state).
 - **Check pictures, not just numbers.** A DevTools emulation attempt passed every numeric check (`devicePixelRatio`, `innerWidth`) while
   the page was painted at half size; the `hidpi` section now checks the frame size and layout width too, and a picture was looked at.
-- **Licence:** browsah is MIT. Do not add a dependency whose licence is not permissive
+- **Licence:** browsah is MIT. `ureq` (MIT/Apache-2.0) fetches a site for `browsah app add`: keep its features to `rustls-no-provider` + `platform-verifier` (the default `rustls` feature pulls the CDLA-licensed `webpki-roots`). Do not add a dependency whose licence is not permissive
   (MIT, Apache-2.0, BSD, ISC, Unicode, Zlib) without asking.
 - **One process per profile.** Chromium locks its cache directory, so a profile (`src/profile.rs`)
   is one process with its own `GApplication` id (`be.geee.browsah.<id>`). `main` registers
@@ -263,8 +264,19 @@ take minutes.
 - **Storage:** `storage: isolated` gives a workspace its own CEF `RequestContext` (`cache_path`
   `<profile>/cef/workspaces/<id>`, cached per folder in `view.rs`); `Shell::prepare_storage` sets the folder for the
   next view just before it is created (thread-local, read in `Shared::new`).
-- **Web apps:** a workspace whose `workspace.yaml` has `app:` (`WorkspaceConfig::apply_app` fills in the pinned
-  start tab, no new tabs, modal popups and the controls for `app.display`; whatever the file sets itself wins).
+- **Web apps** are not workspaces: `<profile>/apps/<id>/app.yaml` (`Workspace::resolve_app`, `list_apps`; `resolve_any` for
+  either kind). `webapp::window_config` turns an `AppConfig` into the `WorkspaceConfig` the shell already understands
+  (pinned start tab whose scope is every tab's scope, `allow_new` = `multiple_tabs`, modal popups, controls by `display`), and
+  `Workspace::config_file()` names the file (`app.yaml`); `config::workspace_layer` picks the app identity keys by that
+  file name. App and workspace ids share one namespace (`Workspace::id_taken`) because tabs, session cookies and the window
+  registry are keyed by the id alone. Isolated storage is `cef/apps/<id>`. A link routed to an app (`Action::App`) is
+  delivered by `open_app` in `app/mod.rs` (`multiple_tabs`: tab; `multiple_windows`: window; else navigate the window) and the
+  router skips an `app:` rule for an address outside the app's `webapp::route_patterns` or from the app itself (`app_refusal`).
+  App windows are left out of `browser_windows()` (plain launches and other applications' links never land in one) and
+  of what a plain start remembers. An app window's size and maximized state are in the `app_windows` table
+  (`remember_app_window`; GTK's `default-width/height` stay at the unmaximized size). The `.desktop` entry has a
+  "New Window" action when `multiple_windows` (`--app=ID --new-window`, the `new-app-window` action), and
+  `webapp::refresh_launchers` rewrites out-of-date entries at profile start.
   Its window sets its own Wayland application id (`be.geee.browsah.<profile>.<id>`, the `.desktop` file's name) when
   mapped, through `gdk4-wayland` (`set_application_id` must run at `map`; GTK overwrites it earlier). Apps are left
   out of the *Send to workspace* lists. `install.rs` reads the manifest with `Page.getAppManifest` (`parse_manifest`

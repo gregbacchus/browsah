@@ -9,7 +9,70 @@ use gtk::gio;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Would this page ask "Leave site?": runs its `beforeunload` handlers on a synthetic event and sees whether they object.
+const UNLOAD_PROBE: &str = r#"(() => {
+  try {
+    const e = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(e);
+    return JSON.stringify({ unsaved: e.defaultPrevented || typeof window.onbeforeunload === 'function' });
+  } catch (_) { return JSON.stringify({ unsaved: false }); }
+})()"#;
+
+fn probe_says_unsaved(json: &str) -> bool {
+    serde_yaml_ng::from_str::<serde_yaml_ng::Value>(json)
+        .ok()
+        .and_then(|v| v.get("result")?.get("value")?.as_str().map(str::to_owned))
+        .is_some_and(|inner| inner.contains("\"unsaved\":true"))
+}
+
 impl Shell {
+    /// The window is being closed: ask the pages whether they have unsaved changes (their `beforeunload` handlers)
+    /// and, if any do, ask the person. Returns true when the close is on hold (the window closes again on agreement).
+    pub(super) fn confirm_window_close(self: &Rc<Self>) -> bool {
+        if super::prompts::ui_test() {
+            return false;
+        }
+        let probes: Vec<(Rc<super::Tab>, i32)> = self.tabs.borrow().iter().filter(|t| t.view().is_live()).map(|t| (t.clone(), t.view().cdp_eval(UNLOAD_PROBE))).collect();
+        if probes.is_empty() {
+            return false;
+        }
+        let window = self.window.downgrade();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+            let Some(s) = window.upgrade().and_then(|w| super::shell_of(&w)) else { return };
+            let unsaved: Vec<String> = probes
+                .iter()
+                .filter(|(t, id)| t.view().cdp_result(*id).is_some_and(|(ok, json)| ok && probe_says_unsaved(&json)))
+                .map(|(t, _)| t.state.borrow().title.clone())
+                .collect();
+            if unsaved.is_empty() {
+                s.close_confirmed.set(true);
+                s.window.close();
+                return;
+            }
+            let body = if unsaved.len() == 1 {
+                format!("\u{201c}{}\u{201d} may have unsaved changes.", unsaved[0])
+            } else {
+                format!("{} tabs may have unsaved changes:\n{}", unsaved.len(), unsaved.iter().map(|t| format!("\u{2022} {t}")).collect::<Vec<_>>().join("\n"))
+            };
+            let dialog = adw::AlertDialog::new(Some("Close this window?"), Some(&body));
+            dialog.add_response("cancel", "Stay");
+            dialog.add_response("close", "Close window");
+            dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+            let weak = Rc::downgrade(&s);
+            dialog.choose(Some(&s.window), gio::Cancellable::NONE, move |response| {
+                if response.as_str() == "close" {
+                    if let Some(s) = weak.upgrade() {
+                        s.close_confirmed.set(true);
+                        s.window.close();
+                    }
+                }
+            });
+        });
+        true
+    }
+
     /// A page opened a dialog: show it now, or after the ones before it.
     pub(super) fn show_js_dialog(self: &Rc<Self>, q: Arc<JsDialogQuestion>) {
         self.js_queue.borrow_mut().push_back(q);
@@ -44,6 +107,8 @@ impl Shell {
         let entry = gtk::Entry::builder().text(&q.default_text).activates_default(true).build();
         if q.kind == JsDialogKind::Prompt {
             dialog.set_extra_child(Some(&entry));
+            // Type straight away: the entry, not the default button, starts with the focus (its text selected).
+            dialog.set_focus(Some(&entry));
         }
         *self.js_showing.borrow_mut() = Some((q.view, dialog.clone()));
         let window = self.window.downgrade();

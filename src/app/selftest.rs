@@ -112,8 +112,8 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 /// The sections `BROWSAH_SELFTEST_ONLY` can name, in the order they run (a test keeps this in step with `run`).
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
-    "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs",
+    "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -370,11 +370,20 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     if wants("webapp") {
         run_webapp(shell, r).await;
     }
+    if wants("webapp_open") {
+        run_webapp_open(shell, r).await;
+    }
     if wants("install") {
         run_install(shell, r).await;
     }
     if wants("suggest") {
         run_suggest(shell, r).await;
+    }
+    if wants("edgebu") {
+        run_edgebu(shell, r).await;
+    }
+    if wants("drop") {
+        run_drop(shell, r).await;
     }
     if wants("jsdialog") {
         run_jsdialog(shell, r).await;
@@ -1433,7 +1442,7 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
     let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
     let db = profile.dir.join("data.sqlite");
     let port = start_test_server();
-    let ids = ["ma", "mb", "mp", "mq", "mw"];
+    let ids = ["ma", "mb", "mp", "mq", "mw", "mc"];
     for id in ids {
         let dir = profile.workspaces_dir().join(id);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1448,6 +1457,7 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
     std::fs::write(wd("ma"), format!("name: A\nhome_page: '{scope}'\n{modal_rules}")).expect("ma");
     std::fs::write(wd("mb"), "name: B\n").expect("mb");
     std::fs::write(wd("mp"), format!("name: P\nhome_page: '{}'\ntabs: {{ popups: modal }}\n", page("popup.html"))).expect("mp");
+    std::fs::write(wd("mc"), format!("name: C\nhome_page: '{}'\ntabs: {{ popups: modal }}\n", page("popup-close.html"))).expect("mc");
     std::fs::write(wd("mq"), format!("name: Q\nhome_page: '{}'\ntabs: {{ popups: block }}\n", page("popup.html"))).expect("mq");
     std::fs::write(wd("mw"), format!("name: W\nhome_page: '{scope}'\nmodals: {{ style: window }}\n{modal_rules}")).expect("mw");
     crate::router::install(crate::router::Router::load(&std::env::temp_dir().join("browsah-no-such-config.yaml"), Some(&profile)));
@@ -1503,6 +1513,19 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
         Driver { shell: &mp }.click(80.0, 40.0);
         let ok = wait_until(15_000, || mp.modal_list().len() == 1 && mp.modal_list()[0].state.borrow().title == "Page B").await;
         r.check("a script popup opens as a modal when the workspace says so", ok && mp.tab_count() == 1, || format!("{} modals, {} tabs", mp.modal_list().len(), mp.tab_count()));
+    }
+
+    // A popup that closes itself (a finished sign-in) takes its modal with it.
+    open("mc");
+    let ok = wait_until(15_000, || find("mc").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Popup close test" && t.view().has_frame()))).await;
+    r.check("workspace C (popup that closes itself) opens", ok, || "not open".into());
+    if let Some(mc) = find("mc") {
+        glib::timeout_future(Duration::from_millis(600)).await;
+        Driver { shell: &mc }.click(80.0, 40.0);
+        let ok = wait_until(15_000, || mc.modal_list().len() == 1).await;
+        r.check("the self-closing popup opens as a modal", ok, || format!("{} modals", mc.modal_list().len()));
+        let ok = wait_until(10_000, || mc.modal_list().is_empty()).await;
+        r.check("the modal closes when its page closes itself", ok, || format!("{} modals still open", mc.modal_list().len()));
     }
 
     // Popup policy: block.
@@ -2303,11 +2326,11 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
     let db = profile.dir.join("data.sqlite");
     let port = start_test_server();
-    let dir = profile.workspaces_dir().join("wa1");
+    let dir = profile.apps_dir().join("wa1");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("workspace dir");
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
-    std::fs::write(dir.join("workspace.yaml"), format!("name: Web app\napp:\n  url: 'http://localhost:{port}/scope.html'\n  display: standalone\n")).expect("ws");
+    std::fs::write(dir.join("app.yaml"), format!("name: Web app\nurl: 'http://localhost:{port}/scope.html'\ndisplay: standalone\n")).expect("ws");
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "wa1"));
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wa1".to_variant()));
     let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
@@ -2319,6 +2342,33 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     }
     r.check("a web app shows only its page: one pinned tab, no address bar, no new tabs", w.tab_count() == 1 && w.current().is_some_and(|t| t.page.is_pinned()) && gtk::prelude::WidgetExt::parent(&w.entry).is_none() && !w.allow_new_tabs, || format!("tabs={} entry={}", w.tab_count(), gtk::prelude::WidgetExt::is_visible(&w.entry)));
     r.check("a web app keeps back and reload, and shows popups as modals", w.back.is_visible() && w.popup_policy == crate::workspace::PopupPolicy::Modal, || "controls or popup policy".into());
+    // The window's size and state are remembered per app and used by its next window.
+    {
+        use gtk::prelude::{GtkWindowExt, WidgetExt};
+        let saved = || crate::store::Store::open(&db).ok().and_then(|s| s.app_window("wa1"));
+        w.window.unmaximize(); // it may start either way
+        let _ = wait_until(3_000, || !w.window.is_maximized()).await;
+        w.window.set_default_size(900, 640);
+        let _ = wait_until(3_000, || (w.window.width() - 900).abs() <= 2 && (w.window.height() - 640).abs() <= 2).await;
+        glib::timeout_future(Duration::from_millis(900)).await;
+        r.check("a web app window's size is remembered", saved().is_some_and(|s| (s.width, s.height, s.maximized) == (900, 640, false)), || format!("{:?}, window {}x{}", saved(), w.window.width(), w.window.height()));
+        w.window.maximize();
+        let _ = wait_until(3_000, || w.window.is_maximized()).await;
+        glib::timeout_future(Duration::from_millis(900)).await;
+        r.check("maximizing is remembered and keeps the size it returns to", saved().is_some_and(|s| (s.width, s.height, s.maximized) == (900, 640, true)), || format!("{:?}", saved()));
+        w.window.close();
+        let _ = wait_until(5_000, || find().is_none()).await;
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wa1".to_variant()));
+        let _ = wait_until(15_000, || find().is_some_and(|s| s.window.is_maximized())).await;
+        let again = find();
+        r.check("the next window of the app opens maximized, at the remembered size", again.as_ref().is_some_and(|s| s.window.is_maximized() && s.window.default_size() == (900, 640)), || format!("{:?}", again.as_ref().map(|s| (s.window.is_maximized(), s.window.default_size()))));
+        if let Some(s) = again {
+            s.window.unmaximize();
+            let _ = wait_until(3_000, || !s.window.is_maximized()).await;
+        }
+    }
+    let Some(w) = find() else { return };
+    let _ = wait_until(15_000, || w.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading)).await;
     // Out of scope: the default scope is the start page's own site, so the link to 127.0.0.1 leaves the app.
     let before = super::windows().len();
     if let Some(t) = w.current() {
@@ -2336,6 +2386,67 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An address delivered to a web app (what a routing rule `open: app:<id>` does): a new window, a new tab or the
+/// existing window, by the app's `multiple_windows` and `multiple_tabs`.
+async fn run_webapp_open(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::router::Action;
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let ids = ["wo1", "wo2", "wo3"];
+    let cleanup = |close: bool| {
+        if close {
+            for x in super::windows() {
+                if !Rc::ptr_eq(&x, shell) {
+                    x.window.close();
+                }
+            }
+        }
+        for id in ids {
+            let _ = std::fs::remove_dir_all(profile.apps_dir().join(id));
+            let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        }
+    };
+    cleanup(false);
+    for (id, settings) in [("wo1", "multiple_windows: true\n"), ("wo2", "multiple_tabs: true\nmultiple_windows: false\n"), ("wo3", "multiple_windows: false\n")] {
+        let dir = profile.apps_dir().join(id);
+        std::fs::create_dir_all(&dir).expect("app dir");
+        std::fs::write(dir.join("app.yaml"), format!("name: Open {id}\nurl: 'http://localhost:{port}/scope.html'\n{settings}")).expect("app.yaml");
+    }
+    let of = |id: &str| -> Vec<Rc<Shell>> { super::windows().into_iter().filter(|s| s.workspace.as_ref().is_some_and(|w| w.id == id)).collect() };
+    let address = |s: &Rc<Shell>| s.current().map(|t| t.state.borrow().address.clone()).unwrap_or_default();
+    let go = |id: &str, url: &str| {
+        super::perform_route(&Action::App(id.to_owned()), url, None);
+    };
+    let (b, pwa) = (format!("http://localhost:{port}/b.html"), format!("http://localhost:{port}/pwa.html"));
+
+    // Nothing open: the app opens, on the address.
+    go("wo1", &b);
+    let ok = wait_until(15_000, || of("wo1").first().is_some_and(|s| address(s) == b)).await;
+    r.check("an address routed to a web app that is not open opens its window on the address", ok && of("wo1")[0].tab_count() == 1, || format!("{:?}", of("wo1").iter().map(address).collect::<Vec<_>>()));
+    // Several windows allowed, no tabs: a second window.
+    go("wo1", &pwa);
+    let ok = wait_until(15_000, || of("wo1").len() == 2 && of("wo1").iter().any(|s| address(s) == pwa)).await;
+    r.check("with multiple_windows (and no tabs) the address opens in a new window", ok && of("wo1").iter().all(|s| s.tab_count() == 1), || format!("{} windows, {:?}", of("wo1").len(), of("wo1").iter().map(address).collect::<Vec<_>>()));
+    // Tabs allowed: a tab of the window.
+    go("wo2", &b);
+    let _ = wait_until(15_000, || of("wo2").first().is_some_and(|s| address(s) == b)).await;
+    go("wo2", &pwa);
+    let ok = wait_until(15_000, || of("wo2").len() == 1 && of("wo2")[0].tab_count() == 2 && address(&of("wo2")[0]) == pwa).await;
+    r.check("with multiple_tabs the address opens as a tab of the window", ok, || format!("{} windows, {} tabs", of("wo2").len(), of("wo2").first().map_or(0, |s| s.tab_count())));
+    // Neither: the one window loads it, and Back returns.
+    go("wo3", &b);
+    let _ = wait_until(15_000, || of("wo3").first().is_some_and(|s| address(s) == b)).await;
+    go("wo3", &pwa);
+    let ok = wait_until(15_000, || of("wo3").len() == 1 && of("wo3")[0].tab_count() == 1 && address(&of("wo3")[0]) == pwa).await;
+    let back = ok && wait_until(5_000, || of("wo3")[0].current().is_some_and(|t| t.state.borrow().can_back)).await;
+    r.check("with one window and no tabs the window loads the address, and Back goes to the page before", ok && back, || format!("{} windows, {} tabs, {:?}", of("wo3").len(), of("wo3").first().map_or(0, |s| s.tab_count()), of("wo3").iter().map(address).collect::<Vec<_>>()));
+    // An app's window is not where a plain launch or another application's link goes.
+    r.check("web app windows are not browser windows", super::browser_windows().iter().all(|s| !s.workspace.as_ref().is_some_and(|w| w.is_app())) && super::windows().len() > super::browser_windows().len(), || format!("{} of {}", super::browser_windows().len(), super::windows().len()));
+    cleanup(true);
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+}
+
 /// Installing a page as a web app: its manifest is read, and the app, with its icon, is created.
 async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
     use gtk::prelude::ActionGroupExt;
@@ -2350,7 +2461,7 @@ async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "PWA page" }).await;
     glib::timeout_future(Duration::from_millis(500)).await;
     let info = super::install::read_manifest(&view).await;
-    let ok = info.as_ref().is_some_and(|i| i.name == "Test Manifest App" && i.start_url.ends_with("/pwa.html") && i.display == crate::workspace::AppDisplay::Minimal && i.color.as_deref() == Some("#336699") && i.scope == ["localhost"] && i.icons.len() == 1);
+    let ok = info.as_ref().is_some_and(|i| i.name == "Test Manifest App" && i.start_url.ends_with("/pwa.html") && i.display == crate::webapp::AppDisplay::Minimal && i.color.as_deref() == Some("#336699") && i.scope == ["localhost"] && i.icons.len() == 1);
     r.check("the page's web manifest is read through DevTools", ok, || format!("{info:?}"));
     let Some(info) = info else { return };
     {
@@ -2360,12 +2471,12 @@ async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
         dialog.force_close();
     }
     let id = super::install::save_app(&view, &info, "Test Manifest App").await;
-    r.check("installing creates the web app's workspace", id.as_deref() == Ok("test-manifest-app"), || format!("{id:?}"));
+    r.check("installing creates the web app", id.as_deref() == Ok("test-manifest-app"), || format!("{id:?}"));
     let Ok(id) = id else { return };
-    let dir = profile.workspaces_dir().join(&id);
+    let dir = profile.apps_dir().join(&id);
     let icon = std::fs::read(dir.join("icon.png")).unwrap_or_default();
     r.check("its icon was downloaded as a PNG", icon.starts_with(&[0x89, b'P', b'N', b'G']), || format!("{} bytes", icon.len()));
-    let ws = crate::workspace::Workspace::resolve(&profile, &id);
+    let ws = crate::workspace::Workspace::resolve_app(&profile, &id);
     r.check("the saved configuration is the manifest's, with the icon", ws.as_ref().is_ok_and(|w| w.config.app.as_ref().is_some_and(|a| a.icon.as_deref() == Some("icon.png") && a.scope == ["localhost"]) && w.config.name.as_deref() == Some("Test Manifest App")), || format!("{ws:?}"));
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "test-manifest-app"));
@@ -2492,6 +2603,65 @@ async fn run_jsdialog(shell: &Rc<Shell>, r: &mut Report) {
     }
     super::prompts::set_ui_test(true);
     r.check("closing the dialog answers the page (a cancelled prompt gives null)", title_is("typed:null").await, || st.borrow().title.clone());
+
+    // "Leave site?": a page with a beforeunload handler (and a click on it) is asked before it is left.
+    view.cdp_eval_as("addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; }); 1", true);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    view.navigate(&format!("http://localhost:{port}/a.html"));
+    let ok = wait_until(10_000, || shell.pending_js_dialog().is_some()).await;
+    r.check("leaving a page with a beforeunload handler asks first", ok && shell.pending_js_dialog().is_some_and(|q| matches!(q.kind, super::view::JsDialogKind::BeforeUnload { .. })), || format!("{:?}", shell.pending_js_dialog()));
+    shell.answer_pending_js_dialog(false, "");
+    glib::timeout_future(Duration::from_millis(500)).await;
+    r.check("choosing Stay keeps the page", st.borrow().title == "typed:null", || st.borrow().title.clone());
+
+    // Closing a tab whose page has unsaved changes asks first (shown for real here, not held).
+    super::prompts::set_ui_test(false);
+    let tabs_before = shell.tab_count();
+    let extra = shell.open_tab(&format!("http://localhost:{port}/b.html"), true);
+    let _ = wait_until(15_000, || { let s = extra.state.borrow(); !s.loading && s.title == "Page B" }).await;
+    extra.view().cdp_eval_as("addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; }); 1", true);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+    let shown = wait_until(10_000, || shell.js_showing.borrow().is_some()).await;
+    r.check("closing a tab with unsaved changes asks \"Leave this page?\"", shown && shell.tab_count() == tabs_before + 1, || format!("{shown} {}", shell.tab_count()));
+    let dialog = shell.js_showing.borrow().as_ref().map(|(_, d)| d.clone());
+    if let Some(d) = dialog {
+        d.force_close(); // Escape: Stay
+    }
+    glib::timeout_future(Duration::from_millis(800)).await;
+    r.check("choosing Stay keeps the tab", shell.tab_count() == tabs_before + 1, || shell.tab_count().to_string());
+    let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+    let _ = wait_until(10_000, || shell.js_showing.borrow().is_some()).await;
+    let dialog = shell.js_showing.borrow().as_ref().map(|(_, d)| d.clone());
+    if let Some(d) = dialog {
+        d.emit_by_name::<()>("response", &[&"ok"]);
+    }
+    r.check("choosing Leave closes the tab", wait_until(10_000, || shell.tab_count() == tabs_before).await, || shell.tab_count().to_string());
+    // Closing the window asks when a page has unsaved changes (a beforeunload handler).
+    let extra = shell.open_tab(&format!("http://localhost:{port}/b.html"), true);
+    let _ = wait_until(15_000, || { let s = extra.state.borrow(); !s.loading && s.title == "Page B" }).await;
+    extra.view().cdp_eval_as("addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; }); 1", true);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let held = shell.confirm_window_close();
+    let asked = wait_until(10_000, || shell.window.visible_dialog().is_some()).await;
+    r.check("closing the window with unsaved changes asks first", held && asked && !shell.close_confirmed.get(), || format!("{held} {asked}"));
+    if let Some(d) = shell.window.visible_dialog() {
+        d.force_close(); // Stay
+    }
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("choosing Stay keeps the window", !shell.close_confirmed.get() && shell.tab_count() == tabs_before + 1, || shell.tab_count().to_string());
+    let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+    let _ = wait_until(10_000, || shell.js_showing.borrow().is_some()).await;
+    let dialog = shell.js_showing.borrow().as_ref().map(|(_, d)| d.clone());
+    if let Some(d) = dialog {
+        d.emit_by_name::<()>("response", &[&"ok"]);
+    }
+    let _ = wait_until(10_000, || shell.tab_count() == tabs_before).await;
+    super::prompts::set_ui_test(true);
+
+    // A file picker reaches the shell (held, i.e. cancelled, under test) and cancelling answers the page.
+    view.cdp_eval_as("const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = 'image/*,.txt'; i.oncancel = () => { document.title = 'file-cancelled'; }; document.body.append(i); i.click(); 1", true);
+    r.check("cancelling a file picker tells the page", title_is("file-cancelled").await, || st.borrow().title.clone());
 }
 
 /// Page zoom: the keyboard actions change the page's layout width, the zoom is remembered per site and put back,
@@ -2531,6 +2701,76 @@ async fn run_zoom(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.zoom-reset", None);
     glib::timeout_future(Duration::from_millis(300)).await;
     r.check("reset returns to 100 % and forgets the site's zoom", (shell.view().user_zoom() - 1.0).abs() < 0.001 && super::store().and_then(|s| s.site_zoom("localhost")).is_none() && (width().await - w100).abs() < 2.0, || format!("{}", shell.view().user_zoom()));
+}
+
+/// Text dropped on the page reaches its `drop` handler (the CEF side of the GTK drop target).
+async fn run_drop(shell: &Rc<Shell>, r: &mut Report) {
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    let view = shell.view();
+    view.navigate("data:text/html,<title>wait</title><body style='margin:0'><div style='width:300px;height:300px;background:%23ccc' id=d>drop</div><script>d.ondragenter=e=>{e.preventDefault();document.title='enter'};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();document.title='dropped:'+e.dataTransfer.getData('text/plain')+'|files='+e.dataTransfer.files.length}</script>");
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "wait" }).await;
+    view.test_drop_text("hello drop", 50.0, 50.0);
+    r.check("a drag over the page reaches its dragenter", wait_until(10_000, || st.borrow().title == "enter").await, || st.borrow().title.clone());
+    view.test_drop_release(50.0, 50.0);
+    r.check("text dropped on the page reaches its drop handler", wait_until(10_000, || st.borrow().title == "dropped:hello drop|files=0").await, || st.borrow().title.clone());
+    view.test_drop_file(&format!("{}/bench/pages/a.html", env!("CARGO_MANIFEST_DIR")), 50.0, 50.0);
+    let _ = wait_until(10_000, || st.borrow().title == "enter").await;
+    glib::timeout_future(Duration::from_millis(300)).await;
+    view.test_drop_release(50.0, 50.0);
+    r.check("a file dropped on the page reaches its drop handler", wait_until(10_000, || st.borrow().title == "dropped:|files=1").await, || st.borrow().title.clone());
+}
+
+/// The Browser test page's beforeunload button, clicked for real, makes leaving the page ask (navigating, reloading).
+async fn run_edgebu(shell: &Rc<Shell>, r: &mut Report) {
+    // Opened the way the person does: the main menu's "Browser test page" (a copy written to the cache folder).
+    let tabs_before = shell.tab_count();
+    let _ = WidgetExt::activate_action(&shell.window, "win.test-page", None);
+    let _ = wait_until(5_000, || shell.tab_count() == tabs_before + 1).await;
+    let st = shell.state();
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.title.starts_with("browsah edge") }).await;
+    let view = shell.view();
+    // A real click on the button (through the GTK input controllers), not a scripted one.
+    let pos = view.cdp_eval("(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.startsWith('Arm beforeunload')); b.scrollIntoView({block: 'center'}); const r = b.getBoundingClientRect(); return JSON.stringify([r.x + r.width / 2, r.y + r.height / 2]); })()");
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let pos = view.cdp_result(pos).map(|(_, j)| j).unwrap_or_default();
+    let nums: Vec<f64> = pos.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter_map(|t| t.parse().ok()).collect();
+    if nums.len() < 2 {
+        r.check("the test page's arm button was found", false, || pos.clone());
+        return;
+    }
+    let d = Driver { shell };
+    let (x, y) = (nums[nums.len() - 2], nums[nums.len() - 1]);
+    d.mv(x, y);
+    d.click(x, y);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    view.navigate("http://localhost:1/");
+    let ok = wait_until(8_000, || shell.pending_js_dialog().is_some()).await;
+    r.check("test page: leaving after arming beforeunload asks", ok, || format!("{:?}", shell.pending_js_dialog()));
+    shell.answer_pending_js_dialog(false, "");
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    view.reload();
+    let ok = wait_until(8_000, || shell.pending_js_dialog().is_some()).await;
+    r.check("test page: reloading after arming beforeunload asks", ok, || format!("{:?}", shell.pending_js_dialog()));
+    shell.answer_pending_js_dialog(false, "");
+    // Closing: the tab, then the window (dialogs shown for real here, not held).
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    super::prompts::set_ui_test(false);
+    let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+    let shown = wait_until(8_000, || shell.js_showing.borrow().is_some()).await;
+    r.check("test page: closing the tab after arming beforeunload asks", shown, || format!("tabs {}", shell.tab_count()));
+    let dialog = shell.js_showing.borrow().as_ref().map(|(_, d)| d.clone());
+    if let Some(d) = dialog {
+        d.force_close();
+    }
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let held = shell.confirm_window_close();
+    let asked = wait_until(8_000, || shell.window.visible_dialog().is_some()).await;
+    r.check("test page: closing the window after arming beforeunload asks", held && asked, || format!("{held} {asked}"));
+    if let Some(d) = shell.window.visible_dialog() {
+        d.force_close();
+    }
+    super::prompts::set_ui_test(true);
 }
 
 /// Find in page: the bar opens, typing counts the matches, the buttons move between them, closing clears.

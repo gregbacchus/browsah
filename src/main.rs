@@ -2,6 +2,7 @@
 //! See docs/research/summary.md for the design and docs/roadmap.md for the plan.
 
 mod app;
+mod appicon;
 mod bench;
 mod cef_rt;
 mod cli;
@@ -14,6 +15,7 @@ mod downloads;
 mod gpu;
 mod groups;
 mod history;
+mod manifest;
 mod permissions;
 mod profile;
 mod router;
@@ -108,7 +110,8 @@ fn main() {
     let cfg = &loaded.config;
 
     if let Some(w) = &opts.workspace {
-        if let Err(e) = workspace::Workspace::resolve(&profile, w) {
+        let found = if opts.app { workspace::Workspace::resolve_app(&profile, w) } else { workspace::Workspace::resolve(&profile, w) };
+        if let Err(e) = found {
             eprintln!("browsah: {e}");
             std::process::exit(2);
         }
@@ -127,6 +130,8 @@ fn main() {
         // workspace to show, or just "show a window".
         let hint = opts.workspace.clone().unwrap_or_default();
         match (&opts.url, &opts.workspace) {
+            // The launcher's "New Window" of a web app.
+            (None, Some(id)) if opts.new_window && opts.app => gio::prelude::ActionGroupExt::activate_action(&app, "new-app-window", Some(&id.to_variant())),
             // A window with no workspace (with the link, if one was given).
             _ if opts.new_window => {
                 let url = opts.url.as_deref().map(|u| app::resolve_address(u, &cfg.search_url)).unwrap_or_default();
@@ -188,7 +193,7 @@ fn main() {
 /// sets switched on: the application file, a profile's (`--profile=ID`) or a workspace's (`--profile=ID --workspace=ID`).
 fn config_full(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
-    let (level, title, file) = match (value("--profile"), value("--workspace")) {
+    let (level, title, file) = match (value("--profile"), value("--workspace").or_else(|| value("--app"))) {
         (None, None) => {
             let file = value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
             (fullconfig::Level::Application, "browsah".to_owned(), file)
@@ -203,8 +208,8 @@ fn config_full(args: &[String]) -> i32 {
             };
             match ws {
                 None => (fullconfig::Level::Profile, profile.id.clone(), profile.dir.join("profile.yaml")),
-                Some(w) => match workspace::Workspace::resolve(&profile, &w) {
-                    Ok(w) => (fullconfig::Level::Workspace, w.id.clone(), w.dir.join("workspace.yaml")),
+                Some(w) => match workspace::Workspace::resolve_any(&profile, &w) {
+                    Ok(w) => (if w.is_app() { fullconfig::Level::App } else { fullconfig::Level::Workspace }, w.id.clone(), w.config_file()),
                     Err(e) => {
                         eprintln!("browsah: {e}");
                         return 2;
@@ -238,7 +243,7 @@ fn config_show(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let ws = match value("--workspace").map(|w| workspace::Workspace::resolve(&profile, &w)) {
+    let ws = match value("--workspace").or_else(|| value("--app")).map(|w| workspace::Workspace::resolve_any(&profile, &w)) {
         Some(Err(e)) => {
             eprintln!("browsah: {e}");
             return 2;
@@ -248,13 +253,13 @@ fn config_show(args: &[String]) -> i32 {
     };
     let app_file = value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
     let profile_file = profile.dir.join("profile.yaml");
-    let ws_file = ws.as_ref().map(|w| w.dir.join("workspace.yaml"));
+    let ws_file = ws.as_ref().map(|w| w.config_file());
     match config::load_window(&app_file, &profile_file, ws_file.as_deref()) {
         Ok(l) => {
-            println!("# profile: {id}{}", ws.as_ref().map(|w| format!(", workspace: {}", w.id)).unwrap_or_default());
+            println!("# profile: {id}{}", ws.as_ref().map(|w| format!(", {}: {}", if w.is_app() { "web app" } else { "workspace" }, w.id)).unwrap_or_default());
             println!("# application file: {}\n# profile file: {}", app_file.display(), profile_file.display());
             if let Some(f) = &ws_file {
-                println!("# workspace file: {}", f.display());
+                println!("# {} file: {}", if ws.as_ref().is_some_and(|w| w.is_app()) { "web app" } else { "workspace" }, f.display());
             }
             for layer in ["profile", "workspace"] {
                 let o = l.overrides_of(layer);

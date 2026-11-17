@@ -1,0 +1,307 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>browsah edge-feature test page</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 980px; }
+  h1 { margin: 0 0 4px; } h2 { margin: 24px 0 6px; border-bottom: 1px solid #8884; }
+  p.hint { margin: 0 0 8px; opacity: .7; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  button, a.btn, input[type=file] { font: inherit; padding: 6px 12px; border: 1px solid #8886; border-radius: 6px; background: #8881; color: inherit; text-decoration: none; cursor: pointer; }
+  button:hover, a.btn:hover { background: #8883; }
+  #log { position: sticky; bottom: 0; background: Canvas; border: 1px solid #8886; border-radius: 6px; padding: 8px; height: 150px; overflow: auto; font: 12px monospace; white-space: pre-wrap; margin-top: 16px; }
+  #prot { height: 90px; overflow: auto; border: 1px dashed #8886; padding: 4px; }
+  #drop { border: 2px dashed #8888; padding: 20px; text-align: center; border-radius: 8px; }
+  #drop.over { background: #4a90e233; }
+  iframe { width: 100%; height: 120px; border: 1px solid #8886; }
+  video { max-width: 240px; background: #000; }
+</style>
+<h1>browsah edge-feature test page</h1>
+<p class="hint">Everything the browser does around the page rather than in it. Try each button; results land in the log at the bottom (and some in the browser's own UI). Best opened from a <code>file://</code> URL or served over http://localhost.</p>
+
+<h2>Windows and popups</h2>
+<div class="row">
+  <button onclick="open1('plain', () => window.open('about:blank?plain'))">window.open (user gesture)</button>
+  <button onclick="open1('sized', () => window.open('about:blank', '_blank', 'width=400,height=300'))">window.open sized popup (400×300)</button>
+  <button onclick="open1('named', () => window.open('about:blank', 'edge-named'))">window.open named target</button>
+  <button onclick="open1('noopener', () => window.open('about:blank', '_blank', 'noopener'))">noopener</button>
+  <button onclick="setTimeout(() => open1('delayed', () => window.open('about:blank')), 1500)">window.open after 1.5 s (gesture expired?)</button>
+  <button onclick="open1('no gesture', () => window.open('about:blank'))">(same, immediately)</button>
+</div>
+<div class="row">
+  <button onclick="open1('auto', () => window.open('about:blank'));open1('auto2', () => window.open('about:blank'));">Open two at once (popup flood)</button>
+  <button onclick="setTimeout(() => open1('no-gesture popup', () => window.open('about:blank')), 0); /* gesture still valid */ ">Open from setTimeout 0</button>
+  <button id="nogest">Open with no gesture (timer after 3 s, no click)</button>
+  <a class="btn" href="about:blank" target="_blank">link target=_blank</a>
+  <a class="btn" href="about:blank" target="_blank" rel="noopener noreferrer">target=_blank noopener</a>
+  <a class="btn" href="https://example.com/" target="_blank">target=_blank to example.com (routing?)</a>
+  <a class="btn" href="https://example.com/">same-tab link to example.com</a>
+  <a class="btn" href="mailto:test@example.com">mailto:</a>
+  <a class="btn" href="tel:+123456">tel:</a>
+</div>
+<div class="row">
+  <button onclick="const w=window.open('about:blank');if(w){w.document.write('<title>child</title><p>child; closes itself in 2 s</p>');setTimeout(()=>w.close(),2000);log('child will close')}">Popup that closes itself</button>
+  <button onclick="location.href = location.href.split('#')[0] + '#' + Date.now()">Change hash</button>
+  <button onclick="history.pushState({}, '', '?pushed=' + Date.now()); log('pushState: ' + location.href)">pushState</button>
+  <button onclick="location.reload()">Reload</button>
+  <button onclick="window.close()">window.close() (not opened by script)</button>
+</div>
+
+<h2>JavaScript dialogs</h2>
+<div class="row">
+  <button onclick="alert('An alert()'); log('alert returned')">alert</button>
+  <button onclick="log('confirm → ' + confirm('Do you confirm?'))">confirm</button>
+  <button onclick="log('prompt → ' + JSON.stringify(prompt('Your name?', 'default')))">prompt</button>
+  <button onclick="window.addEventListener('beforeunload', bu); log('beforeunload armed: close this tab, reload, or navigate (closing the whole window does not ask yet)'); window.__bu = true">Arm beforeunload (unsaved changes)</button>
+  <button onclick="window.removeEventListener('beforeunload', bu); log('beforeunload disarmed')">Disarm</button>
+</div>
+
+<h2>Permissions</h2>
+<p class="hint">Each asks Chromium for a permission; the answer depends on <code>permissions:</code> in the config (ask / allow / deny).</p>
+<div class="row">
+  <button onclick="perm('camera', () => navigator.mediaDevices.getUserMedia({video: true}))">Camera</button>
+  <button onclick="perm('microphone', () => navigator.mediaDevices.getUserMedia({audio: true}))">Microphone</button>
+  <button onclick="perm('camera+mic', () => navigator.mediaDevices.getUserMedia({video: true, audio: true}))">Camera + mic</button>
+  <button onclick="perm('location', () => new Promise((ok, no) => navigator.geolocation.getCurrentPosition(p => ok({lat: p.coords.latitude, lon: p.coords.longitude}), e => no(new Error(e.message)))))">Location</button>
+  <button onclick="perm('notifications', () => Notification.requestPermission())">Notifications</button>
+  <button onclick="perm('show notification', async () => { const r = await Notification.requestPermission(); if (r === 'granted') new Notification('browsah', {body: 'Test notification'}); return r })">Show notification</button>
+  <button onclick="perm('clipboard read', () => navigator.clipboard.readText())">Clipboard read</button>
+  <button onclick="perm('clipboard write', () => navigator.clipboard.writeText('browsah test ' + Date.now()).then(() => 'written'))">Clipboard write</button>
+  <button onclick="perm('screen share', () => navigator.mediaDevices.getDisplayMedia({video: true}))">Screen share</button>
+  <button onclick="perm('midi', () => navigator.requestMIDIAccess().then(() => 'ok'))">MIDI</button>
+  <button onclick="perm('persistent storage', () => navigator.storage.persist())">Persistent storage</button>
+  <button onclick="perm('idle detection', () => IdleDetector.requestPermission())">Idle detection</button>
+  <button onclick="perm('sensors', () => new Promise((ok, no) => { try { const s = new Accelerometer(); s.onreading = () => { s.stop(); ok('reading') }; s.onerror = e => no(e.error); s.start() } catch (e) { no(e) } }))">Motion sensors</button>
+  <button onclick="perm('fullscreen', () => document.documentElement.requestFullscreen().then(() => { setTimeout(() => document.exitFullscreen(), 2500); return 'fullscreen 2.5 s' }))">Fullscreen</button>
+  <button onclick="perm('pointer lock', () => { document.body.requestPointerLock(); setTimeout(() => document.exitPointerLock(), 2500); return 'requested' })">Pointer lock</button>
+  <button onclick="perm('protocol handler', () => { navigator.registerProtocolHandler('web+edge', location.origin + '/%s'); return 'requested' })">Protocol handler</button>
+</div>
+<div class="row"><button onclick="queryAll()">Query current permission states</button></div>
+
+<h2>Downloads</h2>
+<div class="row">
+  <button onclick="dl('hello.txt', 'text/plain', 'Hello from browsah\n')">Small text (a[download], blob)</button>
+  <button onclick="dlBig(50)">50 MB blob</button>
+  <button onclick="dlBig(500)">500 MB blob (cancel it midway)</button>
+  <button onclick="dlSlow()">Slow download (data URL, then cancel)</button>
+  <button onclick="dl('same-name.txt', 'text/plain', 'again ' + Date.now())">Same file name repeatedly (name collisions)</button>
+  <button onclick="dl('weird name: \'é\' ?*.txt', 'text/plain', 'odd name')">Odd file name</button>
+  <button onclick="dl('program.sh', 'application/x-sh', '#!/bin/sh\necho hi\n')">.sh file (dangerous type)</button>
+  <button onclick="dl('page.html', 'text/html', '<h1>downloaded html</h1>')">.html (download, not display)</button>
+  <a class="btn" href="data:application/octet-stream;base64,SGVsbG8=" download="data-url.bin">Data URL link download</a>
+  <a class="btn" href="data:text/plain,navigates%20or%20shows%20inline">Data URL link (shown inline?)</a>
+  <a class="btn" href="https://speed.hetzner.de/100MB.bin">Real remote 100 MB file</a>
+  <a class="btn" href="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf">PDF link (viewer or download?)</a>
+</div>
+<div class="row">
+  <button onclick="location.href = URL.createObjectURL(new Blob(['x'.repeat(100)], {type: 'application/octet-stream'}))">Navigate to octet-stream blob</button>
+  <button onclick="document.getElementById('hidden-frame').src = URL.createObjectURL(new Blob(['frame download'], {type: 'application/octet-stream'}))">Download from hidden iframe</button>
+</div>
+<iframe id="hidden-frame" style="display:none"></iframe>
+
+<h2>File pickers and drag and drop</h2>
+<div class="row">
+  <input type="file" id="f1" onchange="log('picked: ' + [...this.files].map(f => f.name + ' (' + f.size + ' B)').join(', '))">
+  <input type="file" multiple onchange="log('picked ' + this.files.length + ' files')"> multiple
+  <input type="file" accept="image/*" onchange="log('image: ' + this.files[0]?.name)"> images only
+  <input type="file" webkitdirectory onchange="log('dir with ' + this.files.length + ' files')"> directory
+  <input type="file" accept="image/*" capture="user" onchange="log('capture: ' + this.files[0]?.name)"> capture
+</div>
+<div class="row">
+  <button onclick="fsa('showOpenFilePicker')">showOpenFilePicker</button>
+  <button onclick="fsa('showSaveFilePicker')">showSaveFilePicker</button>
+  <button onclick="fsa('showDirectoryPicker')">showDirectoryPicker</button>
+</div>
+<div id="drop">Drop files, text or links here</div>
+<div class="row"><span draggable="true" ondragstart="event.dataTransfer.setData('text/plain', 'dragged text')" style="padding:6px;border:1px solid #8886;border-radius:6px">Drag me out (text)</span></div>
+
+<h2>Context menu, selection, clipboard, keyboard</h2>
+<div class="row">
+  <span>Right-click: </span>
+  <a href="https://example.com/">a link</a>
+  <img alt="img" width="48" height="48" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48'%3E%3Crect width='48' height='48' fill='%234a90e2'/%3E%3C/svg%3E">
+  <span style="user-select:all;border:1px solid #8886;padding:2px 6px">select-all text</span>
+  <input value="an input with text" spellcheck="true"> <textarea spellcheck="true">Mispeled wrds hear</textarea>
+  <video controls width="200" src=""></video>
+</div>
+<div class="row">
+  <button onclick="document.oncontextmenu = e => { e.preventDefault(); log('contextmenu intercepted'); }">Intercept contextmenu</button>
+  <button onclick="document.oncontextmenu = null; log('contextmenu restored')">Restore</button>
+  <input placeholder="Type here: Ctrl+Z/Y/A/C/X/V, IME, emoji 😀" size="40">
+  <input type="password" placeholder="password (no suggestions)">
+  <input type="text" name="email" autocomplete="email" placeholder="autofill email">
+  <select><option>Select popup A</option><option>B</option><option>C</option></select>
+  <input type="date"> <input type="color"> <input list="dl"><datalist id="dl"><option>One<option>Two</datalist>
+</div>
+<div class="row"><div id="prot">Scroll inside here; wheel should not scroll the page until the end.<br><br><br><br><br><br><br><br><br><br><br>end</div></div>
+
+<h2>Media, audio, picture-in-picture</h2>
+<div class="row">
+  <button onclick="beep()">Play a beep (autoplay with gesture)</button>
+  <button onclick="setTimeout(beep, 2000); log('beep in 2 s, no fresh gesture')">Beep in 2 s</button>
+  <button onclick="speak()">Speech synthesis</button>
+  <button onclick="pip()">Picture-in-picture (canvas video)</button>
+  <button onclick="wake()">Screen wake lock</button>
+  <button onclick="navigator.vibrate?.(200); log('vibrate: ' + !!navigator.vibrate)">Vibrate</button>
+  <button onclick="share()">Web Share</button>
+  <button onclick="log('online: ' + navigator.onLine)">Online?</button>
+  <button onclick="matchMedia && log('dark: ' + matchMedia('(prefers-color-scheme: dark)').matches + ', dpr: ' + devicePixelRatio)">Theme and scale</button>
+</div>
+
+<h2>Authentication, certificates, errors</h2>
+<div class="row">
+  <a class="btn" href="https://httpbin.org/basic-auth/user/pass">HTTP basic auth (user/pass)</a>
+  <a class="btn" href="https://expired.badssl.com/">Expired certificate</a>
+  <a class="btn" href="https://self-signed.badssl.com/">Self-signed certificate</a>
+  <a class="btn" href="https://wrong.host.badssl.com/">Wrong host certificate</a>
+  <a class="btn" href="http://neverssl.com/">Plain http</a>
+  <a class="btn" href="https://this-host-does-not-exist.invalid/">DNS failure</a>
+  <a class="btn" href="http://127.0.0.1:1/">Connection refused</a>
+  <a class="btn" href="https://httpbin.org/status/404">404</a>
+  <a class="btn" href="https://httpbin.org/status/500">500</a>
+  <a class="btn" href="https://httpbin.org/delay/10">10 s slow load (stop button)</a>
+  <a class="btn" href="https://httpbin.org/redirect/5">Redirect chain</a>
+  <a class="btn" href="view-source:https://example.com/">view-source:</a>
+  <a class="btn" href="chrome://version/">chrome://version</a>
+  <a class="btn" href="chrome://gpu/">chrome://gpu</a>
+  <a class="btn" href="file:///">file:/// listing</a>
+  <a class="btn" href="javascript:log('javascript: URL ran')">javascript: URL</a>
+</div>
+<div class="row">
+  <button onclick="while (true) {}">Hang this tab (infinite loop)</button>
+  <button onclick="crash()">Allocate until the tab crashes</button>
+  <button onclick="(function r(n){return r(n+1)+1})(0)">Stack overflow (caught)</button>
+  <button onclick="throw new Error('uncaught error for the console')">Uncaught error</button>
+  <button onclick="console.error('console.error'); console.warn('console.warn'); log('see DevTools console')">Console messages</button>
+  <button onclick="debugger">debugger statement (DevTools open?)</button>
+</div>
+
+<h2>Storage, cookies, service worker</h2>
+<div class="row">
+  <button onclick="document.cookie = 'edge=1; max-age=3600; path=/'; log('cookie: ' + document.cookie)">Set cookie</button>
+  <button onclick="document.cookie = 'edge-sess=1; path=/'; log('session cookie set: ' + document.cookie)">Set session cookie</button>
+  <button onclick="document.cookie = 'edge=; max-age=0; path=/'; log('cookie after clear: ' + document.cookie)">Clear cookie</button>
+  <button onclick="localStorage.edge = Date.now(); log('localStorage: ' + localStorage.edge)">localStorage</button>
+  <button onclick="idb()">IndexedDB</button>
+  <button onclick="navigator.storage.estimate().then(e => log('storage: ' + JSON.stringify(e)))">Storage quota</button>
+  <button onclick="document.requestStorageAccess?.().then(() => log('storage access ok'), e => log('storage access: ' + e))">requestStorageAccess</button>
+</div>
+<h3 style="margin:8px 0 4px">Third-party frame (cookies, permissions policy)</h3>
+<iframe src="https://example.com/" allow="camera; microphone; geolocation; fullscreen"></iframe>
+
+<h2>Printing and misc windows</h2>
+<div class="row">
+  <button onclick="print()">print()</button>
+  <button onclick="document.title = 'Title changed ' + Date.now(); log('title: ' + document.title)">Change title</button>
+  <button onclick="setFav()">Change favicon</button>
+  <button onclick="setBadge()">Tab badge (setAppBadge)</button>
+  <button onclick="navigator.clipboard.write([new ClipboardItem({'text/html': new Blob(['<b>bold</b>'], {type: 'text/html'}), 'text/plain': new Blob(['bold'], {type: 'text/plain'})})]).then(() => log('rich clipboard written'), e => log('' + e))">Rich clipboard write</button>
+  <button onclick="location.href = 'data:text/html,<title>data page</title><h1>data: top-level</h1>'">Navigate to data: URL</button>
+  <button onclick="window.name = 'x'; log('window.name ' + window.name)">window.name</button>
+  <button onclick="history.back()">history.back</button>
+  <button onclick="history.go(-100)">history.go(-100)</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+const $log = document.getElementById('log');
+function log(m) {
+  const t = new Date().toLocaleTimeString();
+  $log.textContent += t + '  ' + m + '\n';
+  $log.scrollTop = $log.scrollHeight;
+}
+addEventListener('error', e => log('window error: ' + e.message));
+addEventListener('unhandledrejection', e => log('unhandled rejection: ' + e.reason));
+addEventListener('focus', () => log('window focus'));
+addEventListener('blur', () => log('window blur'));
+document.addEventListener('visibilitychange', () => log('visibility: ' + document.visibilityState));
+document.addEventListener('fullscreenchange', () => log('fullscreen: ' + !!document.fullscreenElement));
+document.addEventListener('pointerlockchange', () => log('pointer lock: ' + !!document.pointerLockElement));
+log('page loaded; ' + location.href);
+
+function bu(e) {
+  e.preventDefault(); e.returnValue = '';
+  log('beforeunload fired: the browser should now ask "Leave this page?" (if this stays visible, you stayed or it did not ask)');
+  try { localStorage.edgeBeforeUnload = new Date().toLocaleTimeString(); } catch (_) {}
+}
+try { if (localStorage.edgeBeforeUnload) setTimeout(() => log('last beforeunload fired at ' + localStorage.edgeBeforeUnload + ' (before this page was loaded)'), 0); } catch (_) {}
+function open1(what, f) {
+  let w; try { w = f(); } catch (e) { log(what + ': threw ' + e); return; }
+  log(what + ': ' + (w ? 'window object returned' + (w.closed ? ' (but closed)' : '') : 'null (blocked or routed)'));
+}
+document.getElementById('nogest').onclick = () => {
+  log('timer started; do not touch the page for 3 s');
+  setTimeout(() => open1('no-gesture popup', () => window.open('about:blank')), 3000);
+};
+
+async function perm(name, f) {
+  log(name + ': asking…');
+  try {
+    const r = await f();
+    if (r && r.getTracks) { log(name + ': granted (' + r.getTracks().map(t => t.kind + ' ' + t.label).join(', ') + ')'); r.getTracks().forEach(t => t.stop()); }
+    else log(name + ': ' + JSON.stringify(r));
+  } catch (e) { log(name + ': ' + (e.name || '') + ' ' + (e.message || e)); }
+}
+async function queryAll() {
+  for (const n of ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'clipboard-write', 'midi', 'persistent-storage', 'screen-wake-lock', 'idle-detection'])
+    try { log('permission ' + n + ': ' + (await navigator.permissions.query({name: n})).state); } catch (e) { log('permission ' + n + ': n/a (' + e.message + ')'); }
+}
+
+function dl(name, type, text) {
+  const url = URL.createObjectURL(new Blob([text], {type}));
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  log('download requested: ' + name);
+}
+function dlBig(mb) {
+  const chunk = new Uint8Array(1024 * 1024); crypto.getRandomValues(chunk.subarray(0, 65536));
+  const parts = Array.from({length: mb}, () => chunk);
+  const url = URL.createObjectURL(new Blob(parts, {type: 'application/octet-stream'}));
+  const a = document.createElement('a'); a.href = url; a.download = mb + 'MB.bin'; document.body.append(a); a.click(); a.remove();
+  log(mb + ' MB download requested');
+}
+function dlSlow() {
+  // A large data URL is the nearest thing to a slow response without a server.
+  const big = 'A'.repeat(20 * 1024 * 1024);
+  const a = document.createElement('a'); a.href = 'data:application/octet-stream;base64,' + btoa(big); a.download = 'big-data-url.bin'; document.body.append(a); a.click(); a.remove();
+  log('large data URL download requested');
+}
+
+async function fsa(fn) {
+  if (!window[fn]) return log(fn + ': not available');
+  try { const r = await window[fn](); log(fn + ': ' + (r.name || r.map?.(x => x.name))); } catch (e) { log(fn + ': ' + e.name + ' ' + e.message); }
+}
+const drop = document.getElementById('drop');
+for (const t of ['dragenter', 'dragover']) drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); });
+for (const t of ['dragleave', 'drop']) drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); });
+drop.addEventListener('drop', e => {
+  const dt = e.dataTransfer;
+  log('drop: files=' + [...dt.files].map(f => f.name).join(',') + ' types=' + [...dt.types].join(',') + ' text=' + JSON.stringify(dt.getData('text/plain').slice(0, 80)));
+});
+// Dropping elsewhere on the page should not navigate away to the file.
+
+let ac;
+function beep() {
+  ac ??= new AudioContext(); const o = ac.createOscillator(); o.connect(ac.destination);
+  o.frequency.value = 440; o.start(); setTimeout(() => o.stop(), 300); log('beep; audio context ' + ac.state);
+}
+function speak() { try { speechSynthesis.speak(new SpeechSynthesisUtterance('browsah speech test')); log('speech requested, voices: ' + speechSynthesis.getVoices().length); } catch (e) { log('speech: ' + e); } }
+async function pip() {
+  const c = document.createElement('canvas'); c.width = 320; c.height = 180; const g = c.getContext('2d');
+  setInterval(() => { g.fillStyle = '#' + (Date.now() % 0xffffff).toString(16).padStart(6, '0'); g.fillRect(0, 0, 320, 180); }, 100);
+  const v = document.createElement('video'); v.muted = true; v.srcObject = c.captureStream(10); await v.play();
+  try { await v.requestPictureInPicture(); log('pip: open'); } catch (e) { log('pip: ' + e.name + ' ' + e.message); }
+}
+async function wake() { try { const l = await navigator.wakeLock.request('screen'); log('wake lock: ' + l.type); setTimeout(() => l.release(), 5000); } catch (e) { log('wake lock: ' + e.name); } }
+async function share() { try { await navigator.share({title: 'browsah', url: location.href}); log('shared'); } catch (e) { log('share: ' + e.name + ' ' + e.message); } }
+function crash() { const a = []; log('allocating…'); try { for (;;) a.push(new Array(1e7).fill(1)); } catch (e) { log('stopped: ' + e); } }
+function idb() { const r = indexedDB.open('edge', 1); r.onupgradeneeded = () => r.result.createObjectStore('s'); r.onsuccess = () => { r.result.transaction('s', 'readwrite').objectStore('s').put(Date.now(), 'k'); log('indexedDB written'); }; r.onerror = () => log('indexedDB error'); }
+function setFav() {
+  const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d');
+  g.fillStyle = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'); g.fillRect(0, 0, 32, 32);
+  let l = document.querySelector('link[rel=icon]') || Object.assign(document.createElement('link'), {rel: 'icon'}); l.href = c.toDataURL(); document.head.append(l); log('favicon changed');
+}
+function setBadge() { navigator.setAppBadge ? navigator.setAppBadge(3).then(() => log('badge set'), e => log('badge: ' + e)) : log('setAppBadge: not available'); }
+</script>

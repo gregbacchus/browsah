@@ -12,6 +12,7 @@ mod fullconfig;
 mod print;
 mod install;
 mod zoom;
+mod filedialog;
 mod jsdialog;
 mod suggest;
 mod latency;
@@ -114,6 +115,8 @@ thread_local! {
 thread_local! {
     /// Shows a workspace's window (opening it if needed); an empty URL adds no tab. Set by `run`.
     static OPEN_WORKSPACE: RefCell<Option<Rc<dyn Fn(&str, &str) -> Result<Rc<Shell>, String>>>> = const { RefCell::new(None) };
+    /// Deliver an address to a web app (id, address), as its `multiple_windows` and `multiple_tabs` say.
+    static OPEN_APP: RefCell<Option<Rc<dyn Fn(&str, &str) -> Result<Rc<Shell>, String>>>> = const { RefCell::new(None) };
     /// The profile this process runs (for listing its workspaces).
     static PROFILE: RefCell<Option<crate::profile::Profile>> = const { RefCell::new(None) };
 }
@@ -188,6 +191,10 @@ pub struct Shell {
     pub menu_button: gtk::MenuButton,
     /// Dialogs pages opened with script: waiting, the one showing, and (in tests) the one held.
     js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
+    /// The person has agreed to close the window (or there was nothing to ask): the close request goes through.
+    close_confirmed: std::cell::Cell<bool>,
+    /// Tabs being closed that may still say "Leave site?".
+    closing: RefCell<Vec<adw::TabPage>>,
     js_showing: RefCell<Option<(u64, adw::AlertDialog)>>,
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
@@ -398,7 +405,7 @@ impl Shell {
         let send = gio::Menu::new();
         let here = self.workspace.as_ref().map(|w| w.id.as_str());
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
-            for w in crate::workspace::Workspace::list(&profile).into_iter().filter(|w| !w.is_app()) {
+            for w in crate::workspace::Workspace::list(&profile) {
                 if Some(w.id.as_str()) == here {
                     continue;
                 }
@@ -778,7 +785,7 @@ impl Shell {
     fn storage_dir(&self) -> Option<std::path::PathBuf> {
         match &self.workspace {
             Some(w) if self.settings.borrow().storage == config::Storage::Isolated => {
-                PROFILE.with(|p| p.borrow().as_ref().map(|p| p.cef_dir().join("workspaces").join(&w.id)))
+                PROFILE.with(|p| p.borrow().as_ref().map(|p| p.cef_dir().join(if w.is_app() { "apps" } else { "workspaces" }).join(&w.id)))
             }
             _ => None,
         }
@@ -969,6 +976,9 @@ impl Shell {
     fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool, uid: u64) -> Rc<Tab> {
         view.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
         view.set_popup_policy(self.popup_policy);
+        if let Some(scope) = self.workspace.as_ref().filter(|w| w.is_app()).and_then(|w| w.config.tabs.pinned.first()).map(|p| p.scope.clone()) {
+            view.set_scope(scope); // every tab of a web app stays in the app's scope
+        }
         self.apply_view_settings(&view);
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
@@ -1104,6 +1114,36 @@ impl Shell {
         }
     }
 
+    /// Start closing a live tab the polite way, so a page with unsaved changes can ask "Leave site?".
+    /// Returns false when the tab can go at once (no browser yet, or already being closed).
+    fn begin_close(self: &Rc<Self>, page: &adw::TabPage) -> bool {
+        if self.closing.borrow().contains(page) {
+            return true;
+        }
+        let tab = self.tabs.borrow().iter().find(|t| &t.page == page).cloned();
+        let Some(tab) = tab else { return false };
+        let view = tab.view();
+        if !view.is_live() || prompts::ui_test() {
+            return false;
+        }
+        self.closing.borrow_mut().push(page.clone());
+        view.ask_close();
+        // A page that never answers (hung renderer) must not make its tab unclosable: if no question is showing
+        // after a moment, close it for good.
+        let weak = Rc::downgrade(self);
+        let page = page.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+            let Some(s) = weak.upgrade() else { return };
+            let asking = s.js_showing.borrow().is_some() || s.js_pending.borrow().is_some() || !s.js_queue.borrow().is_empty();
+            if !asking && s.closing.borrow().contains(&page) {
+                s.closing.borrow_mut().retain(|p| p != &page);
+                s.close_tab(&page);
+                s.tab_view.close_page_finish(&page, true);
+            }
+        });
+        true
+    }
+
     /// Close the tab whose page this is. Closing the last tab closes the window.
     fn close_tab(&self, page: &adw::TabPage) {
         let tab = {
@@ -1202,6 +1242,24 @@ impl Shell {
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
             ViewEvent::JsDialogDismissed(view) => self.dismiss_js_dialog(view),
+            ViewEvent::FileDialog(q) => self.show_file_dialog(q),
+            ViewEvent::Closed => {
+                let page = tab.page.clone();
+                let was = self.closing.borrow().iter().any(|p| p == &page);
+                if was {
+                    self.closing.borrow_mut().retain(|p| p != &page);
+                    self.close_tab(&page);
+                    self.tab_view.close_page_finish(&page, true);
+                }
+            }
+            ViewEvent::CloseCancelled => {
+                let page = tab.page.clone();
+                let was = self.closing.borrow().iter().any(|p| p == &page);
+                if was {
+                    self.closing.borrow_mut().retain(|p| p != &page);
+                    self.tab_view.close_page_finish(&page, false);
+                }
+            }
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
                 // The sign-in handed its result to the application: an ephemeral window with only
                 // this tab has nothing more to show.
@@ -1222,8 +1280,21 @@ impl Shell {
                     });
                 }
             }
+            ViewEvent::OpenTab { url, select } => {
+                if self.popup_policy == crate::workspace::PopupPolicy::Modal {
+                    self.open_modal(&url);
+                } else if self.allow_new_tabs {
+                    let opener_group = tab.group.get();
+                    let new = self.open_tab(&url, select);
+                    if opener_group != 0 {
+                        self.assign_group(&new, opener_group);
+                    }
+                } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
+                    factory(&url);
+                }
+            }
             ViewEvent::OutOfScope(url) => {
-                if self.allow_new_tabs {
+                if self.allow_new_tabs && !self.workspace.as_ref().is_some_and(|w| w.is_app()) {
                     self.open_tab(&url, true);
                 } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
                     factory(&url);
@@ -1294,12 +1365,17 @@ fn icon_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
 }
 
 fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, workspace: Option<crate::workspace::Workspace>, remembered_tabs: Vec<TabRecord>) -> Rc<Shell> {
+    // A web app's window opens the size (and maximized or not) it was last left at.
+    let saved = workspace.as_ref().filter(|w| w.is_app()).and_then(|w| store().and_then(|s| s.app_window(&w.id)));
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("browsah")
-        .default_width(cfg.window.width)
-        .default_height(cfg.window.height)
+        .default_width(saved.map_or(cfg.window.width, |s| s.width))
+        .default_height(saved.map_or(cfg.window.height, |s| s.height))
         .build();
+    if saved.is_some_and(|s| s.maximized) {
+        window.maximize();
+    }
 
     // A workspace window's navigation controls and tab rules; ephemeral windows have everything.
     let ws_config = workspace.as_ref().map(|w| w.config.clone()).unwrap_or_default();
@@ -1422,6 +1498,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         downloads: downloads_ui.clone(),
         menu_button: menu_button.clone(),
         js_queue: RefCell::new(std::collections::VecDeque::new()),
+        closing: RefCell::new(Vec::new()),
+        close_confirmed: std::cell::Cell::new(false),
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
         find: find_bar,
@@ -1742,6 +1820,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    add_action(&window, "test-page", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.open_test_page();
+            }
+        }
+    });
     add_action(&window, "reopen-tab", {
         let weak = weak.clone();
         move || {
@@ -1817,6 +1903,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 return glib::Propagation::Stop;
             }
             if let Some(s) = weak.upgrade() {
+                if s.begin_close(page) {
+                    return glib::Propagation::Stop; // the page may ask first; the tab goes when it agrees
+                }
                 s.close_tab(page);
             }
             tv.close_page_finish(page, true);
@@ -1958,6 +2047,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let shell = Rc::downgrade(&shell);
         move |_| {
             if let Some(s) = shell.upgrade() {
+                if !s.close_confirmed.get() && s.confirm_window_close() {
+                    return glib::Propagation::Stop; // asking; the window closes again when the person agrees
+                }
                 s.record_window_closed();
                 s.end_session_cookies();
                 s.save_on_close(); // before the browsers close
@@ -2004,11 +2096,24 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
     }
+    if let Some(w) = shell.workspace.as_ref().filter(|w| w.is_app()) {
+        remember_app_window(&window, &w.id);
+    }
     shell.purge_stale_session_cookies();
     shell.rebuild_bookmarks();
 
-    // A workspace's pinned tabs come first.
-    let pinned = ws_config.tabs.pinned.clone();
+    // A workspace's pinned tabs come first. A web app has one tab, its start page, which opens on the address it was given
+    // instead when that is inside its scope (a link routed to the app, or `browsah --app=ID URL`).
+    let mut pinned = ws_config.tabs.pinned.clone();
+    let mut start_url = start_url;
+    if shell.workspace.as_ref().is_some_and(|w| w.is_app()) {
+        if let Some(first) = pinned.first_mut() {
+            if !start_url.is_empty() && crate::workspace::in_scope(&first.scope, start_url) {
+                first.url = start_url.to_owned();
+            }
+        }
+        start_url = "";
+    }
     shell.add_pinned(&pinned);
     if remembered_tabs.is_empty() {
         if !start_url.is_empty() {
@@ -2041,6 +2146,12 @@ pub fn windows() -> Vec<Rc<Shell>> {
     WINDOWS.with(|w| w.borrow().clone())
 }
 
+/// The open windows that are not web apps' (a link from another application, or a plain launch, must not end up in
+/// an app's window).
+fn browser_windows() -> Vec<Rc<Shell>> {
+    windows().into_iter().filter(|s| !s.workspace.as_ref().is_some_and(|w| w.is_app())).collect()
+}
+
 /// Run the browser in this process, which owns its profile's application id. `app` is already
 /// registered (see `main`). Returns the process exit code.
 pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
@@ -2056,6 +2167,9 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
         fullconfig::set_app_file(app_file.clone());
         sweep::start_background_sweeping(profile.clone(), app_file);
+        // Launcher entries of web apps follow their settings (for example `multiple_windows` and "New Window").
+        let for_launchers = profile.clone();
+        std::thread::spawn(move || crate::webapp::refresh_launchers(&for_launchers));
     }
     // Old history is deleted when the browser starts.
     if let (Some(store), days) = (store(), cfg0.history.retention_days) {
@@ -2066,7 +2180,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     // Restored tabs that are still asleep are shown blurred.
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
-        css.load_from_string(".dormant { filter: blur(8px); }");
+        css.load_from_string(".dormant { filter: blur(8px); }\n.browsah-view:drop(active), .browsah-view:drop(active) * { outline: none; box-shadow: none; background-image: none; }");
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
@@ -2083,7 +2197,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
             let profile_file = profile.dir.join("profile.yaml");
             // This window's configuration: application, profile, then the workspace's own file.
-            let ws_file = workspace.as_ref().map(|w| w.dir.join("workspace.yaml"));
+            let ws_file = workspace.as_ref().map(|w| w.config_file());
             let window_cfg = match ws_file.as_deref().map(|wf| config::load_window(&app_file, &profile_file, Some(wf))) {
                 Some(Ok(l)) => {
                     for w in &l.warnings {
@@ -2110,7 +2224,8 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 w.add(wf);
             }
             WINDOWS.with(|w| w.borrow_mut().push(s.clone()));
-            if let Some(w) = &workspace {
+            // (A web app's window is not part of what a plain start brings back.)
+            if let Some(w) = workspace.as_ref().filter(|w| !w.is_app()) {
                 remember_workspace(&profile, &w.id, true);
             }
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
@@ -2158,10 +2273,46 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         }
     };
 
+    // Show a web app, or deliver an address to it: its `multiple_tabs` and `multiple_windows` decide whether that is a new
+    // tab of its most recent window, a new window, or the one window loading the address (a navigation, so Back works).
+    // `new_window_wanted` is the launcher's "New Window": a new window if the app allows more than one, else its window.
+    let open_app = {
+        let (profile, new_window) = (profile.clone(), new_window.clone());
+        move |app: &adw::Application, id: &str, url: Option<&str>, new_window_wanted: bool| -> Result<Rc<Shell>, String> {
+            let def = crate::workspace::Workspace::resolve_app(&profile, id)?;
+            let settings = def.config.app.clone().expect("a web app has its settings");
+            let url = url.filter(|u| !u.is_empty());
+            let open: Vec<Rc<Shell>> = windows().into_iter().filter(|s| s.workspace.as_ref().is_some_and(|w| w.id == id)).collect();
+            let Some(newest) = open.iter().find(|s| s.window.is_active()).or(open.last()).cloned() else {
+                return Ok(new_window(app, Some(def), url.unwrap_or(""), Vec::new()));
+            };
+            if new_window_wanted && settings.multiple_windows {
+                return Ok(new_window(app, Some(def), url.unwrap_or(""), Vec::new()));
+            }
+            match url {
+                None => {}
+                Some(u) if settings.multiple_tabs => {
+                    newest.open_tab(u, true);
+                }
+                Some(u) if settings.multiple_windows => return Ok(new_window(app, Some(def), u, Vec::new())),
+                Some(u) => {
+                    if let Some(t) = newest.current() {
+                        t.view().navigate(u);
+                    }
+                }
+            }
+            newest.window.present();
+            Ok(newest)
+        }
+    };
+
     // Show a workspace: raise its window if it is open, otherwise open one. `url` opens as a tab.
     let open_workspace = {
-        let (cfg, profile, new_window, opts) = (cfg.clone(), profile.clone(), new_window.clone(), opts.clone());
+        let (cfg, profile, new_window, opts, open_app) = (cfg.clone(), profile.clone(), new_window.clone(), opts.clone(), open_app.clone());
         move |app: &adw::Application, id: &str, url: Option<&str>| -> Result<Rc<Shell>, String> {
+            if crate::workspace::Workspace::resolve_app(&profile, id).is_ok() {
+                return open_app(app, id, url, false);
+            }
             if let Some(s) = windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id)) {
                 if let Some(u) = url.filter(|u| !u.is_empty()) {
                     s.open_tab(u, true);
@@ -2169,7 +2320,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 s.window.present();
                 return Ok(s);
             }
-            let w = crate::workspace::Workspace::resolve(&profile, id)?;
+            let w = crate::workspace::Workspace::resolve_any(&profile, id)?;
             // A workspace opens as it was; with nothing remembered it opens on a link or its home page.
             // (Pinned tabs come from the configuration each time, not from what was remembered.)
             let remembered: Vec<TabRecord> = store().map(|s| s.load_tabs(&w.id)).unwrap_or_default().into_iter().filter(|r| !r.pinned).collect();
@@ -2178,7 +2329,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 None if remembered.is_empty() && w.config.tabs.pinned.is_empty() => {
                     // The workspace's own home page, if it sets one.
                     let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
-                    config::load_window(&app_file, &profile.dir.join("profile.yaml"), Some(&w.dir.join("workspace.yaml"))).map(|l| l.config.home_page).unwrap_or_else(|_| cfg.borrow().home_page.clone())
+                    config::load_window(&app_file, &profile.dir.join("profile.yaml"), Some(&w.config_file())).map(|l| l.config.home_page).unwrap_or_else(|_| cfg.borrow().home_page.clone())
                 }
                 None => String::new(),
             };
@@ -2201,6 +2352,10 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     OPEN_WORKSPACE.with(|f| {
         let (open_workspace, app) = (open_workspace.clone(), app.clone());
         *f.borrow_mut() = Some(Rc::new(move |id: &str, url: &str| open_workspace(&app, id, Some(url))));
+    });
+    OPEN_APP.with(|f| {
+        let (open_app, app) = (open_app.clone(), app.clone());
+        *f.borrow_mut() = Some(Rc::new(move |id: &str, url: &str| open_app(&app, id, Some(url), false)));
     });
 
     // Another window with no workspace (Ctrl+Shift+N): nothing about it is remembered.
@@ -2225,6 +2380,20 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
     app.add_action(&new_ephemeral_at);
 
+    // A web app's "New Window" (`browsah --app=ID --new-window` against a running profile) arrives here.
+    let new_app_window = gio::SimpleAction::new("new-app-window", Some(glib::VariantTy::STRING));
+    new_app_window.connect_activate({
+        let (open_app, app) = (open_app.clone(), app.clone());
+        move |_, param| {
+            if let Some(id) = param.and_then(|p| p.get::<String>()) {
+                if let Err(e) = open_app(&app, &id, None, true) {
+                    eprintln!("browsah: {e}");
+                }
+            }
+        }
+    });
+    app.add_action(&new_app_window);
+
     // `browsah --workspace=ID` against a running profile arrives here.
     let open_ws_action = gio::SimpleAction::new("open-workspace", Some(glib::VariantTy::STRING));
     open_ws_action.connect_activate({
@@ -2242,7 +2411,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     app.connect_activate({
         let (opts, cfg, profile, new_window, open_workspace) = (opts.clone(), cfg.clone(), profile.clone(), new_window.clone(), open_workspace.clone());
         move |app| {
-            if let Some(s) = windows().last() {
+            if let Some(s) = browser_windows().last() {
                 s.window.present(); // another launch of this profile: show a window
                 return;
             }
@@ -2300,7 +2469,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                     if decision.action == crate::router::Action::Allow {
                         return true;
                     }
-                    let origin = windows().into_iter().next();
+                    let origin = browser_windows().into_iter().next();
                     let opened = perform_route(&decision.action, url, origin.as_ref());
                     // A sign-in another application started: nothing from its window is remembered, and
                     // it may hand its result to that application through the application's own scheme.
@@ -2329,8 +2498,8 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 }
                 return;
             }
-            let active = app.active_window().and_then(|w| windows().into_iter().find(|s| s.window.upcast_ref::<gtk::Window>() == &w));
-            let existing = active.or_else(|| windows().last().cloned());
+            let active = app.active_window().and_then(|w| browser_windows().into_iter().find(|s| s.window.upcast_ref::<gtk::Window>() == &w));
+            let existing = active.or_else(|| browser_windows().last().cloned());
             let (s, skip) = match existing {
                 Some(s) => (s, 0),
                 None => (new_window(app, None, urls.first().map(String::as_str).unwrap_or("about:blank"), Vec::new()), 1),
@@ -2395,6 +2564,11 @@ fn perform_route(action: &crate::router::Action, url: &str, origin: Option<&Rc<S
                 }
             }
         },
+        Action::App(id) => match OPEN_APP.with(|f| f.borrow().clone()).map(|f| f(id, url)) {
+            Some(Ok(s)) => return Some(s),
+            Some(Err(e)) => say(&e),
+            None => {}
+        },
         Action::Block => say(&format!("Blocked a link to {}", url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url))),
         Action::Ephemeral => {
             if let Some(f) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
@@ -2457,7 +2631,8 @@ fn main_menu() -> gio::Menu {
     let windows = gio::Menu::new();
     windows.append(Some("New window"), Some("app.new-window"));
     if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
-        let list = crate::workspace::Workspace::list(&profile);
+        let mut list = crate::workspace::Workspace::list(&profile);
+        list.extend(crate::workspace::Workspace::list_apps(&profile));
         if !list.is_empty() {
             let sub = gio::Menu::new();
             for w in &list {
@@ -2482,6 +2657,7 @@ fn main_menu() -> gio::Menu {
     menu.append_section(None, &tabs);
     let config = gio::Menu::new();
     config.append(Some("Documentation"), Some("win.docs"));
+    config.append(Some("Browser test page"), Some("win.test-page"));
     config.append(Some("Application config (all options)\u{2026}"), Some("win.config-app"));
     config.append(Some("Profile config (all options)\u{2026}"), Some("win.config-profile"));
     config.append(Some("Workspace config (all options)\u{2026}"), Some("win.config-workspace"));
@@ -2546,6 +2722,44 @@ mod colour_tests {
     }
 }
 
+/// Remember a web app window's size and whether it is maximized (saved a moment after it changes, and when it closes).
+/// GTK keeps `default-width`/`default-height` at the window's size when it is not maximized, so a maximized window
+/// keeps the size it will return to.
+fn remember_app_window(window: &adw::ApplicationWindow, id: &str) {
+    use gtk::prelude::GtkWindowExt;
+    let save = {
+        let (window, id) = (window.downgrade(), id.to_owned());
+        move || {
+            let (Some(window), Some(store)) = (window.upgrade(), store()) else { return };
+            let (width, height) = window.default_size();
+            if width > 0 && height > 0 {
+                let _ = store.save_app_window(&id, crate::store::WindowState { width, height, maximized: window.is_maximized() });
+            }
+        }
+    };
+    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let changed = {
+        let (save, pending) = (save.clone(), pending.clone());
+        move |_: &adw::ApplicationWindow, _: &glib::ParamSpec| {
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (save, pending2) = (save.clone(), pending.clone());
+            *pending.borrow_mut() = Some(glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                pending2.borrow_mut().take();
+                save();
+            }));
+        }
+    };
+    for property in ["default-width", "default-height", "maximized"] {
+        window.connect_notify_local(Some(property), changed.clone());
+    }
+    window.connect_close_request(move |_| {
+        save();
+        glib::Propagation::Proceed
+    });
+}
+
 /// Which workspaces a plain start opens: those open at last exit that still exist, else the
 /// profile's `default_workspace`, else none.
 fn startup_workspaces(profile: &crate::profile::Profile) -> Vec<String> {
@@ -2579,6 +2793,12 @@ fn install_router(app_file: &std::path::Path, profile: &crate::profile::Profile)
             eprintln!("routing: a rule opens workspace {w:?}, which does not exist in this profile");
         }
     }
+    let apps: Vec<String> = crate::workspace::Workspace::list_apps(profile).into_iter().map(|w| w.id).collect();
+    for a in router.referenced_apps() {
+        if !apps.contains(&a) {
+            eprintln!("routing: a rule opens web app {a:?}, which does not exist in this profile");
+        }
+    }
     crate::router::install(router);
 }
 
@@ -2605,7 +2825,7 @@ fn reload(cfg: &Rc<RefCell<Config>>, app_file: &std::path::Path, profile_file: &
         stop = true;
     }
     for s in &shells {
-        let ws_file = s.workspace.as_ref().map(|w| w.dir.join("workspace.yaml"));
+        let ws_file = s.workspace.as_ref().map(|w| w.config_file());
         let loaded = match config::load_window(app_file, profile_file, ws_file.as_deref()) {
             Ok(l) => l,
             Err(e) => {

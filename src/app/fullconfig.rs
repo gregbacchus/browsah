@@ -32,6 +32,7 @@ pub fn check(level: Level, text: &str) -> Result<(), String> {
         Level::Application => crate::config::Config::parse(text).map(|_| ()).map_err(|e| e.to_string()),
         Level::Profile => crate::profile::parse_config(text).map(|_| ()),
         Level::Workspace => crate::workspace::parse_config(text).map(|_| ()),
+        Level::App => crate::webapp::parse_app(text).map(|_| ()),
     }
 }
 
@@ -55,7 +56,7 @@ pub fn save_over(file: &Path, text: &str) -> std::io::Result<Option<PathBuf>> {
 
 impl Shell {
     /// Show `level`'s file padded out with every option. `None` (with a message) when there is nothing to show.
-    pub fn open_full_config(self: &Rc<Self>, level: Level) -> Option<Rc<FullConfigView>> {
+    pub fn open_full_config(self: &Rc<Self>, mut level: Level) -> Option<Rc<FullConfigView>> {
         let (file, title) = match level {
             Level::Application => (APP_FILE.with(|f| f.borrow().clone()).unwrap_or_else(crate::config::default_path), "browsah".to_owned()),
             Level::Profile => {
@@ -65,12 +66,13 @@ impl Shell {
                 };
                 (p.dir.join("profile.yaml"), p.config.name.clone().unwrap_or_else(|| p.id.clone()))
             }
-            Level::Workspace => {
+            Level::Workspace | Level::App => {
                 let Some(w) = &self.workspace else {
                     self.toast("This window has no workspace");
                     return None;
                 };
-                (w.dir.join("workspace.yaml"), w.display_name().to_owned())
+                level = if w.is_app() { Level::App } else { Level::Workspace };
+                (w.config_file(), w.display_name().to_owned())
             }
         };
         let existing = std::fs::read_to_string(&file).ok();

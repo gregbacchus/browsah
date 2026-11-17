@@ -22,8 +22,8 @@ routing:
       match: { app_sign_in: true, kind: [external] }   # kind: external | link | typed
       open: ephemeral
     - name: Links clicked in the mail workspace
-      match: { from: ["workspace:mail"], url: ["docs.example.com"] }   # from: external | ephemeral | workspace:<id>
-      open: workspace:docs
+      match: { from: ["workspace:mail"], url: ["docs.example.com"] }   # from: external | ephemeral | workspace:<id> | app:<id>
+      open: workspace:docs       # allow | block | ephemeral | modal | system | workspace:<id> | app:<id> (a web app) | profile:<id>
 
 theme: system             # system | light | dark: the colour scheme web pages see (prefers-color-scheme); system follows the desktop
 storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)

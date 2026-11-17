@@ -110,6 +110,12 @@ pub enum ViewEvent {
     JsDialog(Arc<JsDialogQuestion>),
     /// The page's dialog is no longer wanted (it navigated away or was closed).
     JsDialogDismissed(u64),
+    /// The browser has closed (after `ask_close`, once the page agreed to be left).
+    Closed,
+    /// The person chose to stay on a page that was asked to close.
+    CloseCancelled,
+    /// A page asks for files (`<input type=file>`, a directory, a save target).
+    FileDialog(Arc<FileDialogQuestion>),
     /// Ctrl and the wheel: zoom in (1) or out (-1).
     Zoom(i32),
     /// The page's icon, as a PNG (empty: the page has none).
@@ -126,6 +132,8 @@ pub enum ViewEvent {
     Route { action: crate::router::Action, url: String },
     /// A main-frame navigation left the view's scope and was cancelled (see `set_scope`): open it elsewhere.
     OutOfScope(String),
+    /// A link asked for a new tab (Ctrl+click, middle click): open it; `select` for a foreground tab.
+    OpenTab { url: String, select: bool },
     /// A popup that keeps its opener (`window.open` with a user gesture): adopt it as a tab.
     Popup(PopupSpec),
     /// The page's renderer process died (crash, out of memory, killed).
@@ -657,6 +665,7 @@ wrap_life_span_handler! {
         fn on_before_close(&self, _b: Option<&mut Browser>) {
             let id = self.shared.id;
             glib::MainContext::default().invoke(move || {
+                deliver(id, ViewEvent::Closed);
                 VIEWS.with(|v| v.borrow_mut().remove(&id));
             });
         }
@@ -946,11 +955,25 @@ wrap_request_handler! {
             _b: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             target_url: Option<&CefString>,
-            _disposition: WindowOpenDisposition,
+            disposition: WindowOpenDisposition,
             user_gesture: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let Some(url) = target_url.map(|u| u.to_string()).filter(|_| user_gesture != 0) else { return 0 };
-            routed_elsewhere(&self.shared, &url, crate::router::Kind::Link, crate::router::Target::NewTab) as _
+            if routed_elsewhere(&self.shared, &url, crate::router::Kind::Link, crate::router::Target::NewTab) {
+                return 1;
+            }
+            // Returning false would navigate the clicked tab itself, so a link that asks for a new
+            // tab (Ctrl+click, middle click) is opened as one here.
+            let select = match disposition {
+                WindowOpenDisposition::NEW_FOREGROUND_TAB => true,
+                WindowOpenDisposition::NEW_BACKGROUND_TAB => false,
+                _ => return 0,
+            };
+            if *self.shared.popup_policy.lock().unwrap() == crate::workspace::PopupPolicy::Block {
+                return 1;
+            }
+            send(self.shared.id, ViewEvent::OpenTab { url: crate::router::unwrap_url(&url), select });
+            1
         }
 
         // A pinned tab limited to a scope: a navigation from inside the scope to somewhere outside
@@ -1234,6 +1257,45 @@ wrap_pdf_print_callback! {
 
 // ---- favicons ------------------------------------------------------------------------------------
 
+struct SendBox<T>(T);
+unsafe impl<T> Send for SendBox<T> {}
+
+/// Run CEF's drag-target calls on its UI thread (they are ignored elsewhere).
+fn drag_on_ui(shared: &Shared, f: impl FnOnce(&BrowserHost) + 'static) {
+    if let Some(h) = shared.host.lock().unwrap().as_ref() {
+        let h = SendBox((HostHandle(h.0.clone()), f));
+        on_ui(move || {
+            let h = h;
+            let (host, f) = h.0;
+            f(&host.0);
+        });
+    }
+}
+
+/// What a GTK drop carries, as CEF's drag data: files by path, text as a fragment (and a link when it is one address).
+fn drag_data_from(value: &glib::Value) -> Option<DragData> {
+    let data = drag_data_create()?;
+    if let Ok(list) = value.get::<gdk::FileList>() {
+        let mut any = false;
+        for f in list.files() {
+            if let Some(path) = f.path() {
+                let path = path.to_string_lossy().into_owned();
+                let name = f.basename().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                data.add_file(Some(&CefString::from(path.as_str())), Some(&CefString::from(name.as_str())));
+                any = true;
+            }
+        }
+        return any.then_some(data);
+    }
+    let text = value.get::<String>().ok()?;
+    let text = text.trim_end_matches(['\r', '\n']);
+    if (text.starts_with("http://") || text.starts_with("https://")) && !text.contains(char::is_whitespace) {
+        data.set_link_url(Some(&CefString::from(text)));
+    }
+    data.set_fragment_text(Some(&CefString::from(text)));
+    Some(data)
+}
+
 /// The strings of a CEF string list.
 fn string_list(list: &mut CefStringList) -> Vec<String> {
     let raw: *mut sys::_cef_string_list_t = list.into();
@@ -1339,6 +1401,9 @@ impl JsDialogQuestion {
     /// `ok`: OK / Leave was chosen; `text` is what was typed into a prompt.
     pub fn answer(&self, ok: bool, text: &str) {
         let Some(cb) = self.responder.lock().unwrap().take() else { return };
+        if !ok && matches!(self.kind, JsDialogKind::BeforeUnload { .. }) {
+            send(self.view, ViewEvent::CloseCancelled);
+        }
         let text = text.to_owned();
         on_ui(move || {
             let cb = cb;
@@ -1397,6 +1462,103 @@ wrap_jsdialog_handler! {
 
         fn on_reset_dialog_state(&self, _b: Option<&mut Browser>) {
             send(self.shared.id, ViewEvent::JsDialogDismissed(self.shared.id));
+        }
+    }
+}
+
+// ---- file pickers -----------------------------------------------------------------------------------
+struct FileCb(FileDialogCallback);
+unsafe impl Send for FileCb {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDialogKind {
+    Open,
+    OpenMultiple,
+    Folder,
+    Save,
+}
+
+/// A page's request for files. Answer it exactly once (`choose` or `cancel`); the page waits for it.
+pub struct FileDialogQuestion {
+    pub kind: FileDialogKind,
+    pub title: String,
+    /// A suggested file or folder.
+    pub default_path: String,
+    /// What the page accepts: MIME types (`image/*`) and extensions (`.png`).
+    pub accept: Vec<String>,
+    responder: Mutex<Option<FileCb>>,
+}
+
+impl std::fmt::Debug for FileDialogQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FileDialogQuestion({:?}: {:?})", self.kind, self.title)
+    }
+}
+
+impl FileDialogQuestion {
+    pub fn choose(&self, paths: Vec<String>) {
+        let Some(cb) = self.responder.lock().unwrap().take() else { return };
+        on_ui(move || {
+            let cb = cb;
+            let mut list = CefStringList::new();
+            for p in &paths {
+                list.append(p);
+            }
+            cb.0.cont(Some(&mut list));
+        });
+    }
+
+    pub fn cancel(&self) {
+        let Some(cb) = self.responder.lock().unwrap().take() else { return };
+        on_ui(move || {
+            let cb = cb;
+            cb.0.cancel();
+        });
+    }
+}
+
+impl Drop for FileDialogQuestion {
+    fn drop(&mut self) {
+        // A question nobody answered must not leave the page waiting.
+        self.cancel();
+    }
+}
+
+wrap_dialog_handler! {
+    struct ViewFileDialog { shared: Arc<Shared> }
+
+    impl DialogHandler {
+        fn on_file_dialog(
+            &self,
+            _b: Option<&mut Browser>,
+            mode: FileDialogMode,
+            title: Option<&CefString>,
+            default_file_path: Option<&CefString>,
+            accept_filters: Option<&mut CefStringList>,
+            accept_extensions: Option<&mut CefStringList>,
+            _accept_descriptions: Option<&mut CefStringList>,
+            callback: Option<&mut FileDialogCallback>,
+        ) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let mode: sys::cef_file_dialog_mode_t = mode.into();
+            let kind = match mode {
+                sys::cef_file_dialog_mode_t::FILE_DIALOG_OPEN_MULTIPLE => FileDialogKind::OpenMultiple,
+                sys::cef_file_dialog_mode_t::FILE_DIALOG_OPEN_FOLDER => FileDialogKind::Folder,
+                sys::cef_file_dialog_mode_t::FILE_DIALOG_SAVE => FileDialogKind::Save,
+                _ => FileDialogKind::Open,
+            };
+            let mut accept = accept_filters.map(string_list).unwrap_or_default();
+            accept.extend(accept_extensions.map(string_list).unwrap_or_default());
+            accept.retain(|a| !a.is_empty());
+            let q = Arc::new(FileDialogQuestion {
+                kind,
+                title: title.map(|t| t.to_string()).unwrap_or_default(),
+                default_path: default_file_path.map(|t| t.to_string()).unwrap_or_default(),
+                accept,
+                responder: Mutex::new(Some(FileCb(callback.clone()))),
+            });
+            send(self.shared.id, ViewEvent::FileDialog(q));
+            1
         }
     }
 }
@@ -1532,6 +1694,7 @@ wrap_client! {
         permission: PermissionHandler,
         download: DownloadHandler,
         jsdialog: JsdialogHandler,
+        file_dialog: DialogHandler,
         find: FindHandler,
     }
 
@@ -1545,6 +1708,7 @@ wrap_client! {
         fn permission_handler(&self) -> Option<PermissionHandler> { Some(self.permission.clone()) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
         fn jsdialog_handler(&self) -> Option<JsdialogHandler> { Some(self.jsdialog.clone()) }
+        fn dialog_handler(&self) -> Option<DialogHandler> { Some(self.file_dialog.clone()) }
         fn find_handler(&self) -> Option<FindHandler> { Some(self.find.clone()) }
     }
 }
@@ -1560,6 +1724,7 @@ fn make_client(shared: Arc<Shared>) -> Client {
         ViewPermissions::new(shared.clone()),
         ViewDownloads::new(shared.clone()),
         ViewJsDialog::new(shared.clone()),
+        ViewFileDialog::new(shared.clone()),
         ViewFind::new(shared),
     )
 }
@@ -2195,6 +2360,17 @@ impl BrowserView {
         self.apply_zoom();
     }
 
+    /// Whether the browser exists (a dormant view has none).
+    pub fn is_live(&self) -> bool {
+        self.shared.host.lock().unwrap().is_some()
+    }
+
+    /// Close the browser the polite way: the page may ask "Leave site?" first (`ViewEvent::Closed` follows when it
+    /// agrees, or `CloseCancelled` when the person stays).
+    pub fn ask_close(&self) {
+        self.with_host(|h| h.close_browser(0));
+    }
+
     /// Ask CEF to close the browser. Call before shutting CEF down.
     pub fn close(&self) {
         self.with_host(|h| h.close_browser(1));
@@ -2205,6 +2381,128 @@ impl BrowserView {
     /// Render scale: view pixels per logical pixel.
     fn k(&self) -> f32 {
         self.shared.view.lock().unwrap().k()
+    }
+
+    /// Files, text and links dropped onto the page: GTK's drop target feeds CEF's drag-target calls (windowless
+    /// Chromium receives no drops of its own). Dragging *out of* the page is not supported.
+    fn connect_drop(self: &Rc<Self>) {
+        let target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY | gdk::DragAction::MOVE | gdk::DragAction::LINK);
+        target.set_types(&[gdk::FileList::static_type(), String::static_type()]);
+        target.set_preload(true);
+        self.widget.add_css_class("browsah-view"); // no drop highlight (the page draws its own)
+        let ops = || DragOperationsMask::from(sys::cef_drag_operations_mask_t(1 | 2 | 16));
+        // Whether CEF has been told about this drag (the value of a file drag may load after the pointer enters).
+        let entered = Rc::new(Cell::new(false));
+        let weak = Rc::downgrade(self);
+        // Tell CEF a drag arrived, once the data is there. Returns whether it has been told.
+        let enter = {
+            let entered = entered.clone();
+            move |v: &Rc<BrowserView>, t: &gtk::DropTarget, x: f64, y: f64| -> bool {
+                if entered.get() {
+                    return true;
+                }
+                let Some(mut data) = t.value().and_then(|v| drag_data_from(&v)) else { return false };
+                entered.set(true);
+                let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
+                drag_on_ui(&v.shared, move |h| {
+                    h.drag_target_drag_enter(Some(&mut data), Some(&ev), ops());
+                    h.drag_target_drag_over(Some(&ev), ops());
+                });
+                true
+            }
+        };
+        target.connect_enter({
+            let w = weak.clone();
+            let enter = enter.clone();
+            move |t, x, y| {
+                if let Some(v) = w.upgrade() {
+                    enter(&v, t, x, y);
+                }
+                gdk::DragAction::COPY
+            }
+        });
+        target.connect_motion({
+            let w = weak.clone();
+            let enter = enter.clone();
+            let entered = entered.clone();
+            move |t, x, y| {
+                let Some(v) = w.upgrade() else { return gdk::DragAction::empty() };
+                if enter(&v, t, x, y) && entered.get() {
+                    let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
+                    drag_on_ui(&v.shared, move |h| h.drag_target_drag_over(Some(&ev), ops()));
+                }
+                gdk::DragAction::COPY
+            }
+        });
+        target.connect_leave({
+            let w = weak.clone();
+            let entered = entered.clone();
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    if entered.replace(false) {
+                        drag_on_ui(&v.shared, |h| h.drag_target_drag_leave());
+                    }
+                }
+            }
+        });
+        target.connect_drop({
+            let w = weak;
+            move |t, value, x, y| {
+                let Some(v) = w.upgrade() else { return false };
+                let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
+                let late = !entered.replace(false);
+                if late {
+                    // The data arrived only now: start the drag, and let the page answer before releasing.
+                    let _ = t;
+                    let Some(mut data) = drag_data_from(value) else { return false };
+                    drag_on_ui(&v.shared, move |h| {
+                        h.drag_target_drag_enter(Some(&mut data), Some(&ev), ops());
+                        h.drag_target_drag_over(Some(&ev), ops());
+                    });
+                    let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
+                    let weak = Rc::downgrade(&v);
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                        if let Some(v) = weak.upgrade() {
+                            drag_on_ui(&v.shared, move |h| h.drag_target_drop(Some(&ev)));
+                        }
+                    });
+                } else {
+                    drag_on_ui(&v.shared, move |h| {
+                        h.drag_target_drag_over(Some(&ev), ops());
+                        h.drag_target_drop(Some(&ev));
+                    });
+                }
+                true
+            }
+        });
+        self.widget.add_controller(target);
+    }
+
+    /// Start dropping `text` at (x, y) as the drop target would (for the self-test).
+    pub fn test_drop_text(&self, text: &str, x: f64, y: f64) {
+        self.test_drop_value(&glib::Value::from(text), x, y);
+    }
+
+    /// As `test_drop_text`, for a file.
+    pub fn test_drop_file(&self, path: &str, x: f64, y: f64) {
+        let list = gdk::FileList::from_array(&[gtk::gio::File::for_path(path)]);
+        self.test_drop_value(&list.to_value(), x, y);
+    }
+
+    fn test_drop_value(&self, value: &glib::Value, x: f64, y: f64) {
+        let Some(mut data) = drag_data_from(value) else { return };
+        let ev = self.mouse_event(x, y, gdk::ModifierType::empty());
+        let ops = DragOperationsMask::from(sys::cef_drag_operations_mask_t(1 | 2 | 16));
+        drag_on_ui(&self.shared, move |h| {
+            h.drag_target_drag_enter(Some(&mut data), Some(&ev), ops.clone());
+            h.drag_target_drag_over(Some(&ev), ops.clone());
+        });
+    }
+
+    /// Release the drop started by `test_drop_text`.
+    pub fn test_drop_release(&self, x: f64, y: f64) {
+        let ev = self.mouse_event(x, y, gdk::ModifierType::empty());
+        drag_on_ui(&self.shared, move |h| h.drag_target_drop(Some(&ev)));
     }
 
     fn mouse_event(&self, x: f64, y: f64, state: gdk::ModifierType) -> MouseEvent {
@@ -2383,6 +2681,7 @@ impl BrowserView {
         self.widget.add_controller(c.scroll.clone());
         self.widget.add_controller(c.key.clone());
         self.widget.add_controller(c.focus.clone());
+        self.connect_drop();
     }
 
     /// Send a scroll of `dx`, `dy` view pixels, carrying sub-pixel remainders over.
