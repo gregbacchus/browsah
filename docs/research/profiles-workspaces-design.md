@@ -455,6 +455,40 @@ as `sweep:<rule>`; a second pass does nothing; the workspace opens with the rest
 real profile with stored tabs (only the empty case was run), a systemd timer. Limitation: a profile that is not
 running is only swept if something runs `browsah sweep`; the browser itself exits when its last window closes.
 
+## Status: permissions and downloads (2026-11-17)
+
+Built: `permissions:` (per kind: camera, microphone, location, notifications, clipboard, screen, midi, other; per site
+rules; `allow`/`deny`/`ask`; default `ask`) and `downloads:` (`directory`, `ask`), both ordinary cascading options, so
+they can differ per profile and per workspace. Chromium's permission handler asks us for camera, microphone and screen
+(a media request) and for everything else (a prompt). A request is judged by the view's copy of the configuration on
+CEF's thread; only `ask` goes to the shell, which looks for a remembered answer (profile database, per site and kind)
+and otherwise shows an `AlertDialog` (Block / Allow, "Remember for this site", Esc = block once), queued one at a time
+per window and withdrawn if the page moves on. `browsah permissions list|reset`. Downloads: a handler that saves into the
+folder under a sanitised, never-overwriting name, optionally asking with a Save-as dialog, with toasts (and *Show in
+folder*) when a download starts and finishes.
+
+**Measured and found while building** (this machine):
+- The spike's finding that permission requests hung is fixed: with a handler, `Notification.requestPermission()` and
+  geolocation resolve as configured (allow -> granted, deny -> a permission-denied error, a site rule beats a kind).
+- **Chromium persists the answer it is given to a prompt and then answers that origin itself**, never calling the
+  handler again (a second `requestPermission()` reached the handler 0 times). That would have made config changes,
+  *forget* and "allow but do not remember" ineffective. Clearing the stored setting at once after answering made
+  Chromium refuse a request it was still working on (geolocation returned denied after a remembered allow). What
+  works: clear the stored settings for the page's origin when a main-frame load starts (a permission lasts as long as the
+  page it was given to), verified by a repeat request after a reload reaching the handler again.
+- Calling `set_content_setting` for the screen-capture type **crashes Chromium** (SIGTRAP on the first https page), found by
+  bisecting the kinds; screen is left out (it goes through the media path).
+- Chromium's origins have a trailing slash; they are normalised before use.
+- Downloads: nothing is saved without a download handler; with one, files arrive (hello.txt-style test file saved, a repeat
+  became `note (1).txt`, a chosen path was used, cancelling the Save-as question saved nothing).
+
+Measured (scripted, 17 new self-test checks and 12 unit tests): the cases above. **Not verified:** the real dialogs
+(the test holds the question), the Save-as dialog, camera, microphone and screen requests with real devices (a media
+request path exists but is only unit tested; the test avoids real devices), what Chromium does for clipboard or MIDI
+requests, notifications actually appearing (not built), geolocation actually finding a position, the toasts' look,
+`permissions reset` against a real profile, behaviour across restarts (Chromium's cache keeps what is not cleared: an
+answer given on a page that is never reloaded stays until the next load of the origin).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

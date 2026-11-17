@@ -98,6 +98,14 @@ pub enum ViewEvent {
     Address(String),
     Title(String),
     Loading { loading: bool, can_back: bool, can_forward: bool },
+    /// A page asks for permissions the configuration leaves to the person.
+    Permission(Arc<PermissionRequest>),
+    /// The page moved on: a question with this id (from `Permission`) is no longer wanted.
+    PermissionDismissed(u64),
+    /// A download changed.
+    Download { id: u32, name: String, state: DownloadState },
+    /// A download is waiting for the person to say where to save it.
+    DownloadAsk(Arc<DownloadQuestion>),
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
     ExternalLaunch { scheme: String, url: String, signin: bool },
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
@@ -173,6 +181,9 @@ struct Shared {
     allowed_schemes: Mutex<Vec<String>>,
     /// What a script popup from this view becomes.
     popup_policy: Mutex<crate::workspace::PopupPolicy>,
+    /// What the configuration says about permissions, and where downloads go (set by the shell).
+    permissions: Mutex<crate::permissions::PermissionsConfig>,
+    downloads: Mutex<(std::path::PathBuf, bool)>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
@@ -197,6 +208,8 @@ impl Shared {
             workspace: Mutex::new(None),
             allowed_schemes: Mutex::new(Vec::new()),
             popup_policy: Mutex::new(crate::workspace::PopupPolicy::Tab),
+            permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
+            downloads: Mutex::new((gtk::glib::home_dir(), false)),
             accel,
             frame_rate,
         })
@@ -517,6 +530,16 @@ wrap_load_handler! {
     struct ViewLoad { shared: Arc<Shared> }
 
     impl LoadHandler {
+        // A page starts loading: forget what Chromium kept of earlier permission answers for its origin
+        // (see `forget_in_chromium`), so this page's requests reach the permission handler.
+        fn on_load_start(&self, b: Option<&mut Browser>, frame: Option<&mut Frame>, _transition: TransitionType) {
+            if let (Some(b), Some(frame)) = (b, frame) {
+                if frame.is_main() != 0 {
+                    forget_in_chromium(b, &CefString::from(&frame.url()).to_string());
+                }
+            }
+        }
+
         fn on_loading_state_change(
             &self,
             _b: Option<&mut Browser>,
@@ -809,6 +832,269 @@ wrap_request_handler! {
     }
 }
 
+// ---- permissions ------------------------------------------------------------------------------------
+
+struct MediaCb(MediaAccessCallback);
+unsafe impl Send for MediaCb {}
+struct PromptCb(PermissionPromptCallback);
+unsafe impl Send for PromptCb {}
+
+enum Responder {
+    Media(MediaCb),
+    Prompt(PromptCb),
+}
+
+/// A page's request for permissions, with what the configuration already decided and the kinds that need
+/// asking. Answer it exactly once (`answer`); dropping it unanswered leaves the page waiting.
+pub struct PermissionRequest {
+    /// Chromium's prompt id (0 for media requests).
+    pub id: u64,
+    pub origin: String,
+    /// Kinds the configuration says to ask about.
+    pub ask: Vec<crate::permissions::Kind>,
+    /// Kinds already decided: allowed or not.
+    pub decided: Vec<(crate::permissions::Kind, bool)>,
+    responder: Mutex<Option<Responder>>,
+}
+
+impl std::fmt::Debug for PermissionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PermissionRequest({} for {:?}, asking {:?})", self.origin, self.decided, self.ask)
+    }
+}
+
+/// How many permission requests the handler has seen (the self-test).
+pub static PERMISSION_REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+/// The Chromium content setting a kind is stored under (for permissions asked through a prompt).
+fn content_setting_type(kind: crate::permissions::Kind) -> Option<ContentSettingTypes> {
+    use sys::cef_content_setting_types_t as T;
+    let t = match kind {
+        crate::permissions::Kind::Location => T::CEF_CONTENT_SETTING_TYPE_GEOLOCATION,
+        crate::permissions::Kind::Notifications => T::CEF_CONTENT_SETTING_TYPE_NOTIFICATIONS,
+        crate::permissions::Kind::Microphone => T::CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC,
+        crate::permissions::Kind::Camera => T::CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA,
+        crate::permissions::Kind::Midi => T::CEF_CONTENT_SETTING_TYPE_MIDI_SYSEX,
+        crate::permissions::Kind::Clipboard => T::CEF_CONTENT_SETTING_TYPE_CLIPBOARD_READ_WRITE,
+        // Screen capture goes through the media-access path and is not stored; asking Chromium to change
+        // its content setting crashes (measured), so it is left out.
+        crate::permissions::Kind::Screen | crate::permissions::Kind::Other => return None,
+    };
+    Some(ContentSettingTypes::from(t))
+}
+
+/// Chromium keeps the answer it is given to a permission prompt and then answers the same origin itself,
+/// without asking the handler again. That would make a later `deny` in the configuration, a forgotten
+/// answer, or "allow but do not remember" ineffective. So what it kept is cleared (back to its default)
+/// whenever a page of the origin starts loading: a permission lasts as long as the page it was given to
+/// (clearing it at once instead makes Chromium refuse a request it is still working on), and the next
+/// load asks the handler again.
+fn forget_in_chromium(browser: &Browser, url: &str) {
+    let origin = match url.split_once("://") {
+        Some((scheme @ ("http" | "https"), rest)) => format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")),
+        _ => return,
+    };
+    let Some(rc) = browser.host().and_then(|h| h.request_context()) else { return };
+    let url = CefString::from(origin.as_str());
+    for k in crate::permissions::Kind::ALL {
+        if let Some(t) = content_setting_type(k) {
+            rc.set_content_setting(Some(&url), Some(&url), t, ContentSettingValues::from(sys::cef_content_setting_values_t::CEF_CONTENT_SETTING_VALUE_DEFAULT));
+        }
+    }
+}
+
+/// Reply to Chromium: `allowed` is, for each kind, whether it may be used.
+fn respond(responder: Responder, allowed: Vec<(crate::permissions::Kind, bool)>) {
+    on_ui(move || match responder {
+        Responder::Media(cb) => {
+            let cb = cb;
+            let mask: u32 = allowed.iter().filter(|(_, ok)| *ok).map(|(k, _)| k.media_bits()).fold(0, |a, b| a | b);
+            if mask == 0 {
+                cb.0.cancel();
+            } else {
+                cb.0.cont(mask);
+            }
+        }
+        Responder::Prompt(cb) => {
+            let cb = cb;
+            let all = allowed.iter().all(|(_, ok)| *ok);
+            cb.0.cont(PermissionRequestResult::from(if all { sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT } else { sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_DENY }));
+        }
+    });
+}
+
+impl PermissionRequest {
+    /// Answer for the kinds that were asked: `ask_allowed` for each (in the order of `ask`).
+    pub fn answer(&self, ask_allowed: &[bool]) {
+        let Some(responder) = self.responder.lock().unwrap().take() else { return };
+        let mut all = self.decided.clone();
+        all.extend(self.ask.iter().copied().zip(ask_allowed.iter().copied()));
+        respond(responder, all);
+    }
+}
+
+/// Judge a request by the configuration. Anything that needs asking is passed to the shell.
+fn handle_permission(shared: &Shared, browser: Option<&mut Browser>, id: u64, origin: String, kinds: Vec<crate::permissions::Kind>, responder: Responder) {
+    use crate::permissions::Choice;
+    // Chromium gives an origin with a trailing slash; the configuration and the remembered answers do not use one.
+    let origin = origin.trim_end_matches('/').to_owned();
+    PERMISSION_REQUESTS.fetch_add(1, Ordering::Relaxed);
+    let cfg = shared.permissions.lock().unwrap().clone();
+    if std::env::var_os("BROWSAH_DEBUG").is_some() {
+        eprintln!("browsah: permission request from {origin} for {kinds:?}");
+    }
+    let (mut decided, mut ask) = (Vec::new(), Vec::new());
+    for k in kinds {
+        match cfg.decide(&origin, k) {
+            Choice::Allow => decided.push((k, true)),
+            Choice::Deny => decided.push((k, false)),
+            Choice::Ask => ask.push(k),
+        }
+    }
+    let _ = browser;
+    if ask.is_empty() {
+        respond(responder, decided);
+    } else {
+        let req = Arc::new(PermissionRequest { id, origin, ask, decided, responder: Mutex::new(Some(responder)) });
+        send(shared.id, ViewEvent::Permission(req));
+    }
+}
+
+wrap_permission_handler! {
+    struct ViewPermissions { shared: Arc<Shared> }
+
+    impl PermissionHandler {
+        // Camera, microphone and screen capture.
+        fn on_request_media_access_permission(
+            &self,
+            b: Option<&mut Browser>,
+            _f: Option<&mut Frame>,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut MediaAccessCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(origin), Some(callback)) = (requesting_origin, callback) else { return 0 };
+            let mut kinds = crate::permissions::Kind::from_media_mask(requested_permissions);
+            if kinds.is_empty() {
+                kinds.push(crate::permissions::Kind::Other);
+            }
+            handle_permission(&self.shared, None, 0, origin.to_string(), kinds, Responder::Media(MediaCb(callback.clone()))); // (media access is not stored by Chromium)
+            let _ = b;
+            1
+        }
+
+        // Everything else that asks: location, notifications, clipboard, MIDI...
+        fn on_show_permission_prompt(
+            &self,
+            b: Option<&mut Browser>,
+            prompt_id: u64,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut PermissionPromptCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(origin), Some(callback)) = (requesting_origin, callback) else { return 0 };
+            let kinds = crate::permissions::Kind::from_prompt_mask(requested_permissions);
+            handle_permission(&self.shared, b, prompt_id, origin.to_string(), kinds, Responder::Prompt(PromptCb(callback.clone())));
+            1
+        }
+
+        fn on_dismiss_permission_prompt(&self, _b: Option<&mut Browser>, prompt_id: u64, _result: PermissionRequestResult) {
+            send(self.shared.id, ViewEvent::PermissionDismissed(prompt_id));
+        }
+    }
+}
+
+// ---- downloads --------------------------------------------------------------------------------------
+
+struct DownloadCb(BeforeDownloadCallback);
+unsafe impl Send for DownloadCb {}
+
+#[derive(Debug, Clone)]
+pub enum DownloadState {
+    /// Percent complete (not shown yet; the toast only says a download began).
+    Progress(#[allow(dead_code)] i32),
+    Done(std::path::PathBuf),
+    Canceled,
+}
+
+/// A file about to be downloaded that is waiting for the person to choose where it goes.
+pub struct DownloadQuestion {
+    pub suggested: String,
+    pub dir: std::path::PathBuf,
+    responder: Mutex<Option<DownloadCb>>,
+}
+
+impl std::fmt::Debug for DownloadQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DownloadQuestion({:?})", self.suggested)
+    }
+}
+
+impl DownloadQuestion {
+    /// Save to `path`, or (None) cancel the download.
+    pub fn answer(&self, path: Option<std::path::PathBuf>) {
+        let Some(cb) = self.responder.lock().unwrap().take() else { return };
+        match path {
+            Some(p) => {
+                if let Some(dir) = p.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                on_ui(move || {
+                    let cb = cb;
+                    cb.0.cont(Some(&CefString::from(p.to_string_lossy().as_ref())), 0);
+                });
+            }
+            // A download whose callback is dropped without continuing is cancelled.
+            None => drop(cb),
+        }
+    }
+}
+
+wrap_download_handler! {
+    struct ViewDownloads { shared: Arc<Shared> }
+
+    impl DownloadHandler {
+        fn can_download(&self, _b: Option<&mut Browser>, _url: Option<&CefString>, _method: Option<&CefString>) -> ::std::os::raw::c_int {
+            1
+        }
+
+        fn on_before_download(
+            &self,
+            _b: Option<&mut Browser>,
+            _item: Option<&mut DownloadItem>,
+            suggested_name: Option<&CefString>,
+            callback: Option<&mut BeforeDownloadCallback>,
+        ) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let name = suggested_name.map(|n| n.to_string()).unwrap_or_default();
+            let (dir, ask) = self.shared.downloads.lock().unwrap().clone();
+            if ask {
+                let q = Arc::new(DownloadQuestion { suggested: crate::downloads::sanitise_name(&name), dir, responder: Mutex::new(Some(DownloadCb(callback.clone()))) });
+                send(self.shared.id, ViewEvent::DownloadAsk(q));
+            } else {
+                let _ = std::fs::create_dir_all(&dir);
+                let path = crate::downloads::unique_path(&dir, &name, |p| p.exists());
+                callback.cont(Some(&CefString::from(path.to_string_lossy().as_ref())), 0);
+            }
+            1
+        }
+
+        fn on_download_updated(&self, _b: Option<&mut Browser>, item: Option<&mut DownloadItem>, _cb: Option<&mut DownloadItemCallback>) {
+            let Some(item) = item else { return };
+            let path = std::path::PathBuf::from(CefString::from(&item.full_path()).to_string());
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let state = if item.is_canceled() != 0 || item.is_interrupted() != 0 {
+                DownloadState::Canceled
+            } else if item.is_complete() != 0 {
+                DownloadState::Done(path)
+            } else {
+                DownloadState::Progress(item.percent_complete())
+            };
+            send(self.shared.id, ViewEvent::Download { id: item.id(), name, state });
+        }
+    }
+}
+
 wrap_client! {
     struct ViewClient {
         render: RenderHandler,
@@ -817,6 +1103,8 @@ wrap_client! {
         display: DisplayHandler,
         menu: ContextMenuHandler,
         request: RequestHandler,
+        permission: PermissionHandler,
+        download: DownloadHandler,
     }
 
     impl Client {
@@ -826,6 +1114,8 @@ wrap_client! {
         fn display_handler(&self) -> Option<DisplayHandler> { Some(self.display.clone()) }
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(self.menu.clone()) }
         fn request_handler(&self) -> Option<RequestHandler> { Some(self.request.clone()) }
+        fn permission_handler(&self) -> Option<PermissionHandler> { Some(self.permission.clone()) }
+        fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
     }
 }
 
@@ -836,7 +1126,9 @@ fn make_client(shared: Arc<Shared>) -> Client {
         ViewLoad::new(shared.clone()),
         ViewDisplay::new(shared.clone()),
         ViewMenu::new(shared.clone()),
-        ViewRequest::new(shared),
+        ViewRequest::new(shared.clone()),
+        ViewPermissions::new(shared.clone()),
+        ViewDownloads::new(shared),
     )
 }
 
@@ -936,6 +1228,16 @@ impl BrowserView {
     /// Replace the function that receives this view's events (a view moving to another owner).
     pub fn set_event_handler(&self, on_event: Rc<dyn Fn(ViewEvent)>) {
         with_side(self.shared.id, |s| s.on_event = on_event);
+    }
+
+    /// What the configuration says about permissions for this view's page.
+    pub fn set_permissions(&self, cfg: crate::permissions::PermissionsConfig) {
+        *self.shared.permissions.lock().unwrap() = cfg;
+    }
+
+    /// Where this view's downloads go, and whether to ask.
+    pub fn set_downloads(&self, dir: std::path::PathBuf, ask: bool) {
+        *self.shared.downloads.lock().unwrap() = (dir, ask);
     }
 
     /// Allow this view to hand addresses with `scheme` to the desktop (a sign-in's callback).
@@ -1182,6 +1484,7 @@ impl BrowserView {
                 let Some(mut params) = dictionary_value_create() else { return };
                 params.set_string(Some(&CefString::from("expression")), Some(&CefString::from(expression.as_str())));
                 params.set_bool(Some(&CefString::from("returnByValue")), 1);
+                params.set_bool(Some(&CefString::from("awaitPromise")), 1);
                 h.0.execute_dev_tools_method(id, Some(&CefString::from("Runtime.evaluate")), Some(&mut params));
             });
         }

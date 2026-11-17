@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod latency;
 mod modal;
+mod prompts;
 mod sweep;
 mod nav;
 mod selftest;
@@ -16,6 +17,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 use crate::store::{Store, TabRecord};
 use view::{BrowserView, ViewEvent};
@@ -157,6 +159,14 @@ pub struct Shell {
     pub private: Cell<bool>,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
+    /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
+    /// finished, and one waiting for a place to save.
+    prompt_queue: RefCell<std::collections::VecDeque<Rc<prompts::Queued>>>,
+    prompt_dialog: RefCell<Option<(u64, adw::AlertDialog)>>,
+    pending_prompt: RefCell<Option<Rc<prompts::Queued>>>,
+    downloads_seen: RefCell<std::collections::HashSet<u32>>,
+    completed_downloads: RefCell<Vec<std::path::PathBuf>>,
+    pending_download: RefCell<Option<Arc<view::DownloadQuestion>>>,
     /// Modals open over this window, how they look, and what a script popup becomes.
     modals: RefCell<Vec<Rc<modal::Modal>>>,
     modal_style: crate::workspace::ModalStyle,
@@ -680,6 +690,12 @@ impl Shell {
     /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
     pub fn apply_config(&self, cfg: &Config) {
         *self.settings.borrow_mut() = cfg.clone();
+        for t in self.tabs.borrow().iter() {
+            self.apply_view_settings(&t.view());
+        }
+        for m in self.modals.borrow().iter() {
+            self.apply_view_settings(&m.view);
+        }
         if self.window.is_active() {
             self.apply_input_tuning();
         }
@@ -787,7 +803,10 @@ impl Shell {
     /// Create a view for a tab, wired to deliver its events to `tab`.
     fn make_view(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>, url: &str) -> Rc<BrowserView> {
         let on_event = self.event_closure(cell);
-        BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), url, on_event)
+        let view = BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), url, on_event);
+        self.apply_view_settings(&view);
+        view.set_popup_policy(self.popup_policy);
+        view
     }
 
     /// Open a tab on `url`. Background tabs start hidden (not rendering) until selected.
@@ -806,6 +825,7 @@ impl Shell {
     fn add_tab(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Tab>>>, state: Rc<RefCell<State>>, select: bool, uid: u64) -> Rc<Tab> {
         view.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
         view.set_popup_policy(self.popup_policy);
+        self.apply_view_settings(&view);
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(&view.widget);
         let sad = adw::StatusPage::builder()
@@ -912,6 +932,7 @@ impl Shell {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
             tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
             tab.view().set_popup_policy(self.popup_policy);
+            self.apply_view_settings(&tab.view());
             self.tabs.borrow_mut().push(tab);
             if self.tab_view.selected_page().as_ref() == Some(page) {
                 self.on_selected();
@@ -1001,6 +1022,10 @@ impl Shell {
             ViewEvent::Route { action, url } => {
                 perform_route(&action, &url, Some(self));
             }
+            ViewEvent::Permission(req) => self.prompt_permission(req),
+            ViewEvent::PermissionDismissed(id) => self.dismiss_permission(id),
+            ViewEvent::Download { id, name, state } => self.download_event(id, &name, state),
+            ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
                 // The sign-in handed its result to the application: an ephemeral window with only
                 // this tab has nothing more to show.
@@ -1199,6 +1224,12 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         pending_close_reason: RefCell::new(None),
         private: Cell::new(false),
         history: RefCell::new(None),
+        prompt_queue: RefCell::new(Default::default()),
+        prompt_dialog: RefCell::new(None),
+        pending_prompt: RefCell::new(None),
+        downloads_seen: RefCell::new(Default::default()),
+        completed_downloads: RefCell::new(Vec::new()),
+        pending_download: RefCell::new(None),
         modals: RefCell::new(Vec::new()),
         modal_style: ws_config.modals.style,
         popup_policy: ws_config.tabs.popups,

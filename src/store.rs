@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +152,47 @@ impl Store {
         if version < 4 {
             self.conn.execute_batch("ALTER TABLE tabs ADD COLUMN usage TEXT NOT NULL DEFAULT '';")?;
         }
+        if version < 5 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS permission_decisions (
+                    origin TEXT NOT NULL,
+                    kind   TEXT NOT NULL,
+                    choice TEXT NOT NULL,
+                    at     INTEGER NOT NULL,
+                    PRIMARY KEY (origin, kind)
+                );",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    }
+
+    // ---- permissions -------------------------------------------------------------------------------
+
+    /// What was answered before for this site and kind (`allow` or `deny`), if anything.
+    pub fn remembered_permission(&self, origin: &str, kind: &str) -> Option<String> {
+        self.conn.query_row("SELECT choice FROM permission_decisions WHERE origin = ?1 AND kind = ?2", params![origin, kind], |r| r.get(0)).ok()
+    }
+
+    pub fn remember_permission(&self, origin: &str, kind: &str, choice: &str, at: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO permission_decisions (origin, kind, choice, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(origin, kind) DO UPDATE SET choice = ?3, at = ?4",
+            params![origin, kind, choice, at],
+        )?;
+        Ok(())
+    }
+
+    /// Every remembered answer: (origin, kind, choice, time), by site.
+    pub fn remembered_permissions(&self) -> Vec<(String, String, String, i64)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT origin, kind, choice, at FROM permission_decisions ORDER BY origin, kind") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map(|r| r.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Forget a site's answers, or all of them with `None`. Returns how many were forgotten.
+    pub fn forget_permissions(&self, origin: Option<&str>) -> rusqlite::Result<usize> {
+        match origin {
+            Some(o) => self.conn.execute("DELETE FROM permission_decisions WHERE origin = ?1", params![o]),
+            None => self.conn.execute("DELETE FROM permission_decisions", []),
+        }
     }
 
     /// A workspace's bookmarks, in the order they were added.
@@ -394,6 +434,25 @@ mod tests {
         assert_eq!(w.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://e1", "https://e2"]);
         assert_eq!(s.take_last_closed_window().len(), 1, "then the older window");
         assert!(s.take_last_closed_window().is_empty());
+    }
+
+    #[test]
+    fn permission_answers_are_remembered_per_site_and_kind() {
+        let s = Store::open_memory();
+        assert_eq!(s.remembered_permission("https://a.example", "camera"), None);
+        s.remember_permission("https://a.example", "camera", "allow", 10).unwrap();
+        s.remember_permission("https://a.example", "location", "deny", 11).unwrap();
+        s.remember_permission("https://b.example", "camera", "deny", 12).unwrap();
+        assert_eq!(s.remembered_permission("https://a.example", "camera").as_deref(), Some("allow"));
+        assert_eq!(s.remembered_permission("https://b.example", "camera").as_deref(), Some("deny"));
+        // A new answer replaces the old one.
+        s.remember_permission("https://a.example", "camera", "deny", 20).unwrap();
+        assert_eq!(s.remembered_permission("https://a.example", "camera").as_deref(), Some("deny"));
+        assert_eq!(s.remembered_permissions().len(), 3);
+        assert_eq!(s.forget_permissions(Some("https://a.example")).unwrap(), 2);
+        assert_eq!(s.remembered_permissions().len(), 1);
+        assert_eq!(s.forget_permissions(None).unwrap(), 1);
+        assert!(s.remembered_permissions().is_empty());
     }
 
     #[test]

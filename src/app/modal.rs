@@ -58,6 +58,7 @@ impl Shell {
 
     fn present_modal(self: &Rc<Self>, view: Rc<BrowserView>, cell: Rc<OnceCell<Weak<Modal>>>, url: &str) {
         view.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
+        self.apply_view_settings(&view);
         let entry = gtk::Entry::builder().editable(false).hexpand(true).text(url).build();
         let clamp = adw::Clamp::builder().maximum_size(800).tightening_threshold(500).child(&entry).build();
         let header = adw::HeaderBar::new();
@@ -221,6 +222,27 @@ impl Modal {
                 }
             }
             ViewEvent::ContextMenu(req) => self.view.show_context_menu(req),
+            // Questions and downloads from a modal's page are the window's business.
+            ViewEvent::Permission(req) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.prompt_permission(req);
+                }
+            }
+            ViewEvent::PermissionDismissed(id) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.dismiss_permission(id);
+                }
+            }
+            ViewEvent::Download { id, name, state } => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.download_event(id, &name, state);
+                }
+            }
+            ViewEvent::DownloadAsk(q) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.ask_download(q);
+                }
+            }
             // Links in a modal are routed like any link from its window.
             ViewEvent::Route { action, url } => {
                 let owner = self.owner.upgrade();

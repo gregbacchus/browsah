@@ -102,6 +102,55 @@ history:
   exclude: ["*.bank.example", "intranet.example.com/hr/*"]
 ```
 
+## `permissions`
+
+What pages may do. Each kind of permission is `allow`, `deny` or `ask`; `ask` shows a question the first time
+and remembers the answer for the site (see [Permissions](permissions.md)). Can differ per workspace.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `permissions.default` | `allow`, `deny` or `ask` | `ask` | For any kind with no setting of its own, including kinds that are not listed (`other`). |
+| `permissions.camera` | `allow`, `deny` or `ask` | the `default` | Whether pages may use the camera. |
+| `permissions.microphone` | `allow`, `deny` or `ask` | the `default` | Whether pages may use the microphone. |
+| `permissions.location` | `allow`, `deny` or `ask` | the `default` | Whether pages may know the device's location. |
+| `permissions.notifications` | `allow`, `deny` or `ask` | the `default` | Whether pages may show notifications. |
+| `permissions.clipboard` | `allow`, `deny` or `ask` | the `default` | Whether pages may read the clipboard. |
+| `permissions.screen` | `allow`, `deny` or `ask` | the `default` | Whether pages may share the screen or a window. |
+| `permissions.midi` | `allow`, `deny` or `ask` | the `default` | Whether pages may use MIDI devices. |
+| `permissions.sites` | list | none | Rules for particular sites, tried in order; the first matching rule that says something about a kind decides it. Each is a map with the keys below. Use `sites+:` in a profile or workspace to add to the list from a lower layer instead of replacing it. |
+| `permissions.sites[].match` | list of text | none | The sites: address patterns as for a pinned tab's scope (`meet.example.com`, `*.zoom.us`, `**.example.com`). Any one may match. |
+| `permissions.sites[].default` | `allow`, `deny` or `ask` | no opinion | For these sites, any kind this rule does not name. |
+| `permissions.sites[].camera` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may use the camera. |
+| `permissions.sites[].microphone` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may use the microphone. |
+| `permissions.sites[].location` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may know the device's location. |
+| `permissions.sites[].notifications` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may show notifications. |
+| `permissions.sites[].clipboard` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may read the clipboard. |
+| `permissions.sites[].screen` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may share the screen or a window. |
+| `permissions.sites[].midi` | `allow`, `deny` or `ask` | no opinion | For these sites: whether pages may use MIDI devices. |
+
+```yaml
+permissions:
+  default: ask
+  notifications: deny
+  sites:
+    - match: ["meet.example.com", "*.zoom.us"]
+      camera: allow
+      microphone: allow
+```
+
+## `downloads`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `downloads.directory` | text | your Downloads folder | The folder files are saved in; `~` is your home folder. A name already there is never overwritten (`file (1).txt`). Can differ per workspace. |
+| `downloads.ask` | bool | `false` | Ask where to save each file; the question starts in `directory`. |
+
+```yaml
+downloads:
+  directory: ~/Documents/Work
+  ask: false
+```
+
 ## `gpu`
 
 | Key | Type | Default | Description |

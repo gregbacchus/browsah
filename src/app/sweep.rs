@@ -232,6 +232,7 @@ impl Shell {
         let new = BrowserView::new_dormant(gtk::prelude::WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &url, shot.as_deref(), self.event_closure(&cell));
         new.set_workspace(self.workspace_id().map(str::to_owned));
         new.set_popup_policy(self.popup_policy);
+        self.apply_view_settings(&new);
         let old = tab.view();
         tab.holder.prepend(&new.widget);
         tab.holder.remove(&old.widget);

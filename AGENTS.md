@@ -55,6 +55,8 @@ take minutes.
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
 | `src/history.rs` | History helpers and the `browsah history` command line |
 | `src/sweep.rs` | Tab sweeping model: durations, `Usage` (decaying score), rules and the `Sweeper` (pure, tested); applying it is `app/sweep.rs` |
+| `src/permissions.rs` | Permission model (`Choice`, `Kind`, `PermissionsConfig::decide`) and `browsah permissions` |
+| `src/downloads.rs` | Download folder resolution, file names and `DownloadsConfig` |
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
@@ -93,6 +95,14 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **Permissions and downloads**: CEF's `PermissionHandler` and `DownloadHandler` are in `view.rs`
+  (`handle_permission`, `ViewDownloads`) and judge by the view's copy of the configuration
+  (`BrowserView::set_permissions`/`set_downloads`, pushed by `Shell::apply_view_settings` whenever a view is
+  created or the configuration reloads). Only `ask` reaches the shell (`app/prompts.rs`: a queue of
+  `AlertDialog`s, remembered answers in `permission_decisions`, the Save-as dialog, download toasts). Chromium
+  keeps the answer it is given to a prompt and then stops asking us, so `forget_in_chromium` clears it on every
+  main-frame load start; setting the screen-capture content setting crashes Chromium, so that kind is skipped.
+  The self-test holds questions (`prompts::set_ui_test`) instead of showing them.
 - **Sweeping closed workspaces**: `sweep::sweep_stored` applies the rules to a workspace's remembered tabs in
   the database (the profile process calls it from `app::sweep::background_sweep`, eight seconds after start and
   every minute per workspace interval, skipping workspaces with an open window; `browsah sweep` calls it for a

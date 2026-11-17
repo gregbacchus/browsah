@@ -66,6 +66,7 @@ fn screenshot(window: &adw::ApplicationWindow, path: &str) -> bool {
 }
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
+    super::prompts::set_ui_test(true); // questions are held for the test to answer, not shown
     super::view::set_synthetic_pointer_only(true);
     glib::MainContext::default().spawn_local(async move {
         let mut r = Report { failed: 0, total: 0 };
@@ -239,6 +240,8 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_sweep(shell, r).await;
     run_closed_workspace_sweep(shell, r).await;
     run_new_tab_page(shell, r).await;
+    run_permissions(shell, r).await;
+    run_downloads(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -846,6 +849,7 @@ fn start_test_server() -> u16 {
                     format!("<!doctype html><title>Scope test</title><a href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">out of scope</a><a target=\"_blank\" href=\"http://127.0.0.1:{port}/b.html\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">in a new tab</a>"),
                 ),
                 "/form.html" => ("200 OK", String::new(), "<!doctype html><title>Form</title><input id=i value=\"\"><textarea id=t></textarea>".to_owned()),
+                "/file.txt" => ("200 OK", "Content-Disposition: attachment; filename=\"note.txt\"\r\n".to_owned(), "hello".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
                 _ => ("404 Not Found", String::new(), "<title>Not found</title>".to_owned()),
@@ -1573,6 +1577,195 @@ async fn run_new_tab_page(shell: &Rc<Shell>, r: &mut Report) {
         let _ = wait_until(5_000, || find(id).is_none()).await;
     }
     for id in ["nh", "nb"] {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// Run JavaScript in a tab and return the string it produced (a promise is awaited).
+async fn eval_string(tab: &Rc<super::Tab>, expression: &str) -> Option<String> {
+    let v = tab.view();
+    let id = v.cdp_eval(expression);
+    let _ = wait_until(15_000, || v.cdp_result(id).is_some()).await;
+    let (_, json) = v.cdp_result(id)?;
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json).ok()?;
+    parsed.get("result")?.get("value")?.as_str().map(str::to_owned)
+}
+
+/// Permissions: the configuration allows or denies (per kind and per site) without asking; `ask` puts a
+/// question to the person, and a remembered answer stands in for the question.
+async fn run_permissions(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let store = || crate::store::Store::open(&db).expect("store");
+    let page = format!("http://localhost:{port}/b.html");
+    for id in ["pm", "pa"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = store().delete_workspace(id);
+    }
+    let _ = store().forget_permissions(None);
+    std::fs::write(profile.workspaces_dir().join("pm/workspace.yaml"), format!("home_page: '{page}'\npermissions:\n  default: ask\n  notifications: allow\n  location: deny\n  sites:\n    - match: ['127.0.0.1']\n      notifications: deny\n")).expect("pm");
+    std::fs::write(profile.workspaces_dir().join("pa/workspace.yaml"), format!("home_page: '{page}'\npermissions:\n  default: ask\n")).expect("pa");
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let geo = "new Promise(r => navigator.geolocation.getCurrentPosition(() => r('ok'), e => r('err' + e.code), { timeout: 3000 }))";
+
+    // The configuration decides.
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pm".to_variant()));
+    let ok = wait_until(15_000, || find("pm").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    r.check("a workspace with permission rules opens", ok, || "not open".into());
+    let Some(pm) = find("pm") else { return };
+    let tab = pm.current().expect("tab");
+    let granted = eval_string(&tab, "Notification.requestPermission()").await;
+    r.check("a kind set to allow is granted without asking", granted.as_deref() == Some("granted") && pm.pending_permission().is_none(), || format!("{granted:?}"));
+    let loc = eval_string(&tab, geo).await;
+    r.check("a kind set to deny is refused without asking", loc.as_deref() == Some("err1") && pm.pending_permission().is_none(), || format!("{loc:?}"));
+    tab.view().navigate(&format!("http://127.0.0.1:{port}/b.html"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains("127.0.0.1") && !tab.state.borrow().loading).await;
+    let denied = eval_string(&tab, "Notification.requestPermission()").await;
+    r.check("a site rule beats the kind's setting", denied.as_deref() == Some("denied") && pm.pending_permission().is_none(), || format!("{denied:?}"));
+
+    // Asking. (Chromium keeps the answers it was given for an origin, so each scenario below uses an
+    // origin of its own: another server, another port.)
+    let port = start_test_server();
+    std::fs::write(profile.workspaces_dir().join("pa/workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\npermissions:\n  default: ask\n")).expect("pa");
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pa".to_variant()));
+    let ok = wait_until(15_000, || find("pa").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    r.check("a workspace that asks opens", ok, || "not open".into());
+    let Some(pa) = find("pa") else { return };
+    let tab = pa.current().expect("tab");
+    let _ = eval_string(&tab, "window.__p = Notification.requestPermission(); 'started'").await;
+    let ok = wait_until(10_000, || pa.pending_permission().is_some()).await;
+    let q = pa.pending_permission();
+    r.check("a request that needs asking becomes a question for the person", ok && q.as_ref().is_some_and(|q| q.unresolved() == [crate::permissions::Kind::Notifications] && q.req.origin == format!("http://localhost:{port}")), || format!("{:?}", q.map(|q| q.req.origin.clone())));
+    pa.answer_pending_permission(true, true);
+    let result = eval_string(&tab, "window.__p").await;
+    r.check("allowing answers the page", result.as_deref() == Some("granted"), || format!("{result:?}"));
+    let kept = store().remembered_permission(&format!("http://localhost:{port}"), "notifications");
+    r.check("the answer is remembered for the site and kind", kept.as_deref() == Some("allow"), || format!("{kept:?}"));
+
+    // A permission lasts as long as the page it was given to. Chromium would go on answering the same origin
+    // itself for good (making the configuration, "forget" and "do not remember" meaningless), so what it kept is
+    // cleared when a page of the origin starts loading: the next load reaches us again, and the remembered answer
+    // stands in for the question.
+    let samepage = eval_string(&tab, "Notification.requestPermission()").await;
+    r.check("while the page stays, Chromium goes on answering it", samepage.as_deref() == Some("granted"), || format!("{samepage:?}"));
+    tab.view().navigate(&format!("http://localhost:{port}/b.html?second=1"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains("second=1") && !tab.state.borrow().loading).await;
+    let before = super::view::PERMISSION_REQUESTS.load(std::sync::atomic::Ordering::Relaxed);
+    let again = eval_string(&tab, "Notification.requestPermission()").await;
+    let seen = super::view::PERMISSION_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) - before;
+    r.check("the next load of the origin reaches us again and is answered from the remembered answer", seen == 1 && again.as_deref() == Some("granted") && pa.pending_permission().is_none(), || format!("{again:?}, handler reached {seen} time(s)"));
+
+    // A remembered answer stands in for the question.
+    let port = start_test_server();
+    tab.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains(&port.to_string()) && !tab.state.borrow().loading).await;
+    let origin = format!("http://localhost:{port}");
+    store().remember_permission(&origin, "location", "deny", 1).expect("remember");
+    let loc = eval_string(&tab, geo).await;
+    r.check("a remembered deny answers without a question", loc.as_deref() == Some("err1") && pa.pending_permission().is_none(), || format!("{loc:?}"));
+    let port = start_test_server();
+    tab.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains(&port.to_string()) && !tab.state.borrow().loading).await;
+    store().remember_permission(&format!("http://localhost:{port}"), "location", "allow", 2).expect("remember");
+    let loc = eval_string(&tab, geo).await;
+    r.check("a remembered allow lets the request through without a question", loc.as_deref() != Some("err1") && pa.pending_permission().is_none(), || format!("{loc:?}"));
+    // Blocking without remembering keeps nothing.
+    let port = start_test_server();
+    tab.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains(&port.to_string()) && !tab.state.borrow().loading).await;
+    let _ = store().forget_permissions(None);
+    let _ = eval_string(&tab, "window.__q = new Promise(r => navigator.geolocation.getCurrentPosition(() => r('ok'), e => r('err' + e.code), { timeout: 5000 })); 'started'").await;
+    let ok = wait_until(10_000, || pa.pending_permission().is_some()).await;
+    pa.answer_pending_permission(false, false);
+    let result = eval_string(&tab, "window.__q").await;
+    r.check("blocking without remembering refuses this time and keeps nothing", ok && result.as_deref() == Some("err1") && store().remembered_permissions().is_empty(), || format!("{result:?} {:?}", store().remembered_permissions()));
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ["pm", "pa"] {
+        let _ = store().delete_workspace(id);
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+    let _ = store().forget_permissions(None);
+}
+
+/// Downloads go to the configured folder without overwriting; `ask` puts a Save-as question first.
+async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let tmp = std::env::temp_dir().join(format!("browsah-dl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    for id in ["dl", "da"] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+    }
+    let home = format!("http://localhost:{port}/b.html");
+    std::fs::write(profile.workspaces_dir().join("dl/workspace.yaml"), format!("home_page: '{home}'\ndownloads:\n  directory: '{}'\n", tmp.join("plain").display())).expect("dl");
+    std::fs::write(profile.workspaces_dir().join("da/workspace.yaml"), format!("home_page: '{home}'\ndownloads:\n  directory: '{}'\n  ask: true\n", tmp.join("asked").display())).expect("da");
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let file_url = format!("http://localhost:{port}/file.txt");
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"dl".to_variant()));
+    let ok = wait_until(15_000, || find("dl").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    r.check("a workspace with a download folder opens", ok, || "not open".into());
+    let Some(dl) = find("dl") else { return };
+    let tab = dl.current().expect("tab");
+    tab.view().navigate(&file_url);
+    let first = tmp.join("plain/note.txt");
+    let ok = wait_until(15_000, || first.is_file() && dl.completed_downloads().len() == 1).await;
+    r.check("a download is saved in the configured folder under the suggested name", ok && std::fs::read_to_string(&first).ok().as_deref() == Some("hello"), || format!("{:?}", std::fs::read_dir(tmp.join("plain")).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>())));
+    tab.view().navigate(&file_url);
+    let second = tmp.join("plain/note (1).txt");
+    let ok = wait_until(15_000, || second.is_file() && dl.completed_downloads().len() == 2).await;
+    r.check("a second download of the same name does not overwrite the first", ok && first.is_file(), || "no second file".into());
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"da".to_variant()));
+    let ok = wait_until(15_000, || find("da").is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    r.check("a workspace that asks where to save opens", ok, || "not open".into());
+    let Some(da) = find("da") else { return };
+    let tab = da.current().expect("tab");
+    tab.view().navigate(&file_url);
+    let ok = wait_until(15_000, || da.pending_download_question().is_some()).await;
+    let q = da.pending_download_question();
+    r.check("with ask the download waits for a place to save, suggesting the name and folder", ok && q.as_ref().is_some_and(|q| q.suggested == "note.txt" && q.dir == tmp.join("asked")), || format!("{q:?}"));
+    if let Some(q) = da.take_pending_download() {
+        q.answer(Some(tmp.join("asked/chosen.txt")));
+    }
+    let chosen = tmp.join("asked/chosen.txt");
+    let ok = wait_until(15_000, || chosen.is_file()).await;
+    r.check("a chosen place is used", ok && std::fs::read_to_string(&chosen).ok().as_deref() == Some("hello"), || "not saved".into());
+    tab.view().navigate(&file_url);
+    let ok = wait_until(15_000, || da.pending_download_question().is_some()).await;
+    if let Some(q) = da.take_pending_download() {
+        q.answer(None);
+    }
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let files = std::fs::read_dir(tmp.join("asked")).map(|d| d.flatten().count()).unwrap_or(0);
+    r.check("cancelling the question saves nothing", ok && files == 1, || format!("{files} files"));
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = std::fs::remove_dir_all(&tmp);
+    for id in ["dl", "da"] {
         let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }

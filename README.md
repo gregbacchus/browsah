@@ -76,6 +76,11 @@ score, which sites), closing them (recoverable with `Ctrl+Shift+T`, recorded as 
 sleep. Tabs with unsaved form input or playing media are never swept. See
 [docs/config/sweep.md](docs/config/sweep.md).
 
+Permissions and downloads: pages that ask to use the camera, microphone, location, notifications and so on are
+allowed, denied or asked about by rules (per kind and per site, in any layer), and the answers you choose to
+remember are kept per profile (`browsah permissions list`). Downloads go to a configurable folder per profile or
+workspace, optionally asking where to save each file. See [docs/config/permissions.md](docs/config/permissions.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

@@ -48,6 +48,8 @@ pub struct Config {
     pub gpu: GpuConfig,
     pub input: InputConfig,
     pub history: HistoryConfig,
+    pub permissions: crate::permissions::PermissionsConfig,
+    pub downloads: crate::downloads::DownloadsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -125,6 +127,8 @@ impl Default for Config {
             gpu: GpuConfig::default(),
             input: InputConfig::default(),
             history: HistoryConfig::default(),
+            permissions: Default::default(),
+            downloads: Default::default(),
         }
     }
 }
@@ -482,6 +486,9 @@ mod tests {
         add("gpu", field_names::<GpuConfig>());
         add("input", field_names::<InputConfig>());
         add("history", field_names::<HistoryConfig>());
+        add("permissions", field_names::<crate::permissions::PermissionsConfig>());
+        add("downloads", field_names::<crate::downloads::DownloadsConfig>());
+        add("permissions.sites[]", field_names::<crate::permissions::SiteConfig>());
         out
     }
 
@@ -512,7 +519,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

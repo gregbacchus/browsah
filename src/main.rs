@@ -7,8 +7,10 @@ mod cef_rt;
 mod cli;
 mod config;
 mod frames;
+mod downloads;
 mod gpu;
 mod history;
+mod permissions;
 mod profile;
 mod router;
 mod selector;
@@ -47,6 +49,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("selector") {
         std::process::exit(selector::selector_cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("permissions") {
+        std::process::exit(permissions::cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("sweep") {
         std::process::exit(sweep::cli(&args[1..]));
