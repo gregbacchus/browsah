@@ -135,58 +135,65 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         format!("reload={} stop={}", shell.reload.is_visible(), shell.stop.is_visible())
     });
 
-    // Navigate by typing in the address bar, as a user would.
-    shell.entry.set_text(&page("b.html"));
-    shell.entry.emit_by_name::<()>("activate", &[]);
-    let ok = wait_until(15_000, title_is("Page B")).await;
-    r.check("typing an address and pressing Enter navigates", ok, || format!("{:?}", st.borrow()));
-    r.check("back enabled, forward disabled after navigating", shell.back.is_sensitive() && !shell.forward.is_sensitive(), || {
-        format!("back={} forward={}", shell.back.is_sensitive(), shell.forward.is_sensitive())
-    });
-    let b_url = st.borrow().address.clone();
-    r.check("address bar updated to the new page", shell.entry.text() == b_url && b_url.ends_with("/b.html"), || {
-        format!("entry={:?} address={b_url:?}", shell.entry.text())
-    });
+    // Basic navigation (a few seconds; skipped when only other sections are asked for).
+    'basic: {
+        if !wants("basic") {
+            break 'basic;
+        }
+        // Navigate by typing in the address bar, as a user would.
+        shell.entry.set_text(&page("b.html"));
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        let ok = wait_until(15_000, title_is("Page B")).await;
+        r.check("typing an address and pressing Enter navigates", ok, || format!("{:?}", st.borrow()));
+        r.check("back enabled, forward disabled after navigating", shell.back.is_sensitive() && !shell.forward.is_sensitive(), || {
+            format!("back={} forward={}", shell.back.is_sensitive(), shell.forward.is_sensitive())
+        });
+        let b_url = st.borrow().address.clone();
+        r.check("address bar updated to the new page", shell.entry.text() == b_url && b_url.ends_with("/b.html"), || {
+            format!("entry={:?} address={b_url:?}", shell.entry.text())
+        });
 
-    // Back / forward through the window actions (what the shortcuts trigger).
-    let _ = WidgetExt::activate_action(&shell.window, "win.back", None);
-    let ok = wait_until(15_000, title_is("Page A")).await;
-    r.check("back returns to the first page", ok, || format!("{:?}", st.borrow()));
-    r.check("forward enabled, back disabled after going back", shell.forward.is_sensitive() && !shell.back.is_sensitive(), || {
-        format!("back={} forward={}", shell.back.is_sensitive(), shell.forward.is_sensitive())
-    });
+        // Back / forward through the window actions (what the shortcuts trigger).
+        let _ = WidgetExt::activate_action(&shell.window, "win.back", None);
+        let ok = wait_until(15_000, title_is("Page A")).await;
+        r.check("back returns to the first page", ok, || format!("{:?}", st.borrow()));
+        r.check("forward enabled, back disabled after going back", shell.forward.is_sensitive() && !shell.back.is_sensitive(), || {
+            format!("back={} forward={}", shell.back.is_sensitive(), shell.forward.is_sensitive())
+        });
 
-    let _ = WidgetExt::activate_action(&shell.window, "win.forward", None);
-    let ok = wait_until(15_000, title_is("Page B")).await;
-    r.check("forward returns to the second page", ok, || format!("{:?}", st.borrow()));
+        let _ = WidgetExt::activate_action(&shell.window, "win.forward", None);
+        let ok = wait_until(15_000, title_is("Page B")).await;
+        r.check("forward returns to the second page", ok, || format!("{:?}", st.borrow()));
 
-    // Reload completes a load cycle.
-    let before = st.borrow().load_cycles;
-    let _ = WidgetExt::activate_action(&shell.window, "win.reload", None);
-    let ok = wait_until(15_000, || {
-        let s = st.borrow();
-        s.load_cycles > before && !s.loading
-    })
-    .await;
-    r.check("reload completes", ok, || format!("{:?}", st.borrow()));
-    r.check("still on the second page after reload", st.borrow().title == "Page B", || format!("{:?}", st.borrow()));
+        // Reload completes a load cycle.
+        let before = st.borrow().load_cycles;
+        let _ = WidgetExt::activate_action(&shell.window, "win.reload", None);
+        let ok = wait_until(15_000, || {
+            let s = st.borrow();
+            s.load_cycles > before && !s.loading
+        })
+        .await;
+        r.check("reload completes", ok, || format!("{:?}", st.borrow()));
+        r.check("still on the second page after reload", st.borrow().title == "Page B", || format!("{:?}", st.borrow()));
 
-    // about:blank shows an empty address bar rather than the literal text.
-    shell.entry.set_text("about:blank");
-    shell.entry.emit_by_name::<()>("activate", &[]);
-    let ok = wait_until(15_000, || {
-        let s = st.borrow();
-        !s.loading && s.address == "about:blank"
-    })
-    .await;
-    r.check("about:blank loads", ok, || format!("{:?}", st.borrow()));
-    r.check("address bar is empty for about:blank", shell.entry.text().is_empty(), || shell.entry.text().to_string());
+        // about:blank shows an empty address bar rather than the literal text.
+        shell.entry.set_text("about:blank");
+        shell.entry.emit_by_name::<()>("activate", &[]);
+        let ok = wait_until(15_000, || {
+            let s = st.borrow();
+            !s.loading && s.address == "about:blank"
+        })
+        .await;
+        r.check("about:blank loads", ok, || format!("{:?}", st.borrow()));
+        r.check("address bar is empty for about:blank", shell.entry.text().is_empty(), || shell.entry.text().to_string());
 
-    // Typing in the address bar must not be overwritten by a page's address change.
-    shell.entry.set_text("half-typed");
-    let _ = WidgetExt::activate_action(&shell.window, "win.back", None);
-    let _ = wait_until(15_000, title_is("Page B")).await;
-    r.check("text being typed survives a page navigation", shell.entry.text() == "half-typed", || shell.entry.text().to_string());
+        // Typing in the address bar must not be overwritten by a page's address change.
+        shell.entry.set_text("half-typed");
+        let _ = WidgetExt::activate_action(&shell.window, "win.back", None);
+        let _ = wait_until(15_000, title_is("Page B")).await;
+        r.check("text being typed survives a page navigation", shell.entry.text() == "half-typed", || shell.entry.text().to_string());
+
+    }
 
     if wants("input") {
         run_input(shell, r).await;

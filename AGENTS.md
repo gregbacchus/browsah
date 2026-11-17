@@ -47,7 +47,7 @@ Do **not** run everything after every change. Run what the change can affect:
   `webapp`...). The whole unit suite is fast (about a second once built), so run it all before committing, but
   not after each edit.
 - **Self-test:** `BROWSAH_SELFTEST_ONLY=a,b` runs only the sections named (a section is a `run_<name>` function
-  listed in `selftest.rs`'s main sequence: `input`, `scroll`, `tabs`, `locked`, `routing`, `permissions`,
+  listed in `selftest.rs`'s main sequence: `basic` (typing an address, back, forward, reload), `input`, `scroll`, `tabs`, `locked`, `routing`, `permissions`,
   `downloads`, `cookies`, `storage`, `session_cookies`, `session_scope`, `webapp`, `install`, ...). It takes
   seconds. Add a section's check next to the feature, and run that section while developing. Run the **whole**
   self-test (about four minutes; run it in the background and wait for it, `timeout 298`) once, before a commit
