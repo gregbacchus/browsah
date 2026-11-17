@@ -21,7 +21,7 @@ export LD_LIBRARY_PATH=$PWD/target/release
 ```
 
 Needs GTK >= 4.14 and libadwaita >= 1.5 (Ubuntu 24.04 or newer) and a Wayland session. Type a URL,
-a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar, `Ctrl+R`/`F5`
+a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar, `Ctrl+Alt+C` copy the page address (also in the menus, for windows with no address bar), `Ctrl+R`/`F5`
 reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close tab,
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site. `Ctrl+F` finds in the page (`Enter`/`Shift+Enter` or

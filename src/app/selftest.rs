@@ -2758,6 +2758,13 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
         (0..m.n_items()).filter_map(|i| m.item_link(i, "section")).any(|s| (0..s.n_items()).filter_map(|j| s.item_link(j, "submenu")).any(|sub| (0..sub.n_items()).any(|k| sub.item_attribute_value(k, "label", None).and_then(|v| v.str().map(str::to_owned)).as_deref() == Some("Menu test"))))
     });
     r.check("it lists the profile's workspaces to open", sub_has_workspace, || format!("{labels:?}"));
+    // Copy the address with the action (for windows with no address bar).
+    let want = shell.state().borrow().address.clone();
+    let display = gtk::prelude::WidgetExt::display(&shell.window);
+    display.clipboard().set_text("");
+    gtk::prelude::ActionGroupExt::activate_action(&shell.window, "copy-address", None);
+    let got = display.clipboard().read_text_future().await.ok().flatten().map(|s| s.to_string()).unwrap_or_default();
+    r.check("Copy page address puts the page's address on the clipboard", !want.is_empty() && got == want, || format!("wanted {want:?}, got {got:?}"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -386,6 +386,7 @@ impl Shell {
         let cookies = gio::Menu::new();
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
         cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
+        cookies.append(Some("Copy address"), Some("win.copy-address"));
         cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
         cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
         cookies.append(Some("Print\u{2026}"), Some("win.print"));
@@ -796,6 +797,17 @@ impl Shell {
     pub(crate) fn prepare_storage(&self) {
         let dir = self.storage_dir();
         view::set_next_storage(dir);
+    }
+
+    /// Copy the selected tab's address to the clipboard (for windows with no address bar to copy it from).
+    pub fn copy_address(&self) {
+        let address = self.current().map(|t| t.state.borrow().address.clone()).unwrap_or_default();
+        if address.is_empty() || address == "about:blank" {
+            self.toast("No address to copy");
+            return;
+        }
+        gtk::prelude::WidgetExt::display(&self.window).clipboard().set_text(&address);
+        self.toast("Copied the address");
     }
 
     pub fn toast(&self, text: &str) {
@@ -1714,6 +1726,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
     }
+    add_action(&window, "copy-address", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.copy_address();
+            }
+        }
+    });
     add_action(&window, "docs", {
         let weak = weak.clone();
         move || {
@@ -1817,6 +1837,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.forward", &["<Alt>Right"]);
     app.set_accels_for_action("win.reload", &["<Ctrl>R", "F5"]);
     app.set_accels_for_action("win.focus-address", &["<Ctrl>L", "F6"]);
+    app.set_accels_for_action("win.copy-address", &["<Ctrl><Alt>C"]);
     app.set_accels_for_action("win.new-tab", &["<Ctrl>T"]);
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
@@ -2449,6 +2470,7 @@ fn main_menu() -> gio::Menu {
     }
     menu.append_section(None, &windows);
     let page = gio::Menu::new();
+    page.append(Some("Copy page address"), Some("win.copy-address"));
     page.append(Some("Find in page"), Some("win.find"));
     page.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
     page.append(Some("Print\u{2026}"), Some("win.print"));
