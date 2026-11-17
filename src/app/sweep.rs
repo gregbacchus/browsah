@@ -165,6 +165,10 @@ impl Shell {
             if protected {
                 continue;
             }
+            // The last tab of a workspace is never closed (the selected tab is safe anyway; this makes it explicit).
+            if self.tabs.borrow().len() <= 1 {
+                continue;
+            }
             let url = tab.state.borrow().address.clone();
             let Some(rule) = sweeper.decide(&url, &tab.usage.borrow(), now, tab.created.get()) else { continue };
             match rule.action {

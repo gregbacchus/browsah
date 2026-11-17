@@ -67,7 +67,9 @@ sweep:
 
 ## What is never swept
 
-- the tab you are looking at, and a workspace's pinned tabs;
+- the tab you are looking at, a workspace's pinned tabs, and **the last tab of a workspace**: a sweep never
+  leaves a workspace without a tab. (For a workspace whose window is closed, when every remembered tab would
+  be swept and there is no pinned tab, the one used most recently is kept.);
 - a tab with **unsaved form input**: a typed value in a text box, a changed checkbox or choice, or text in
   an editor (the tab is marked with an edit icon while that is so). Pages that fill a box in by script
   can look unsaved when they are not; they are protected, never swept by mistake;

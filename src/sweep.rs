@@ -236,7 +236,11 @@ pub struct StoredSweep {
 /// and nothing can hold unsaved input: the pages are not running). Pinned tabs come from the
 /// configuration each time and are left alone, and a `discard` rule has nothing to do because the tabs
 /// are already asleep. A tab with no recorded use is treated as used now (so it is not swept at once).
-pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64) -> StoredSweep {
+///
+/// **The last tab of a workspace is never swept:** if the rules would remove every tab and the
+/// workspace has no pinned tabs (`pinned_in_config`) to stay behind, the most recently used of the tabs
+/// they would remove is kept.
+pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64, pinned_in_config: usize) -> StoredSweep {
     let mut out = StoredSweep::default();
     for r in records {
         let fired = (!r.pinned).then(|| sweeper.decide(&r.url, &Usage::from_text(&r.usage), now, now)).flatten().filter(|rule| rule.action == Action::Close);
@@ -244,6 +248,11 @@ pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64) -> Stor
             Some(rule) => out.swept.push((r.clone(), rule.name.clone())),
             None => out.kept.push(r.clone()),
         }
+    }
+    if out.kept.is_empty() && pinned_in_config == 0 && !out.swept.is_empty() {
+        let last = out.swept.iter().enumerate().max_by_key(|(_, (r, _))| Usage::from_text(&r.usage).last_used().unwrap_or(i64::MIN)).map(|(i, _)| i).unwrap_or(0);
+        let (rec, _) = out.swept.remove(last);
+        out.kept.push(rec);
     }
     out
 }
@@ -254,7 +263,7 @@ pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64) -> Stor
 pub fn sweep_stored(profile: &Profile, ws: &Workspace, store: &Store, app_file: &std::path::Path, now: i64, apply: bool) -> Vec<String> {
     let Some(sweeper) = Sweeper::from_config(&ws.config.sweep) else { return Vec::new() };
     let records = store.load_tabs(&ws.id);
-    let result = sweep_records(&sweeper, &records, now);
+    let result = sweep_records(&sweeper, &records, now, ws.config.tabs.pinned.len());
     if result.swept.is_empty() {
         return Vec::new();
     }
@@ -360,10 +369,31 @@ mod tests {
             rec(4, "https://x.com/asleep", "1000:1", false),     // the first rule to fire is the discard one: nothing to do, the tab is already asleep
             rec(5, "https://a.com/unknown", "", false),          // no recorded use: treated as used now
         ];
-        let out = sweep_records(&s, &records, now);
+        let out = sweep_records(&s, &records, now, 0);
         let swept: Vec<(u64, &str)> = out.swept.iter().map(|(r, n)| (r.uid, n.as_str())).collect();
         assert_eq!(swept, [(1, "Old")]);
         assert_eq!(out.kept.iter().map(|r| r.uid).collect::<Vec<_>>(), [2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_last_tab_of_a_workspace_is_never_swept() {
+        let cfg: SweepConfig = serde_yaml_ng::from_str("enabled: true\nrules:\n  - idle_for: 1h\n").unwrap();
+        let s = Sweeper::from_config(&cfg).unwrap();
+        let now = 100_000;
+        // One tab, long idle: kept.
+        let one = sweep_records(&s, &[rec(1, "https://a.com/", "1000:1", false)], now, 0);
+        assert!(one.swept.is_empty() && one.kept.len() == 1);
+        // Every tab idle: all but the most recently used go.
+        let all = sweep_records(&s, &[rec(1, "https://a.com/1", "1000:1", false), rec(2, "https://a.com/2", "5000:1", false), rec(3, "https://a.com/3", "2000:1", false)], now, 0);
+        assert_eq!(all.kept.iter().map(|r| r.uid).collect::<Vec<_>>(), [2], "the one used last stays");
+        assert_eq!(all.swept.iter().map(|(r, _)| r.uid).collect::<Vec<_>>(), [1, 3]);
+        // Pinned tabs from the configuration stay behind, so nothing needs saving.
+        let pinned = sweep_records(&s, &[rec(1, "https://a.com/1", "1000:1", false)], now, 1);
+        assert!(pinned.kept.is_empty() && pinned.swept.len() == 1);
+        // A stored pinned record is a tab that stays too.
+        let with_record = sweep_records(&s, &[rec(1, "https://a.com/1", "1000:1", false), rec(2, "https://a.com/2", "1000:1", true)], now, 0);
+        assert_eq!(with_record.kept.len(), 1 + 0, "the pinned one stays, so the other can go") ;
+        assert_eq!(with_record.swept.len(), 1);
     }
 
     #[test]
