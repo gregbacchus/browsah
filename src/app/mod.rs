@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod downloads;
 mod install;
+mod jsdialog;
 mod suggest;
 mod latency;
 mod modal;
@@ -168,6 +169,10 @@ pub struct Shell {
     suggest: suggest::Popup,
     /// The downloads button and its list.
     pub downloads: Rc<downloads::Ui>,
+    /// Dialogs pages opened with script: waiting, the one showing, and (in tests) the one held.
+    js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
+    js_showing: RefCell<Option<(u64, adw::AlertDialog)>>,
+    js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -1076,6 +1081,8 @@ impl Shell {
             ViewEvent::PermissionDismissed(id) => self.dismiss_permission(id),
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
+            ViewEvent::JsDialog(q) => self.show_js_dialog(q),
+            ViewEvent::JsDialogDismissed(view) => self.dismiss_js_dialog(view),
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
                 // The sign-in handed its result to the application: an ephemeral window with only
                 // this tab has nothing more to show.
@@ -1277,6 +1284,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         private: Cell::new(false),
         suggest: suggest::Popup::new(&entry),
         downloads: downloads_ui.clone(),
+        js_queue: RefCell::new(std::collections::VecDeque::new()),
+        js_showing: RefCell::new(None),
+        js_pending: RefCell::new(None),
         session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),

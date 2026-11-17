@@ -106,6 +106,10 @@ pub enum ViewEvent {
     Download { id: u32, name: String, url: String, state: DownloadState, cancel: Option<Arc<DownloadCancel>> },
     /// A download is waiting for the person to say where to save it.
     DownloadAsk(Arc<DownloadQuestion>),
+    /// A page called `alert`, `confirm` or `prompt`, or is being left with unsaved changes.
+    JsDialog(Arc<JsDialogQuestion>),
+    /// The page's dialog is no longer wanted (it navigated away or was closed).
+    JsDialogDismissed(u64),
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
     ExternalLaunch { scheme: String, url: String, signin: bool },
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
@@ -1139,6 +1143,103 @@ wrap_permission_handler! {
     }
 }
 
+// ---- JavaScript dialogs ---------------------------------------------------------------------------
+
+struct JsCb(JsdialogCallback);
+unsafe impl Send for JsCb {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsDialogKind {
+    Alert,
+    Confirm,
+    Prompt,
+    /// "Leave site?": the page asks before it is left (`reload`: by reloading).
+    BeforeUnload { reload: bool },
+}
+
+/// A dialog a page opened with script. Answer it exactly once (`answer`); the page waits for it.
+pub struct JsDialogQuestion {
+    /// The view it came from.
+    pub view: u64,
+    pub kind: JsDialogKind,
+    pub origin: String,
+    pub message: String,
+    pub default_text: String,
+    responder: Mutex<Option<JsCb>>,
+}
+
+impl std::fmt::Debug for JsDialogQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JsDialogQuestion({:?} from {}: {:?})", self.kind, self.origin, self.message)
+    }
+}
+
+impl JsDialogQuestion {
+    /// `ok`: OK / Leave was chosen; `text` is what was typed into a prompt.
+    pub fn answer(&self, ok: bool, text: &str) {
+        let Some(cb) = self.responder.lock().unwrap().take() else { return };
+        let text = text.to_owned();
+        on_ui(move || {
+            let cb = cb;
+            cb.0.cont(ok as _, Some(&CefString::from(text.as_str())));
+        });
+    }
+}
+
+wrap_jsdialog_handler! {
+    struct ViewJsDialog { shared: Arc<Shared> }
+
+    impl JsdialogHandler {
+        fn on_jsdialog(
+            &self,
+            _b: Option<&mut Browser>,
+            origin_url: Option<&CefString>,
+            dialog_type: JsdialogType,
+            message_text: Option<&CefString>,
+            default_prompt_text: Option<&CefString>,
+            callback: Option<&mut JsdialogCallback>,
+            _suppress: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let kind = if dialog_type == JsdialogType::CONFIRM {
+                JsDialogKind::Confirm
+            } else if dialog_type == JsdialogType::PROMPT {
+                JsDialogKind::Prompt
+            } else {
+                JsDialogKind::Alert
+            };
+            let q = Arc::new(JsDialogQuestion {
+                view: self.shared.id,
+                kind,
+                origin: origin_url.map(|u| u.to_string()).unwrap_or_default(),
+                message: message_text.map(|m| m.to_string()).unwrap_or_default(),
+                default_text: default_prompt_text.map(|m| m.to_string()).unwrap_or_default(),
+                responder: Mutex::new(Some(JsCb(callback.clone()))),
+            });
+            send(self.shared.id, ViewEvent::JsDialog(q));
+            1
+        }
+
+        fn on_before_unload_dialog(&self, _b: Option<&mut Browser>, message_text: Option<&CefString>, is_reload: ::std::os::raw::c_int, callback: Option<&mut JsdialogCallback>) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let q = Arc::new(JsDialogQuestion {
+                view: self.shared.id,
+                kind: JsDialogKind::BeforeUnload { reload: is_reload != 0 },
+                origin: String::new(),
+                message: message_text.map(|m| m.to_string()).unwrap_or_default(),
+                default_text: String::new(),
+                responder: Mutex::new(Some(JsCb(callback.clone()))),
+            });
+            send(self.shared.id, ViewEvent::JsDialog(q));
+            1
+        }
+
+        fn on_reset_dialog_state(&self, _b: Option<&mut Browser>) {
+            send(self.shared.id, ViewEvent::JsDialogDismissed(self.shared.id));
+        }
+    }
+}
+
 // ---- downloads --------------------------------------------------------------------------------------
 
 struct DownloadCb(BeforeDownloadCallback);
@@ -1269,6 +1370,7 @@ wrap_client! {
         request: RequestHandler,
         permission: PermissionHandler,
         download: DownloadHandler,
+        jsdialog: JsdialogHandler,
     }
 
     impl Client {
@@ -1280,6 +1382,7 @@ wrap_client! {
         fn request_handler(&self) -> Option<RequestHandler> { Some(self.request.clone()) }
         fn permission_handler(&self) -> Option<PermissionHandler> { Some(self.permission.clone()) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> { Some(self.jsdialog.clone()) }
     }
 }
 
@@ -1292,7 +1395,8 @@ fn make_client(shared: Arc<Shared>) -> Client {
         ViewMenu::new(shared.clone()),
         ViewRequest::new(shared.clone()),
         ViewPermissions::new(shared.clone()),
-        ViewDownloads::new(shared),
+        ViewDownloads::new(shared.clone()),
+        ViewJsDialog::new(shared),
     )
 }
 

@@ -239,6 +239,16 @@ impl Modal {
                     o.download_event(id, &name, &url, state, cancel);
                 }
             }
+            ViewEvent::JsDialog(q) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.show_js_dialog(q);
+                }
+            }
+            ViewEvent::JsDialogDismissed(view) => {
+                if let Some(o) = self.owner.upgrade() {
+                    o.dismiss_js_dialog(view);
+                }
+            }
             ViewEvent::DownloadAsk(q) => {
                 if let Some(o) = self.owner.upgrade() {
                     o.ask_download(q);

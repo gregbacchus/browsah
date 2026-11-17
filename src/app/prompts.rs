@@ -14,6 +14,11 @@ use std::sync::Arc;
 /// Self-test: do not show dialogs; hold the question so the test can answer it.
 static UI_TEST: AtomicBool = AtomicBool::new(false);
 
+/// Whether dialogs are being held for a test.
+pub fn ui_test() -> bool {
+    UI_TEST.load(Ordering::Relaxed)
+}
+
 pub fn set_ui_test(on: bool) {
     UI_TEST.store(on, Ordering::Relaxed);
 }

@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest",
+    "install", "suggest", "jsdialog",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -342,6 +342,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("suggest") {
         run_suggest(shell, r).await;
+    }
+    if wants("jsdialog") {
+        run_jsdialog(shell, r).await;
     }
 }
 
@@ -2312,4 +2315,60 @@ async fn run_suggest(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(200)).await;
     r.check("an empty address bar offers nothing", shell.suggestion_urls().is_empty(), || String::new());
     let _ = st.clear_history(None);
+}
+
+/// Dialogs a page opens with script: held for the test (as the permission questions are), answered, and the page
+/// goes on with the answer.
+async fn run_jsdialog(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    let view = shell.view();
+    view.navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "Page B" }).await;
+    let run = |script: &str| {
+        view.cdp_eval(&format!("setTimeout(() => {{ {script} }}, 0); 1"));
+    };
+    let title_is = |t: &'static str| {
+        let st = st.clone();
+        async move { wait_until(10_000, move || st.borrow().title == t).await }
+    };
+
+    run("document.title = 'got:' + prompt('name?', 'def');");
+    let ok = wait_until(10_000, || shell.pending_js_dialog().is_some()).await;
+    let q = shell.pending_js_dialog();
+    r.check("a prompt is held with its message and default text", ok && q.as_ref().is_some_and(|q| q.kind == super::view::JsDialogKind::Prompt && q.message == "name?" && q.default_text == "def" && q.origin.contains("localhost")), || format!("{q:?}"));
+    shell.answer_pending_js_dialog(true, "Ann");
+    r.check("the page receives what was typed", title_is("got:Ann").await, || st.borrow().title.clone());
+
+    run("document.title = 'c:' + confirm('sure?');");
+    let _ = wait_until(10_000, || shell.pending_js_dialog().is_some()).await;
+    r.check("a confirm is held", shell.pending_js_dialog().is_some_and(|q| q.kind == super::view::JsDialogKind::Confirm), || format!("{:?}", shell.pending_js_dialog()));
+    shell.answer_pending_js_dialog(false, "");
+    r.check("cancelling a confirm gives the page false", title_is("c:false").await, || st.borrow().title.clone());
+    run("document.title = 'd:' + confirm('again?');");
+    let _ = wait_until(10_000, || shell.pending_js_dialog().is_some()).await;
+    shell.answer_pending_js_dialog(true, "");
+    r.check("accepting a confirm gives the page true", title_is("d:true").await, || st.borrow().title.clone());
+
+    run("alert('hello'); document.title = 'after alert';");
+    let _ = wait_until(10_000, || shell.pending_js_dialog().is_some()).await;
+    let held = shell.pending_js_dialog().is_some_and(|q| q.kind == super::view::JsDialogKind::Alert && q.message == "hello");
+    r.check("an alert is held and the page waits for it", held && st.borrow().title != "after alert", || format!("{:?}", st.borrow().title));
+    shell.answer_pending_js_dialog(true, "");
+    r.check("the page continues after the alert", title_is("after alert").await, || st.borrow().title.clone());
+
+    // The real dialog, for a picture: shown instead of held.
+    super::prompts::set_ui_test(false);
+    run("document.title = 'typed:' + prompt('What should we call you?', 'Ann');");
+    let shown = wait_until(10_000, || shell.js_showing.borrow().is_some()).await;
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&shell.window, "js-prompt");
+    r.check("a prompt is shown as a dialog over the window when not under test", shown, || "no dialog".into());
+    let dialog = shell.js_showing.borrow().as_ref().map(|(_, d)| d.clone());
+    if let Some(d) = dialog {
+        d.force_close(); // closing with Esc cancels the prompt
+    }
+    super::prompts::set_ui_test(true);
+    r.check("closing the dialog answers the page (a cancelled prompt gives null)", title_is("typed:null").await, || st.borrow().title.clone());
 }

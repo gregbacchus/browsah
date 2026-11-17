@@ -590,6 +590,21 @@ visible highlight (now an accent tint under `.suggest-list row:selected`). The i
 rules*, *Install as web app…*), the header with the downloads button in a workspace window (its picture failed, the
 window was not in front), light theme, HiDPI, long names and many rows, the dash and launcher entries, notifications.
 
+## Status: JavaScript dialogs (2026-11-17)
+
+Found while reviewing the daily-use basics: the browser had no `JsdialogHandler`, so CEF's default cancelled every
+`alert`, `confirm` and `prompt` (its log says "Default dialog implementation requires a parent window handle;
+canceling the JS dialog"). `ViewJsDialog` (view.rs) now hands each to the owning window (`app/jsdialog.rs`), which shows
+an `AdwAlertDialog` (heading "<host> says", a text entry for a prompt, OK/Cancel; for the leave-page question
+Stay/Leave, destructive) and answers the callback on CEF's UI thread. One dialog at a time per window, queued;
+the self-test holds them as it does permission questions. Measured (`--selftest` section `jsdialog`, 8 checks):
+prompt message, default text and origin; typed text reaches the page; confirm cancel gives `false`, accept `true`;
+an alert blocks the page until answered; closing the real dialog with Esc gives a prompt `null`. A picture of the dialog
+was looked at. **Not measured:** the leave-page question (needs a user gesture on the page; not driven), dialogs from
+background tabs and from modals, a dialog still open when its tab is closed (`on_reset_dialog_state` dismisses
+queued ones on navigation, but a page blocked in a dialog cannot navigate, so that path is untested), long messages,
+"stop showing dialogs from this page".
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

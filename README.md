@@ -26,6 +26,9 @@ reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close ta
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number.
 
+Page dialogs: `alert`, `confirm` and `prompt` from a page, and the "Leave this page?" question for a page with
+unsaved changes, are shown as a dialog over the window (headed with the page's address); the page waits for the answer.
+
 Profiles: each profile is its own data directory, its own GNOME application (own `.desktop`
 entry and icon) and its own process. Several can run at once, and launching a running profile
 again, or opening a link with it, hands the work to the running process.
