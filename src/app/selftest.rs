@@ -237,6 +237,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_modals(shell, r).await;
     run_history(shell, r).await;
     run_sweep(shell, r).await;
+    run_closed_workspace_sweep(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1469,6 +1470,62 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("tab use is saved with the remembered tabs", !saved.is_empty() && saved.iter().all(|t| !t.usage.is_empty()), || format!("{saved:?}"));
 
     let _ = store().delete_workspace("sw");
+    let _ = store().clear_history(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A workspace whose window is closed is still swept: its remembered tabs go by their remembered use.
+async fn run_closed_workspace_sweep(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::store::{Scope, TabRecord};
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let store = || crate::store::Store::open(&db).expect("store");
+    let dir = profile.workspaces_dir().join("sx");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = store().delete_workspace("sx");
+    let _ = store().clear_history(None);
+    std::fs::write(dir.join("workspace.yaml"), "name: Closed\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Gone\n      match: { url: ['localhost'] }\n      idle_for: 1h\n").expect("workspace.yaml");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let tab = |uid: u64, url: &str, used: i64, pinned: bool| TabRecord { uid, url: url.into(), title: format!("T{uid}"), pinned, selected: uid == 1, usage: format!("{used}:1") };
+    let old = now - 3 * 86_400;
+    store().save_tabs("sx", &[
+        tab(1, "http://localhost:1/old-selected", old, false),
+        tab(2, "http://localhost:1/fresh", now - 60, false),
+        tab(3, "http://localhost:1/pinned", old, true),
+        tab(4, "https://example.org/other-site", old, false),
+    ]).expect("save");
+    let app_file = std::env::temp_dir().join("browsah-no-such-config.yaml");
+
+    // No window for the workspace is open. A dry run says what would go and changes nothing.
+    let ws = crate::workspace::Workspace::resolve(&profile, "sx").expect("workspace");
+    let dry = crate::sweep::sweep_stored(&profile, &ws, &store(), &app_file, now, false);
+    r.check("a dry run reports what would be swept and changes nothing", dry.len() == 1 && dry[0].starts_with("would close") && store().load_tabs("sx").len() == 4, || format!("{dry:?}"));
+
+    // The process's own pass does it.
+    let notes = super::sweep::background_sweep(&profile, &app_file, true);
+    r.check("the background pass sweeps a workspace that is not open", notes.len() == 1 && notes[0].contains("old-selected"), || format!("{notes:?}"));
+    let kept: Vec<u64> = store().load_tabs("sx").iter().map(|t| t.uid).collect();
+    r.check("only idle tabs matching the rule are removed (not fresh, pinned or other-site ones)", kept == [2, 3, 4], || format!("{kept:?}"));
+    let closed = store().closed_tabs(Scope::Workspace("sx"), 10);
+    r.check("the swept tab is recorded as swept by its rule", closed.len() == 1 && closed[0].reason == "sweep:Gone", || format!("{closed:?}"));
+    r.check("a second pass has nothing left to sweep", super::sweep::background_sweep(&profile, &app_file, true).is_empty(), || "swept again".into());
+
+    // Opening the workspace shows what is left.
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"sx".to_variant()));
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "sx"));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.tab_count() == 2)).await; // the pinned record comes from the configuration, not the database
+    r.check("the workspace opens with the remaining tabs", ok, || format!("{:?}", find().map(|s| s.tab_count())));
+    // While its window is open the background pass leaves it to the window.
+    store().save_tabs("sx", &[tab(9, "http://localhost:1/x", old, false)]).expect("save");
+    r.check("the background pass skips a workspace whose window is open", super::sweep::background_sweep(&profile, &app_file, true).is_empty(), || "swept an open workspace".into());
+    if let Some(w) = find() {
+        w.window.close();
+    }
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = store().delete_workspace("sx");
     let _ = store().clear_history(None);
     let _ = std::fs::remove_dir_all(&dir);
 }

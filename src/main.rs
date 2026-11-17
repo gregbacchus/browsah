@@ -48,6 +48,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("selector") {
         std::process::exit(selector::selector_cli(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("sweep") {
+        std::process::exit(sweep::cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("history") {
         std::process::exit(history::cli(&args[1..]));
     }

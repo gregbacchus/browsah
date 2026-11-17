@@ -93,6 +93,10 @@ take minutes.
   when idle. A pinned tab's scope is enforced on CEF's thread in `on_before_browse` (`Shared::scope`);
   redirects and pages already outside the scope are exempt. Schema changes to the database need a
   migration in `Store::migrate` and a bump of `SCHEMA_VERSION`.
+- **Sweeping closed workspaces**: `sweep::sweep_stored` applies the rules to a workspace's remembered tabs in
+  the database (the profile process calls it from `app::sweep::background_sweep`, eight seconds after start and
+  every minute per workspace interval, skipping workspaces with an open window; `browsah sweep` calls it for a
+  profile that is not running).
 - **Sweeping** (`app/sweep.rs`, model in `sweep.rs`): a workspace's `sweep:` rules run on a timer. Each pass
   probes every live tab with a script (`PROBE`: unsaved form input, playing media) through DevTools
   `Runtime.evaluate`, waits 1.5 s, then closes (reason `sweep:<rule>` in `closed_tabs`) or discards

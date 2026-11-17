@@ -8,6 +8,55 @@ use adw::prelude::*;
 use std::rc::Rc;
 use std::time::Duration;
 
+thread_local! {
+    /// When each closed workspace was last swept by this process (unix seconds).
+    static LAST_BACKGROUND: std::cell::RefCell<std::collections::HashMap<String, i64>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Sweep the remembered tabs of every workspace that has sweeping rules and no open window, if its
+/// interval has passed (`force`: regardless). Returns what was swept. The same rules as for an open
+/// window; there is nothing to protect because the pages are not running.
+pub(super) fn background_sweep(profile: &crate::profile::Profile, app_file: &std::path::Path, force: bool) -> Vec<String> {
+    let Some(store) = super::store() else { return Vec::new() };
+    let now = now_secs();
+    let mut all = Vec::new();
+    for ws in crate::sweep::workspaces_with_sweeping(profile) {
+        if super::windows().iter().any(|s| s.workspace.as_ref().is_some_and(|w| w.id == ws.id)) {
+            continue; // an open window sweeps its own tabs
+        }
+        let interval = crate::sweep::Sweeper::from_config(&ws.config.sweep).map(|s| s.interval_secs).unwrap_or(300);
+        let due = LAST_BACKGROUND.with(|l| l.borrow().get(&ws.id).is_none_or(|last| now - last >= interval));
+        if !(force || due) {
+            continue;
+        }
+        LAST_BACKGROUND.with(|l| l.borrow_mut().insert(ws.id.clone(), now));
+        let notes = crate::sweep::sweep_stored(profile, &ws, &store, app_file, now, true);
+        if !notes.is_empty() {
+            if let Some(s) = super::windows().first() {
+                s.toast(&format!("Swept {} unused tab{} in workspace {}", notes.len(), if notes.len() == 1 { "" } else { "s" }, ws.display_name()));
+            }
+            all.extend(notes.into_iter().map(|n| format!("{}: {n}", ws.id)));
+        }
+    }
+    if !all.is_empty() && std::env::var_os("BROWSAH_DEBUG").is_some() {
+        eprintln!("browsah: background sweep: {all:?}");
+    }
+    all
+}
+
+/// Sweep closed workspaces soon after start-up (tabs that went idle while the browser was closed) and
+/// then every minute (each workspace on its own interval).
+pub(super) fn start_background_sweeping(profile: crate::profile::Profile, app_file: std::path::PathBuf) {
+    let (p1, f1) = (profile.clone(), app_file.clone());
+    glib::timeout_add_seconds_local_once(8, move || {
+        background_sweep(&p1, &f1, false);
+    });
+    glib::timeout_add_seconds_local(60, move || {
+        background_sweep(&profile, &app_file, false);
+        glib::ControlFlow::Continue
+    });
+}
+
 /// What the probe asks a page: is anything typed in a form or editor that has not been saved, and is
 /// media playing. Conservative on purpose: a box a script filled in looks unsaved.
 const PROBE: &str = r#"(() => {

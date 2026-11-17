@@ -8,7 +8,9 @@
 //! This module is the model: durations, usage, rules and the decision. Applying a decision (closing or
 //! discarding a tab, checking for unsaved form input and playing media first) is in `app/sweep.rs`.
 
-use crate::workspace::scope_matches;
+use crate::profile::Profile;
+use crate::store::{Store, TabRecord};
+use crate::workspace::{scope_matches, Workspace};
 use serde::Deserialize;
 use std::collections::VecDeque;
 
@@ -220,12 +222,148 @@ impl Sweeper {
     }
 }
 
+// ---- sweeping a workspace that is not open ----------------------------------------------------------
+
+/// The outcome of sweeping a workspace's remembered tabs.
+#[derive(Debug, Default)]
+pub struct StoredSweep {
+    pub kept: Vec<TabRecord>,
+    /// Tabs to close, with the name of the rule that fired.
+    pub swept: Vec<(TabRecord, String)>,
+}
+
+/// Apply a workspace's rules to its remembered tabs (no window is open, so nothing is being looked at
+/// and nothing can hold unsaved input: the pages are not running). Pinned tabs come from the
+/// configuration each time and are left alone, and a `discard` rule has nothing to do because the tabs
+/// are already asleep. A tab with no recorded use is treated as used now (so it is not swept at once).
+pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64) -> StoredSweep {
+    let mut out = StoredSweep::default();
+    for r in records {
+        let fired = (!r.pinned).then(|| sweeper.decide(&r.url, &Usage::from_text(&r.usage), now, now)).flatten().filter(|rule| rule.action == Action::Close);
+        match fired {
+            Some(rule) => out.swept.push((r.clone(), rule.name.clone())),
+            None => out.kept.push(r.clone()),
+        }
+    }
+    out
+}
+
+/// Sweep the remembered tabs of `ws` (which must not have an open window). With `apply` false only
+/// the notes are produced ("would close ..."). Swept tabs are removed from the workspace and kept in
+/// the history of closed tabs as `sweep:<rule>`, subject to the workspace's history settings.
+pub fn sweep_stored(profile: &Profile, ws: &Workspace, store: &Store, app_file: &std::path::Path, now: i64, apply: bool) -> Vec<String> {
+    let Some(sweeper) = Sweeper::from_config(&ws.config.sweep) else { return Vec::new() };
+    let records = store.load_tabs(&ws.id);
+    let result = sweep_records(&sweeper, &records, now);
+    if result.swept.is_empty() {
+        return Vec::new();
+    }
+    let history = crate::config::load_window(app_file, &profile.dir.join("profile.yaml"), Some(&ws.dir.join("workspace.yaml"))).map(|l| l.config.history).unwrap_or_default();
+    let mut notes = Vec::new();
+    for (rec, rule) in &result.swept {
+        notes.push(format!("{} {} ({rule})", if apply { "closed" } else { "would close" }, rec.url));
+    }
+    if apply {
+        if store.save_tabs(&ws.id, &result.kept).is_err() {
+            return vec!["cannot save the workspace's tabs; nothing was swept".into()];
+        }
+        for (rec, rule) in &result.swept {
+            let web = rec.url.starts_with("http://") || rec.url.starts_with("https://");
+            if web && history.enabled && !history.exclude.iter().any(|p| scope_matches(p, &rec.url)) {
+                let _ = store.record_closed(Some(&ws.id), &rec.url, &rec.title, now, &format!("sweep:{rule}"), None);
+            }
+            let _ = std::fs::remove_file(ws.dir.join("shots").join(format!("{}.png", rec.uid)));
+        }
+    }
+    notes
+}
+
+/// Every workspace of a profile that has sweeping rules.
+pub fn workspaces_with_sweeping(profile: &Profile) -> Vec<Workspace> {
+    Workspace::list(profile).into_iter().filter(|w| Sweeper::from_config(&w.config.sweep).is_some()).collect()
+}
+
+const CLI_USAGE: &str = "usage: browsah sweep [--profile ID] [--workspace ID] [--dry-run]
+
+Applies each workspace's sweeping rules (`sweep:` in workspace.yaml) to its remembered tabs, for
+workspaces that are not open: tabs idle past a close rule are removed and kept in the history of
+closed tabs. A running profile does this itself; use this for a profile that is not running, from a
+cron job or a systemd timer. --dry-run only says what would be swept.";
+
+/// `browsah sweep ...`. Returns the exit code.
+pub fn cli(args: &[String]) -> i32 {
+    let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned)).or_else(|| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned()));
+    if args.iter().any(|a| a == "--help") {
+        println!("{CLI_USAGE}");
+        return 0;
+    }
+    let profile = match Profile::resolve(&value("--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned())) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let dry = args.iter().any(|a| a == "--dry-run");
+    if !dry && crate::profile::is_running(&profile) {
+        eprintln!("profile {:?} is running and sweeps its closed workspaces itself; use --dry-run to look", profile.id);
+        return 1;
+    }
+    let db = profile.dir.join("data.sqlite");
+    if !db.exists() {
+        println!("nothing to sweep (no stored tabs yet)");
+        return 0;
+    }
+    let store = match Store::open(&db) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let only = value("--workspace");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let mut any = false;
+    for ws in workspaces_with_sweeping(&profile).into_iter().filter(|w| only.as_ref().is_none_or(|o| *o == w.id)) {
+        for note in sweep_stored(&profile, &ws, &store, &crate::config::default_path(), now, !dry) {
+            any = true;
+            println!("{}: {note}", ws.id);
+        }
+    }
+    if !any {
+        println!("nothing to sweep");
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn rule(yaml: &str) -> Result<Rule, String> {
         Rule::compile(&serde_yaml_ng::from_str(yaml).unwrap(), 1)
+    }
+
+    fn rec(uid: u64, url: &str, usage: &str, pinned: bool) -> TabRecord {
+        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned, selected: uid == 1, usage: usage.into() }
+    }
+
+    #[test]
+    fn stored_tabs_are_swept_by_their_remembered_use() {
+        let cfg: SweepConfig = serde_yaml_ng::from_str("enabled: true\nrules:\n  - name: Sleepy\n    match: { url: ['x.com'] }\n    idle_for: 1m\n    action: discard\n  - name: Old\n    idle_for: 1h\n").unwrap();
+        let s = Sweeper::from_config(&cfg).unwrap();
+        let now = 100_000;
+        let records = vec![
+            rec(1, "https://a.com/old", "1000:1", false),        // idle for ~27 hours: swept (even though it was the selected one)
+            rec(2, "https://a.com/fresh", "99900:1", false),     // used a moment ago
+            rec(3, "https://a.com/pinned", "1000:1", true),      // pinned: left alone
+            rec(4, "https://x.com/asleep", "1000:1", false),     // the first rule to fire is the discard one: nothing to do, the tab is already asleep
+            rec(5, "https://a.com/unknown", "", false),          // no recorded use: treated as used now
+        ];
+        let out = sweep_records(&s, &records, now);
+        let swept: Vec<(u64, &str)> = out.swept.iter().map(|(r, n)| (r.uid, n.as_str())).collect();
+        assert_eq!(swept, [(1, "Old")]);
+        assert_eq!(out.kept.iter().map(|r| r.uid).collect::<Vec<_>>(), [2, 3, 4, 5]);
     }
 
     #[test]

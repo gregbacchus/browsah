@@ -442,6 +442,19 @@ test calls the pass directly; the interval is validated), a long-running window,
 only tab, many tabs (each pass probes every live tab), the media probe against real video, restore of a
 tab that was discarded, the look of the indicators.
 
+Update (requested after the first version): **sweeping also happens when the workspace's window is closed.** A
+running profile sweeps the remembered tabs of closed workspaces (about eight seconds after start-up, then each
+workspace on its own interval, skipping workspaces whose window is open), and `browsah sweep [--profile]
+[--workspace] [--dry-run]` does the same for a profile that is not running (for cron or a systemd timer; it
+refuses while the profile runs, `--dry-run` is always allowed). The rules and use records are the same; a
+closed workspace has no selected tab, no running page (so no unsaved-input check) and nothing to discard.
+Measured (self-test, 7 checks, plus a unit test): a dry run changes nothing; the pass removes the idle tab that
+matches a rule and leaves fresh, pinned (these come from the configuration) and other-site ones; it is recorded
+as `sweep:<rule>`; a second pass does nothing; the workspace opens with the rest; an open workspace is skipped.
+**Not verified:** the eight-second start-up pass and the one-minute timer in a real run, the command against a
+real profile with stored tabs (only the empty case was run), a systemd timer. Limitation: a profile that is not
+running is only swept if something runs `browsah sweep`; the browser itself exits when its last window closes.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

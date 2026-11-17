@@ -2,7 +2,32 @@
 
 Sweeping tidies up tabs you are no longer using, by rules you write for a workspace (`sweep:` in
 [workspace.yaml](workspace.md)). It is off until `sweep.enabled` is `true`. The rules are checked every
-`sweep.interval` (5 minutes by default) while the workspace's window is open.
+`sweep.interval` (5 minutes by default).
+
+## When the workspace is not open
+
+Sweeping does not need the workspace's window. While the profile is running, a workspace whose window is
+closed is still swept: its remembered tabs are checked by the same rules, using how they were used before
+the window closed (idle time keeps counting while it is closed). This happens about eight seconds after
+the profile starts, so tabs that went idle while the browser was closed are dealt with at once, and then
+on each workspace's interval. A swept tab is removed from the workspace and kept in the history of closed
+tabs as `sweep:<rule name>`, just as for an open window; when you open the workspace you find what is left.
+
+For a profile that is **not running** at all there is a command, to run from a cron job or a systemd timer:
+
+```bash
+browsah sweep --profile=work              # sweep every workspace of the profile that has rules
+browsah sweep --profile=work --dry-run    # say what would be swept, change nothing
+browsah sweep --workspace=mail            # only one workspace
+```
+
+(It refuses to run while the profile is running, because the running profile does it; `--dry-run` is always
+allowed.)
+
+Differences from sweeping an open window: nothing is being looked at and no page is running, so there is no
+"tab being looked at" and no unsaved form input to protect; `discard` rules do nothing (the tabs are already
+asleep, without a page); a tab with no recorded use is treated as used now, so it is not swept at once; and
+pinned tabs are left alone.
 
 ## How use is measured
 

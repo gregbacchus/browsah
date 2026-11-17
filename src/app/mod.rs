@@ -1515,6 +1515,11 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         Ok(s) => STORE.with(|st| *st.borrow_mut() = Some(Rc::new(s))),
         Err(e) => eprintln!("browsah: cannot open the profile database ({e}); tabs will not be remembered"),
     }
+    // Workspaces with sweeping rules are swept while their window is closed too.
+    if !opts.selftest && !opts.latency {
+        let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+        sweep::start_background_sweeping(profile.clone(), app_file);
+    }
     // Old history is deleted when the browser starts.
     if let (Some(store), days) = (store(), cfg0.history.retention_days) {
         if days > 0 {
