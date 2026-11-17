@@ -36,6 +36,7 @@ impl Shell {
     /// Open `url` as a modal over this window.
     pub fn open_modal(self: &Rc<Self>, url: &str) {
         let cell: Rc<OnceCell<Weak<Modal>>> = Rc::new(OnceCell::new());
+        self.prepare_storage();
         let view = BrowserView::new(gtk::prelude::WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), url, Self::modal_events(&cell));
         self.present_modal(view, cell, url);
     }

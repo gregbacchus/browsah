@@ -197,6 +197,7 @@ impl Shell {
     pub fn apply_view_settings(&self, view: &super::view::BrowserView) {
         let s = self.settings.borrow();
         view.set_permissions(s.permissions.clone());
+        view.set_cookies(s.cookies.clone());
         view.set_downloads(crate::downloads::resolve_directory(&s.downloads), s.downloads.ask);
     }
 }

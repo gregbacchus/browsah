@@ -229,6 +229,7 @@ impl Shell {
         let cell: Rc<std::cell::OnceCell<std::rc::Weak<Tab>>> = Rc::new(std::cell::OnceCell::new());
         let _ = cell.set(Rc::downgrade(tab));
         let shot = self.screenshot_path(tab.uid);
+        self.prepare_storage();
         let new = BrowserView::new_dormant(gtk::prelude::WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &url, shot.as_deref(), self.event_closure(&cell));
         new.set_workspace(self.workspace_id().map(str::to_owned));
         new.set_popup_policy(self.popup_policy);

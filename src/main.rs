@@ -6,6 +6,7 @@ mod bench;
 mod cef_rt;
 mod cli;
 mod config;
+mod cookies;
 mod frames;
 mod downloads;
 mod gpu;

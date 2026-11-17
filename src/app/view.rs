@@ -183,10 +183,39 @@ struct Shared {
     popup_policy: Mutex<crate::workspace::PopupPolicy>,
     /// What the configuration says about permissions, and where downloads go (set by the shell).
     permissions: Mutex<crate::permissions::PermissionsConfig>,
+    cookies: Mutex<crate::cookies::CookiesConfig>,
+    /// Where this view keeps its site data when apart from the profile's (a workspace's `storage: isolated`).
+    storage: Option<std::path::PathBuf>,
     downloads: Mutex<(std::path::PathBuf, bool)>,
     /// Rendering settings, so a popup browser can be created like its opener.
     accel: bool,
     frame_rate: i32,
+}
+
+thread_local! {
+    /// Set by the shell just before it creates a view: the folder for that view's own site data.
+    static NEXT_STORAGE: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+    /// The request contexts made so far, by folder (GTK thread).
+    static CONTEXTS: RefCell<HashMap<std::path::PathBuf, RequestContext>> = RefCell::new(HashMap::new());
+}
+
+/// The next view created keeps its cookies and site data in `dir` (`None`: with the profile's).
+pub fn set_next_storage(dir: Option<std::path::PathBuf>) {
+    NEXT_STORAGE.with(|s| *s.borrow_mut() = dir);
+}
+
+/// The CEF request context for a folder, made on first use. Its folder must lie inside the profile's CEF folder.
+fn context_for(dir: &std::path::Path) -> Option<RequestContext> {
+    CONTEXTS.with(|c| {
+        if let Some(rc) = c.borrow().get(dir) {
+            return Some(rc.clone());
+        }
+        let _ = std::fs::create_dir_all(dir);
+        let settings = RequestContextSettings { cache_path: CefString::from(dir.to_string_lossy().as_ref()), persist_session_cookies: 1, ..Default::default() };
+        let rc = request_context_create_context(Some(&settings), None)?;
+        c.borrow_mut().insert(dir.to_path_buf(), rc.clone());
+        Some(rc)
+    })
 }
 
 impl Shared {
@@ -209,6 +238,8 @@ impl Shared {
             allowed_schemes: Mutex::new(Vec::new()),
             popup_policy: Mutex::new(crate::workspace::PopupPolicy::Tab),
             permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
+            cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
+            storage: NEXT_STORAGE.with(|s| s.borrow().clone()),
             downloads: Mutex::new((gtk::glib::home_dir(), false)),
             accel,
             frame_rate,
@@ -657,36 +688,34 @@ wrap_context_menu_handler! {
     }
 }
 
-/// Spike: cookie allow/deny by URL substring (`BROWSAH_COOKIE_DENY=a.com,b.com`).
-fn cookie_denied(deny: &[String], url: &str) -> bool {
-    deny.iter().any(|d| !d.is_empty() && url.contains(d.as_str()))
-}
-
 wrap_cookie_access_filter! {
-    struct CookieRules { deny: Vec<String> }
+    struct CookieRules { shared: Arc<Shared> }
 
     impl CookieAccessFilter {
+        // Cookies sent with a request, and cookies a response asks to save: allowed or denied by the site's
+        // address (`cookies:` in the configuration).
         fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (!cookie_denied(&self.deny, &url)) as _
+            (self.shared.cookies.lock().unwrap().decide(&url) == crate::cookies::Action::Allow) as _
         }
 
         fn can_save_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _resp: Option<&mut Response>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (!cookie_denied(&self.deny, &url)) as _
+            (self.shared.cookies.lock().unwrap().decide(&url) == crate::cookies::Action::Allow) as _
         }
     }
 }
 
 wrap_resource_request_handler! {
-    struct ViewResources { deny: Vec<String>, shared: Arc<Shared> }
+    struct ViewResources { shared: Arc<Shared> }
 
     impl ResourceRequestHandler {
         fn cookie_access_filter(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, _r: Option<&mut Request>) -> Option<CookieAccessFilter> {
-            if self.deny.iter().all(|d| d.is_empty()) {
+            // Nothing to filter unless the configuration has cookie rules.
+            if self.shared.cookies.lock().unwrap().is_open() {
                 return None;
             }
-            Some(CookieRules::new(self.deny.clone()))
+            Some(CookieRules::new(self.shared.clone()))
         }
 
         // A page (a redirect at the end of a sign-in, say) navigates to an address with a scheme
@@ -826,8 +855,7 @@ wrap_request_handler! {
             _initiator: Option<&CefString>,
             _disable_default: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
-            let deny: Vec<String> = std::env::var("BROWSAH_COOKIE_DENY").unwrap_or_default().split(',').map(str::to_owned).collect();
-            Some(ViewResources::new(deny, self.shared.clone()))
+            Some(ViewResources::new(self.shared.clone()))
         }
     }
 }
@@ -1217,7 +1245,8 @@ impl BrowserView {
         };
         let settings = BrowserSettings { windowless_frame_rate: shared.frame_rate, ..Default::default() };
         let mut client = make_client(shared.clone());
-        browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, None);
+        let mut context = shared.storage.as_deref().and_then(context_for);
+        browser_host_create_browser(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, context.as_mut());
     }
 
     /// What a script popup from this view becomes (`block` cancels it before it is created).
@@ -1233,6 +1262,11 @@ impl BrowserView {
     /// What the configuration says about permissions for this view's page.
     pub fn set_permissions(&self, cfg: crate::permissions::PermissionsConfig) {
         *self.shared.permissions.lock().unwrap() = cfg;
+    }
+
+    /// Which sites' cookies this view may send and save.
+    pub fn set_cookies(&self, cfg: crate::cookies::CookiesConfig) {
+        *self.shared.cookies.lock().unwrap() = cfg;
     }
 
     /// Where this view's downloads go, and whether to ask.

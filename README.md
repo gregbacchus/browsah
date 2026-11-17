@@ -81,6 +81,10 @@ allowed, denied or asked about by rules (per kind and per site, in any layer), a
 remember are kept per profile (`browsah permissions list`). Downloads go to a configurable folder per profile or
 workspace, optionally asking where to save each file. See [docs/config/permissions.md](docs/config/permissions.md).
 
+Cookies and storage: `cookies:` rules (any layer) allow or deny cookies per site, and a workspace with
+`storage: isolated` keeps all its cookies and site data apart from the rest of the profile. See
+[docs/config/options.md](docs/config/options.md).
+
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.
 

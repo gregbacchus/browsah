@@ -17,6 +17,7 @@ routing:
       match: { scheme: [zoommtg] }
       open: system
 
+storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)
 new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
 
 window:
@@ -47,6 +48,12 @@ permissions:                # what pages may do: allow, deny or ask (docs/config
 downloads:
   directory: ~/Downloads    # where files go (omit for your Downloads folder)
   ask: false                # ask where to save each file
+
+cookies:
+  default: allow            # allow | deny for sites no rule covers
+  rules:                    # first matching rule decides
+    - match: ["tracker.example.com", "*.ads.example"]
+      action: deny
 
 input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000

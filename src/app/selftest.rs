@@ -242,6 +242,8 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_new_tab_page(shell, r).await;
     run_permissions(shell, r).await;
     run_downloads(shell, r).await;
+    run_cookies(shell, r).await;
+    run_storage(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -851,6 +853,11 @@ fn start_test_server() -> u16 {
                 "/form.html" => ("200 OK", String::new(), "<!doctype html><title>Form</title><input id=i value=\"\"><textarea id=t></textarea>".to_owned()),
                 "/file.txt" => ("200 OK", "Content-Disposition: attachment; filename=\"note.txt\"\r\n".to_owned(), "hello".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
+                "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
+                "/cookie-show" => {
+                    let c = req.lines().find(|l| l.to_ascii_lowercase().starts_with("cookie:")).map(|l| l[7..].trim().to_owned()).unwrap_or_default();
+                    ("200 OK", String::new(), format!("<!doctype html><title>Cookies [{c}]</title>"))
+                }
                 "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
                 _ => ("404 Not Found", String::new(), "<title>Not found</title>".to_owned()),
             };
@@ -1766,6 +1773,105 @@ async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = std::fs::remove_dir_all(&tmp);
     for id in ["dl", "da"] {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// Cookie rules: a site a rule denies can neither save nor send cookies; others can.
+async fn run_cookies(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.workspaces_dir().join("ck");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("ck"));
+    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\ncookies:\n  rules:\n    - match: ['127.0.0.1']\n      action: deny\n")).expect("ck");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "ck"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"ck".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    r.check("a workspace with cookie rules opens", ok, || "not open".into());
+    let Some(ws) = find() else { return };
+    let tab = ws.current().expect("tab");
+    for (host, expect, what) in [("localhost", "Cookies [ck=1]", "an allowed site keeps its cookies"), ("127.0.0.1", "Cookies []", "a denied site neither saves nor sends cookies")] {
+        tab.view().navigate(&format!("http://{host}:{port}/cookie-set"));
+        let ok = wait_until(15_000, || tab.state.borrow().title == "Cookie set" && !tab.state.borrow().loading).await;
+        tab.view().navigate(&format!("http://{host}:{port}/cookie-show"));
+        let got = wait_until(15_000, || tab.state.borrow().title.starts_with("Cookies [") && !tab.state.borrow().loading).await;
+        let title = tab.state.borrow().title.clone();
+        r.check(what, ok && got && title == expect, || format!("title {title:?}"));
+    }
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("ck"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Isolated storage: a workspace with `storage: isolated` has cookies of its own; shared ones see each other's.
+async fn run_storage(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let ids = ["sh1", "sh2", "is1", "is2"];
+    for id in ids {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let storage = if id.starts_with("is") { "isolated" } else { "shared" };
+        std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\nstorage: {storage}\n")).expect("ws");
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let open = |id: &'static str| {
+        let app = app.clone();
+        async move {
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await
+        }
+    };
+    let show = |id: &'static str| async move {
+        let tab = find(id)?.current()?;
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-show"));
+        wait_until(15_000, || tab.state.borrow().title.starts_with("Cookies [") && !tab.state.borrow().loading).await;
+        let t = tab.state.borrow().title.clone();
+        Some(t)
+    };
+    let set = |id: &'static str| async move {
+        let Some(tab) = find(id).and_then(|s| s.current()) else { return };
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-set"));
+        wait_until(15_000, || tab.state.borrow().title == "Cookie set" && !tab.state.borrow().loading).await;
+    };
+    let mut all_open = true;
+    for id in ids {
+        all_open &= open(id).await;
+    }
+    r.check("four workspaces (two shared, two isolated) open", all_open, || "not all open".into());
+    set("sh1").await;
+    let a = show("sh2").await;
+    r.check("shared workspaces see each other's cookies", a.as_deref() == Some("Cookies [ck=1]"), || format!("{a:?}"));
+    let b = show("is1").await;
+    r.check("an isolated workspace does not see the profile's cookies", b.as_deref() == Some("Cookies []"), || format!("{b:?}"));
+    set("is1").await;
+    let c = show("is1").await;
+    r.check("an isolated workspace keeps its own cookies", c.as_deref() == Some("Cookies [ck=1]"), || format!("{c:?}"));
+    let d = show("is2").await;
+    r.check("two isolated workspaces do not see each other's cookies", d.as_deref() == Some("Cookies []"), || format!("{d:?}"));
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ids {
         let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }

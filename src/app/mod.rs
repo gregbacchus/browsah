@@ -665,6 +665,7 @@ impl Shell {
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let on_event = self.event_closure(&cell);
         let shot = self.screenshot_path(rec.uid);
+        self.prepare_storage();
         let view = BrowserView::new_dormant(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &rec.url, shot.as_deref(), on_event);
         let tab = self.add_tab(view, cell, state, false, rec.uid);
         tab.page.set_title(&tab_title(&tab.state.borrow()));
@@ -682,6 +683,18 @@ impl Shell {
     }
 
     /// Show a short message over the page.
+    /// Tell the next view this window creates where to keep its site data: its own folder for an isolated
+    /// workspace, otherwise the profile's.
+    pub(crate) fn prepare_storage(&self) {
+        let dir = match &self.workspace {
+            Some(w) if self.settings.borrow().storage == config::Storage::Isolated => {
+                PROFILE.with(|p| p.borrow().as_ref().map(|p| p.cef_dir().join("workspaces").join(&w.id)))
+            }
+            _ => None,
+        };
+        view::set_next_storage(dir);
+    }
+
     pub fn toast(&self, text: &str) {
         self.toasts.add_toast(adw::Toast::new(text));
     }
@@ -803,6 +816,7 @@ impl Shell {
     /// Create a view for a tab, wired to deliver its events to `tab`.
     fn make_view(self: &Rc<Self>, cell: &Rc<OnceCell<Weak<Tab>>>, url: &str) -> Rc<BrowserView> {
         let on_event = self.event_closure(cell);
+        self.prepare_storage();
         let view = BrowserView::new(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), url, on_event);
         self.apply_view_settings(&view);
         view.set_popup_policy(self.popup_policy);

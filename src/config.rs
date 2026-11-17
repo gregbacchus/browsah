@@ -41,6 +41,8 @@ pub struct Config {
     pub home_page: String,
     /// What a new tab opens: `home` (the home page), an address, or nothing (null: a blank tab).
     pub new_tab_page: Option<String>,
+    /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
+    pub storage: Storage,
     pub search_url: String,
     pub window: WindowConfig,
     pub rendering: RenderingConfig,
@@ -50,6 +52,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub permissions: crate::permissions::PermissionsConfig,
     pub downloads: crate::downloads::DownloadsConfig,
+    pub cookies: crate::cookies::CookiesConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -120,6 +123,7 @@ impl Default for Config {
             default_profile: None,
             home_page: DEFAULT_HOME_PAGE.into(),
             new_tab_page: None,
+            storage: Storage::Shared,
             search_url: DEFAULT_SEARCH_URL.into(),
             window: WindowConfig::default(),
             rendering: RenderingConfig::default(),
@@ -129,6 +133,7 @@ impl Default for Config {
             history: HistoryConfig::default(),
             permissions: Default::default(),
             downloads: Default::default(),
+            cookies: Default::default(),
         }
     }
 }
@@ -282,6 +287,15 @@ impl Loaded {
 }
 
 /// Options that only the application file may set.
+/// Whether a workspace's cookies and site data are kept apart from the rest of the profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Storage {
+    #[default]
+    Shared,
+    Isolated,
+}
+
 pub const APP_ONLY: &[&str] = &["watch_config", "default_profile"];
 
 /// Options fixed per process, so a workspace (a window of the process) cannot set them; a profile
@@ -488,6 +502,8 @@ mod tests {
         add("history", field_names::<HistoryConfig>());
         add("permissions", field_names::<crate::permissions::PermissionsConfig>());
         add("downloads", field_names::<crate::downloads::DownloadsConfig>());
+        add("cookies", field_names::<crate::cookies::CookiesConfig>());
+        add("cookies.rules[]", field_names::<crate::cookies::CookieRuleConfig>());
         add("permissions.sites[]", field_names::<crate::permissions::SiteConfig>());
         out
     }
@@ -519,7 +535,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

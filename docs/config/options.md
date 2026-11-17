@@ -6,6 +6,7 @@ All options apply at startup. Defaults are shown; omit a key to get its default.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `storage` | `shared` or `isolated` | `shared` | Where a workspace's cookies, local storage and cache live. `shared`: with everything else in the profile (sign in once, signed in everywhere). `isolated`: the workspace has its own, so sites cannot see or share what other workspaces store, and the same site can be signed in as different accounts in two workspaces. Only meaningful in a workspace's `workspace.yaml` (ephemeral windows are always shared). Applies to tabs opened after the change; tabs already open keep what they had. |
 | `new_tab_page` | `home`, an address, or `null` | `null` | What a new tab (`Ctrl+T`, the "+" button) opens. `null` (or leaving it out) is a blank tab with the address bar ready for typing; `home` opens the `home_page` (a workspace's own, if it sets one); an address opens that page. A profile or workspace can set its own, and `null` there undoes a lower layer's value. Applies immediately when the file is reloaded. |
 | `home_page` | string (URL) | `https://duckduckgo.com/` | The page opened in a new window. An empty value uses the default. A URL given on the command line takes priority. A profile can set its own, and so can a workspace (`home_page` in its `workspace.yaml`): see [Home page](workspace.md#home-page). |
 | `search_url` | string (URL) | `https://duckduckgo.com/?q={query}` | Search used when the address bar text is not a URL or a host name. `{query}` is replaced by the percent-encoded text. A value without `{query}` is rejected and the default is used. |
@@ -149,6 +150,25 @@ permissions:
 downloads:
   directory: ~/Documents/Work
   ask: false
+```
+
+## `cookies`
+
+Which sites' cookies are used. A denied site's cookies are neither sent with its requests nor saved from its responses (so it cannot sign you in or track you through cookies). Applies to newly loaded pages after a reload of the configuration. Other site data (local storage, IndexedDB) is not filtered; keep it apart with a workspace's `storage` option instead. Can differ per workspace.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `cookies.default` | `allow` or `deny` | `allow` | For sites no rule covers. `deny` makes the rules an allow list. |
+| `cookies.rules` | list | none | Rules, tried in order; the first whose `match` fits decides. |
+| `cookies.rules[].match` | list of text | none | Address patterns as for a pinned tab's scope (`tracker.example.com`, `*.ads.example`, `shop.example.org/cart/*`); any may match. |
+| `cookies.rules[].action` | `allow` or `deny` | none (required) | What to do with cookies of matching sites. |
+
+```yaml
+cookies:
+  default: allow
+  rules:
+    - match: ["tracker.example.com", "*.ads.example"]
+      action: deny
 ```
 
 ## `gpu`

@@ -489,6 +489,25 @@ requests, notifications actually appearing (not built), geolocation actually fin
 `permissions reset` against a real profile, behaviour across restarts (Chromium's cache keeps what is not cleared: an
 answer given on a page that is never reloaded stays until the next load of the origin).
 
+## Status: cookie rules and isolated storage (2026-11-17)
+
+**Cookie rules** (`cookies:` in any layer, `src/cookies.rs`): `default` plus ordered `rules` of `match` patterns
+(same patterns as a pinned tab's scope) and `allow`/`deny`. Enforced by a CEF `CookieAccessFilter` returned from
+the per-request `ResourceRequestHandler`, so it runs on CEF's network thread against the view's own copy of the
+configuration; a denied site's cookies are neither sent nor saved. The filter is skipped when the rules are open.
+Measured (`--selftest`, 2 checks, local test server): a site a rule denies saves nothing and sends nothing, a
+site not denied keeps its cookie. Not measured: third-party cookies set from an allowed page for a denied
+host (the filter judges the request's URL, so the denied host's own requests are filtered; not tested), and
+JavaScript-set `document.cookie` for a denied site (the filter sees network cookies only; not tested).
+
+**Isolated storage** (`storage: isolated` in `workspace.yaml`): the workspace's views are created with their own
+CEF `RequestContext` whose `cache_path` is `<profile>/cef/workspaces/<id>` (must lie under CEF's root cache
+folder), made on first use and cached per folder. Measured (`--selftest`, 4 checks): shared workspaces see each
+other's cookie, an isolated one does not see the profile's, keeps its own, and two isolated ones do not see
+each other's. Applies to tabs created after the setting changes. Not measured: persistence of an isolated
+workspace's cookies across a restart, and the disk space of many contexts. Caveat: permission answers Chromium
+remembers and the per-site content settings are per context, and browsah clears them per load anyway.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and
