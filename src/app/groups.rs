@@ -69,15 +69,10 @@ impl Shell {
     /// The icon and tooltip a tab shows for its group.
     fn apply_group_look(&self, tab: &Rc<Tab>) {
         match self.group(tab.group.get()) {
-            Some(g) => {
-                tab.page.set_icon(Some(&dot_icon(&g.color)));
-                tab.page.set_tooltip(&if g.name.is_empty() { "Tab group".to_owned() } else { format!("Group: {}", g.name) });
-            }
-            None => {
-                tab.page.set_icon(gio::Icon::NONE);
-                tab.page.set_tooltip("");
-            }
+            Some(g) => tab.page.set_tooltip(&if g.name.is_empty() { "Tab group".to_owned() } else { format!("Group: {}", g.name) }),
+            None => tab.page.set_tooltip(""),
         }
+        self.refresh_tab_icon(tab); // the favicon, with the group's dot on it
     }
 
     /// Put a tab in a group, next to the group's other tabs.

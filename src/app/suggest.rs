@@ -52,9 +52,14 @@ fn row_for(s: &Suggestion) -> gtk::ListBoxRow {
     let url = gtk::Label::builder().label(&s.url).halign(gtk::Align::Start).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).build();
     url.add_css_class("dim-label");
     url.add_css_class("caption");
-    let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).margin_top(4).margin_bottom(4).margin_start(8).margin_end(8).build();
-    b.append(&title);
-    b.append(&url);
+    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+    text.append(&title);
+    text.append(&url);
+    let b = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).margin_top(4).margin_bottom(4).margin_start(8).margin_end(8).build();
+    if let Some(icon) = super::favicon::small_image(&s.url) {
+        b.append(&icon);
+    }
+    b.append(&text);
     gtk::ListBoxRow::builder().child(&b).focusable(false).build()
 }
 

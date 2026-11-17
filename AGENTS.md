@@ -204,6 +204,12 @@ take minutes.
   `Emulation.setEmulatedMedia` (`BrowserView::set_color_scheme`, from `apply_view_settings`; applied again when the browser is created).
   Chromium's own default does not follow the desktop here (reports light while the portal says dark), so `system` is resolved by us from
   `adw::StyleManager::is_dark()` and re-applied on its `dark` notify (`Shell::refresh_scheme`). It does not change the window's chrome.
+- **Favicons:** `DisplayHandler::on_favicon_urlchange` lists icon addresses (read with the raw `cef_string_list_*` calls: the crate's
+  `CefStringList` has no reader); `fetch_favicon` downloads the first that works (`download_image`, 64 px, falling through the rest) and
+  sends `ViewEvent::Favicon(png)`. `app/favicon.rs` shows it (`Tab::favicon`, `refresh_tab_icon`), remembers it per origin in the
+  `favicons` table (newest 2000) and reads it back for restored tabs and lists (`cached_for`, `small_image`, with a decoded-texture
+  cache). The tab's icon slot is shared: favicon, the group's dot drawn on it (`with_dot`), a generic icon for pinned tabs; the indicator
+  slot belongs to sweeping. Not stored for private windows.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the

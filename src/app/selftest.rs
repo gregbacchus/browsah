@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -411,6 +411,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("theme") {
         run_theme(shell, r).await;
+    }
+    if wants("favicon") {
+        run_favicon(shell, r).await;
     }
 }
 
@@ -1006,6 +1009,9 @@ async fn run_restore(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&ws_dir);
 }
 
+/// The PNG the test server gives for `/icon.png` (set by the favicon test).
+static TEST_ICON_PNG: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
 /// A tiny local web server for the scope test: `localhost` and `127.0.0.1` are two different hosts
 /// served by the same socket. Returns its port.
 fn start_test_server() -> u16 {
@@ -1021,6 +1027,12 @@ fn start_test_server() -> u16 {
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
             let path = req.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_owned();
+            if path == "/icon.png" {
+                let png = TEST_ICON_PNG.lock().unwrap().clone();
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", png.len());
+                let _ = stream.write_all(&png);
+                return;
+            }
             if path == "/slow" {
                 // A download that takes a few seconds: 1 MB in ten pieces.
                 let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"slow.bin\"\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n");
@@ -1057,6 +1069,8 @@ fn start_test_server() -> u16 {
                     format!("<!doctype html><title>Redirect links</title><a href=\"http://127.0.0.1:{port}/go?to=http%3A%2F%2Flocalhost%3A{port}%2Fb.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">via a redirect</a><a href=\"https://www.google.com/url?q=http%3A%2F%2Flocalhost%3A{port}%2Fb.html&sa=D\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">via google</a>"),
                 ),
                 "/scheme.html" => ("200 OK", String::new(), "<!doctype html><title>Scheme</title><style>body{margin:0;background:#fff;color:#000} @media (prefers-color-scheme: dark){body{background:#111;color:#eee}}</style><p>scheme test</p><input value=field>".to_owned()),
+                "/fav.html" => ("200 OK", String::new(), "<!doctype html><title>Fav</title><link rel=icon href=/icon.png>fav".to_owned()),
+                "/svgfav.html" => ("200 OK", String::new(), "<!doctype html><title>SvgFav</title><link rel=icon href=/icon.svg>svg".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -3107,4 +3121,129 @@ async fn run_theme(shell: &Rc<Shell>, r: &mut Report) {
         let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }
+}
+
+/// The colour (r, g, b) of the pixel at (x, y) of a texture.
+fn texture_pixel(t: &gtk::gdk::Texture, x: i32, y: i32) -> (u8, u8, u8) {
+    let mut dl = gtk::gdk::TextureDownloader::new(t);
+    dl.set_format(gtk::gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, stride) = dl.download_bytes();
+    let i = y.max(0) as usize * stride + x.max(0) as usize * 4;
+    (bytes.get(i).copied().unwrap_or(0), bytes.get(i + 1).copied().unwrap_or(0), bytes.get(i + 2).copied().unwrap_or(0))
+}
+
+/// Favicons: the page's icon is shown on its tab (PNG and SVG), goes when the page has none, is remembered per site (so a restored
+/// tab has it before anything loads), and a grouped tab shows its group's dot on it.
+async fn run_favicon(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    // A 16x16 red PNG for the server to give.
+    let px: Vec<u8> = (0..16 * 16).flat_map(|_| [255u8, 0, 0, 255]).collect();
+    let red = gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(px), 64);
+    *TEST_ICON_PNG.lock().unwrap() = red.save_to_png_bytes().to_vec();
+    let near = |a: (u8, u8, u8), b: (u8, u8, u8)| (a.0 as i32 - b.0 as i32).abs() < 25 && (a.1 as i32 - b.1 as i32).abs() < 25 && (a.2 as i32 - b.2 as i32).abs() < 25;
+    let go = |url: String| {
+        let st = shell.state();
+        let view = shell.view();
+        async move {
+            let before = st.borrow().load_cycles;
+            view.navigate(&url);
+            wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+        }
+    };
+    let tab = shell.current().expect("tab");
+    let _ = crate::store::Store::open(&db).map(|s| s.forget_favicon(&format!("http://localhost:{port}")));
+
+    go(format!("http://localhost:{port}/fav.html")).await;
+    let ok = wait_until(10_000, || tab.favicon.borrow().is_some()).await;
+    let t = tab.favicon.borrow().clone();
+    r.check("a page's PNG icon becomes its tab's icon", ok && t.as_ref().is_some_and(|t| near(texture_pixel(t, 8, 8), (255, 0, 0))) && tab.page.icon().is_some(), || format!("{:?}", t.as_ref().map(|t| texture_pixel(t, 8, 8))));
+    let remembered = super::store().and_then(|s| s.favicon(&format!("http://localhost:{port}")));
+    r.check("the icon is remembered for the site", remembered.is_some_and(|b| !b.is_empty()), || "nothing stored".into());
+
+    // A page with no icon of its own: the tab goes back to none.
+    go(format!("http://localhost:{port}/b.html")).await;
+    let ok = wait_until(10_000, || tab.favicon.borrow().is_none() && tab.page.icon().is_none()).await;
+    r.check("a page without an icon clears the tab's icon", ok, || format!("{} {}", tab.favicon.borrow().is_some(), tab.page.icon().is_some()));
+
+    // SVG icons are drawn too.
+    go(format!("http://localhost:{port}/svgfav.html")).await;
+    let ok = wait_until(10_000, || tab.favicon.borrow().is_some()).await;
+    let t = tab.favicon.borrow().clone();
+    let (w, h) = t.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
+    r.check("an SVG icon is shown (rendered, in its colour)", ok && w > 0 && t.as_ref().is_some_and(|t| near(texture_pixel(t, w / 2, h / 2), (51, 102, 153))), || format!("{w}x{h} {:?}", t.as_ref().map(|t| texture_pixel(t, w / 2, h / 2))));
+
+    // A grouped tab: the icon with the group's dot in its corner.
+    let g = shell.create_group("Fav", Some("#e01b24"));
+    shell.assign_group(&tab, g);
+    let t2 = shell.open_tab(&format!("http://localhost:{port}/fav.html"), false);
+    let _ = wait_until(15_000, || t2.state.borrow().title == "Fav" && !t2.state.borrow().loading).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    shot(&shell.window, "favicon-tabs");
+    shell.tab_view.close_page(&t2.page);
+    let composite = tab.page.icon().and_then(|i| i.downcast::<gtk::gdk::Texture>().ok());
+    let (cw, ch) = composite.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
+    let dot = composite.as_ref().map(|t| texture_pixel(t, cw * 24 / 32, ch * 24 / 32));
+    let corner = composite.as_ref().map(|t| texture_pixel(t, 2, 2));
+    r.check("a grouped tab shows its favicon with the group's dot on it", composite.is_some() && dot.is_some_and(|d| near(d, (224, 27, 36))) && corner.is_some_and(|c| near(c, (51, 102, 153))), || format!("{cw}x{ch} dot {dot:?} corner {corner:?}"));
+    shell.remove_from_group(&tab);
+    let plain = tab.page.icon().and_then(|i| i.downcast::<gtk::gdk::Texture>().ok());
+    let (pw, ph) = plain.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
+    r.check("out of the group the plain icon is back", plain.as_ref().is_some_and(|t| near(texture_pixel(t, pw * 24 / 32, ph * 24 / 32), (51, 102, 153))), || format!("{pw}x{ph}"));
+
+    // A restored tab has the site's icon before anything loads.
+    let dir = profile.workspaces_dir().join("fv1");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fv1"));
+    std::fs::write(dir.join("workspace.yaml"), format!("name: Fav\nhome_page: 'http://localhost:{port}/b.html'\n")).expect("ws");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "fv1"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"fv1".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    let Some(ws) = find() else { return };
+    let first = ws.current().expect("tab");
+    let second = ws.open_tab(&format!("http://localhost:{port}/fav.html"), true);
+    let _ = wait_until(15_000, || second.state.borrow().title == "Fav" && !second.state.borrow().loading).await;
+    ws.tab_view.set_selected_page(&first.page);
+    glib::timeout_future(Duration::from_millis(800)).await;
+    ws.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"fv1".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.tab_count() >= 2)).await;
+    let Some(ws) = find() else { return };
+    let sleeping = ws.tabs().into_iter().find(|t| t.state.borrow().address.contains("fav.html"));
+    // The same icon in lists: address-bar suggestions, the bookmark bar.
+    let known = format!("http://localhost:{port}/fav.html");
+    r.check("the list helpers find the site's icon (and none for an unknown site)", super::favicon::small_image(&known).is_some() && super::favicon::small_image("http://unknown.invalid/x").is_none(), || String::new());
+    if let Some(st) = super::store() {
+        let _ = st.add_bookmark("fv1", &known, "Fav page");
+    }
+    ws.rebuild_bookmarks();
+    glib::timeout_future(Duration::from_millis(600)).await;
+    fn has_image(w: &gtk::Widget) -> bool {
+        w.downcast_ref::<gtk::Image>().is_some() || { let mut c = w.first_child(); let mut found = false; while let Some(ch) = c { found |= has_image(&ch); c = ch.next_sibling(); } found }
+    }
+    r.check("a bookmark in the bookmark bar shows the site's icon", has_image(ws.bookmark_bar.upcast_ref()), || "no icon".into());
+    shot(&ws.window, "favicon-bookmarks");
+    if let Some(st) = super::store() {
+        let _ = st.record_visit(None, &known, "Fav page", 1_700_000_000);
+    }
+    ws.entry.grab_focus();
+    ws.entry.set_text("fav page");
+    let _ = wait_until(5_000, || ws.suggestion_urls().contains(&known)).await;
+    glib::timeout_future(Duration::from_millis(400)).await;
+    shot(ws.suggestion_popover(), "favicon-suggestions");
+    ws.entry.set_text("");
+    r.check("a restored, sleeping tab shows the site's remembered icon at once", sleeping.as_ref().is_some_and(|t| t.favicon.borrow().is_some() && t.page.icon().is_some() && !t.state.borrow().ready), || format!("{:?}", sleeping.map(|t| (t.favicon.borrow().is_some(), t.page.icon().is_some()))));
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fv1"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +219,9 @@ impl Store {
                 );",
             )?;
         }
+        if version < 9 {
+            self.conn.execute_batch("CREATE TABLE IF NOT EXISTS favicons (origin TEXT PRIMARY KEY, png BLOB NOT NULL, at INTEGER NOT NULL);")?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
     }
 
@@ -328,6 +331,25 @@ impl Store {
         stmt.query_map(params![workspace], |r| Ok(GroupRecord { id: r.get::<_, i64>(0)? as u32, name: r.get(1)?, color: r.get(2)?, collapsed: r.get(3)? }))
             .map(|r| r.flatten().collect())
             .unwrap_or_default()
+    }
+
+    // ---- favicons ----------------------------------------------------------------------------------
+
+    /// A site's icon (PNG), by origin (`https://example.com`), as last seen.
+    pub fn favicon(&self, origin: &str) -> Option<Vec<u8>> {
+        self.conn.query_row("SELECT png FROM favicons WHERE origin = ?1", params![origin], |r| r.get(0)).ok()
+    }
+
+    /// Remember a site's icon. Keeps the newest 2000 sites.
+    pub fn set_favicon(&self, origin: &str, png: &[u8], at: i64) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO favicons (origin, png, at) VALUES (?1, ?2, ?3) ON CONFLICT(origin) DO UPDATE SET png = ?2, at = ?3", params![origin, png, at])?;
+        self.conn.execute("DELETE FROM favicons WHERE origin NOT IN (SELECT origin FROM favicons ORDER BY at DESC LIMIT 2000)", [])?;
+        Ok(())
+    }
+
+    /// Forget one site's icon (the self-test starts from nothing).
+    pub fn forget_favicon(&self, origin: &str) {
+        let _ = self.conn.execute("DELETE FROM favicons WHERE origin = ?1", params![origin]);
     }
 
     // ---- zoom --------------------------------------------------------------------------------------
@@ -473,6 +495,21 @@ mod tests {
         assert!(s.load_groups("other").is_empty());
         s.delete_workspace("w").unwrap();
         assert!(s.load_groups("w").is_empty());
+    }
+
+    #[test]
+    fn favicons_are_remembered_by_origin_and_capped() {
+        let s = Store::open_memory();
+        assert_eq!(s.favicon("https://a.example"), None);
+        s.set_favicon("https://a.example", b"one", 1).unwrap();
+        s.set_favicon("https://a.example", b"two", 2).unwrap();
+        assert_eq!(s.favicon("https://a.example").as_deref(), Some(&b"two"[..]), "the newest wins");
+        assert_eq!(s.favicon("https://b.example"), None);
+        for i in 0..2100 {
+            s.set_favicon(&format!("https://site{i}.example"), b"x", 10 + i).unwrap();
+        }
+        assert_eq!(s.favicon("https://a.example"), None, "the oldest are dropped past 2000");
+        assert!(s.favicon("https://site2099.example").is_some());
     }
 
     #[test]

@@ -92,6 +92,9 @@ workspace, optionally asking where to save each file. See [docs/config/permissio
 Web apps: `browsah app add mail --url https://mail.example.com/` makes a window for one site with its own
 launcher entry and icon (a workspace with an `app:` section). See [docs/config/webapp.md](docs/config/webapp.md).
 
+Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
+profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.
+
 Tab groups: right-click a tab, *Add to new group…*; groups have a name and a colour, can be collapsed to one tab
 and are remembered with a workspace's tabs. See [docs/config/workspace.md](docs/config/workspace.md).
 

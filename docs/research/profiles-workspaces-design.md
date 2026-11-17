@@ -772,6 +772,22 @@ slow page), DevTools' own panel with its own media emulation open. **Limits:** i
 setting does: pages without a dark style stay light, and form controls and scrollbars only darken for pages that declare `color-scheme`
 (the picture shows a light text field on a dark page). It does not change the window's own appearance (that follows the desktop).
 
+## Favicons (2026-11-18)
+
+CEF reports a page's icon addresses (`on_favicon_urlchange`); `download_image(is_favicon, 64 px)` fetches the first that works (the rest
+are tried if it fails; no addresses or none that work: the icon is cleared) and `as_png` gives the bytes (the pixel-size outputs are
+needed, as for app icons). The tab shows it as the page's icon (`gdk::Texture` is a `GIcon`). Because the icon slot is also the tab
+group's dot and the indicator slot is the sweeper's, a grouped tab's icon is the favicon with the dot drawn on its corner (a snapshot
+rendered to a texture, with a white ring so it shows on any icon). Icons are remembered per origin in `favicons` (schema 9, newest 2000)
+so restored sleeping tabs, bookmarks, address-bar suggestions and the history window show them before a page has loaded; private
+windows store none; the tab spinner (`page.loading`) shows while a page loads. Measured (`--selftest` section `favicon`, 19 checks, plus
+groups, suggestions, bookmarks and history: 57, pictures looked at): a PNG icon and an SVG icon (rendered in its colour) reach the tab, the icon is
+stored, a page without an icon clears it, the group dot appears on the icon and goes, a restored sleeping tab has the site's icon at once,
+and the helpers give icons to bookmark and suggestion rows. **Not measured:** real sites (only a local server's PNG and SVG; `.ico`
+files with several sizes, `apple-touch-icon`, data URIs, redirected or very large icons), icon sharpness on a high-DPI screen (64 px is
+asked for 16 logical pixels), icons that change without a page navigation, the cache being per origin (so two pages of a site with
+different icons show the last one when restored), the history window by eye, and the tab spinner by eye.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

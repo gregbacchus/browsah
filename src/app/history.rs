@@ -15,10 +15,13 @@ pub struct HistoryView {
     pub closed: gtk::ListBox,
 }
 
-fn row(title: &str, subtitle: &str) -> adw::ActionRow {
+fn row(title: &str, subtitle: &str, url: &str) -> adw::ActionRow {
     let r = adw::ActionRow::builder().title(glib::markup_escape_text(if title.is_empty() { subtitle } else { title }).as_str()).subtitle(glib::markup_escape_text(subtitle).as_str()).activatable(true).build();
     r.set_title_lines(1);
     r.set_subtitle_lines(1);
+    if let Some(icon) = super::favicon::small_image(url) {
+        r.add_prefix(&icon);
+    }
     r
 }
 
@@ -74,7 +77,7 @@ impl Shell {
                 clear(&view.visits);
                 for v in store.search_visits(view.search.text().as_str(), scope, 200) {
                     let Visit { url, title, at, workspace, .. } = v;
-                    let r = row(&title, &format!("{url} \u{b7} {}{}", crate::history::when(at, now), workspace.as_deref().map(|w| format!(" \u{b7} {w}")).unwrap_or_default()));
+                    let r = row(&title, &format!("{url} \u{b7} {}{}", crate::history::when(at, now), workspace.as_deref().map(|w| format!(" \u{b7} {w}")).unwrap_or_default()), &url);
                     let open_here = {
                         let (window, url) = (window.clone(), url.clone());
                         move |new_tab: bool| {
@@ -108,7 +111,7 @@ impl Shell {
                             continue;
                         }
                         let members: Vec<ClosedTab> = store.closed_tabs(Scope::Ephemeral, 1000).into_iter().filter(|m| m.group == Some(g)).collect();
-                        let r = row(&format!("Window with {} tab{}", members.len(), if members.len() == 1 { "" } else { "s" }), &format!("{} \u{b7} {}", members.first().map(|m| m.url.as_str()).unwrap_or(""), crate::history::when(t.at, now)));
+                        let r = row(&format!("Window with {} tab{}", members.len(), if members.len() == 1 { "" } else { "s" }), &format!("{} \u{b7} {}", members.first().map(|m| m.url.as_str()).unwrap_or(""), crate::history::when(t.at, now)), members.first().map(|m| m.url.as_str()).unwrap_or(""));
                         let (window, store, ids) = (window.clone(), store.clone(), members.iter().map(|m| m.id).collect::<Vec<_>>());
                         r.connect_activated(move |_| {
                             let mut tabs: Vec<ClosedTab> = ids.iter().filter_map(|id| store.take_closed(*id)).collect();
@@ -126,7 +129,7 @@ impl Shell {
                         view.closed.append(&r);
                     } else {
                         let id = t.id;
-                        let r = row(&t.title, &format!("{} \u{b7} {} \u{b7} closed by {}", t.url, crate::history::when(t.at, now), t.reason));
+                        let r = row(&t.title, &format!("{} \u{b7} {} \u{b7} closed by {}", t.url, crate::history::when(t.at, now), t.reason), &t.url);
                         let (window, store) = (window.clone(), store.clone());
                         r.connect_activated(move |_| {
                             if let (Some(t), Some(s)) = (store.take_closed(id), window.upgrade().and_then(|w| super::shell_of(&w))) {

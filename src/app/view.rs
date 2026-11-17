@@ -112,6 +112,8 @@ pub enum ViewEvent {
     JsDialogDismissed(u64),
     /// Ctrl and the wheel: zoom in (1) or out (-1).
     Zoom(i32),
+    /// The page's icon, as a PNG (empty: the page has none).
+    Favicon(Vec<u8>),
     /// A page was written to a PDF (or that failed).
     PdfSaved { path: String, ok: bool },
     /// A page entered (true) or left (false) element fullscreen.
@@ -695,6 +697,13 @@ wrap_display_handler! {
     struct ViewDisplay { shared: Arc<Shared> }
 
     impl DisplayHandler {
+        // The page's icon addresses changed: fetch the first that downloads.
+        fn on_favicon_urlchange(&self, b: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
+            let Some(host) = b.and_then(|b| b.host()) else { return };
+            let urls = icon_urls.map(string_list).unwrap_or_default();
+            fetch_favicon(&self.shared, host, urls);
+        }
+
         // A page asks to fill the screen (a video's fullscreen button, `requestFullscreen`) or is leaving it.
         fn on_fullscreen_mode_change(&self, _b: Option<&mut Browser>, fullscreen: ::std::os::raw::c_int) {
             send(self.shared.id, ViewEvent::Fullscreen(fullscreen != 0));
@@ -1221,6 +1230,65 @@ wrap_pdf_print_callback! {
             send(self.shared.id, ViewEvent::PdfSaved { path: path.map(|p| p.to_string()).unwrap_or_default(), ok: ok != 0 });
         }
     }
+}
+
+// ---- favicons ------------------------------------------------------------------------------------
+
+/// The strings of a CEF string list.
+fn string_list(list: &mut CefStringList) -> Vec<String> {
+    let raw: *mut sys::_cef_string_list_t = list.into();
+    let mut out = Vec::new();
+    unsafe {
+        for i in 0..sys::cef_string_list_size(raw) {
+            let mut value: sys::cef_string_t = std::mem::zeroed();
+            if sys::cef_string_list_value(raw, i, &mut value) != 0 {
+                out.push(CefString::from(&value as *const sys::cef_string_t).to_string());
+                sys::cef_string_utf16_clear(&mut value);
+            }
+        }
+    }
+    out
+}
+
+wrap_download_image_callback! {
+    struct ViewFavicon { shared: Arc<Shared>, rest: Vec<String> }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(&self, _url: Option<&CefString>, status: ::std::os::raw::c_int, image: Option<&mut Image>) {
+            let (mut pw, mut ph) = (0, 0);
+            let png = (status == 200).then_some(()).and(image.map(|i| &*i)).and_then(|i| i.as_png(1.0, 1, Some(&mut pw), Some(&mut ph)));
+            let bytes = png.map(|png| {
+                let mut buf = vec![0u8; png.size()];
+                let n = png.data(Some(&mut buf), 0);
+                buf.truncate(n);
+                buf
+            });
+            match bytes {
+                Some(b) if !b.is_empty() => send(self.shared.id, ViewEvent::Favicon(b)),
+                // That one did not work: try the next address, or say there is no icon.
+                _ if !self.rest.is_empty() => {
+                    let host = self.shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone()));
+                    if let Some(h) = host {
+                        fetch_favicon(&self.shared, h.0.clone(), self.rest.clone());
+                    }
+                }
+                _ => send(self.shared.id, ViewEvent::Favicon(Vec::new())),
+            }
+        }
+    }
+}
+
+/// Download the first icon of `urls` (on CEF's UI thread); the rest are tried if it fails.
+fn fetch_favicon(shared: &Arc<Shared>, host: BrowserHost, mut urls: Vec<String>) {
+    urls.retain(|u| u.starts_with("http://") || u.starts_with("https://") || u.starts_with("data:"));
+    if urls.is_empty() {
+        send(shared.id, ViewEvent::Favicon(Vec::new()));
+        return;
+    }
+    let first = urls.remove(0);
+    let mut cb = ViewFavicon::new(shared.clone(), urls);
+    // 64 px: a tab's icon is 16 logical pixels, up to 4x on a scale-4 display.
+    host.download_image(Some(&CefString::from(first.as_str())), 1, 64, 0, Some(&mut cb));
 }
 
 // ---- find in page ---------------------------------------------------------------------------------

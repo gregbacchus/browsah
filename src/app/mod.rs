@@ -3,6 +3,7 @@
 mod input;
 mod history;
 mod downloads;
+mod favicon;
 mod find;
 mod groups;
 mod fullscreen;
@@ -67,6 +68,9 @@ pub struct Tab {
     pub uid: u64,
     /// The tab's group (0: none).
     pub group: std::cell::Cell<u32>,
+    /// The page's icon, and the site it belongs to.
+    pub favicon: RefCell<Option<gtk::gdk::Texture>>,
+    pub favicon_origin: RefCell<String>,
     /// In a collapsed group: out of the tab bar, but alive.
     pub parked: std::cell::Cell<bool>,
     /// The address last written to the history (a reload is not a new visit).
@@ -482,7 +486,12 @@ impl Shell {
         let window = self.window.downgrade();
         for b in &marks {
             let label = gtk::Label::builder().label(b.title.as_str()).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build();
-            let button = gtk::Button::builder().child(&label).has_frame(false).tooltip_text(b.url.as_str()).build();
+            let content = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).build();
+            if let Some(icon) = favicon::small_image(&b.url) {
+                content.append(&icon);
+            }
+            content.append(&label);
+            let button = gtk::Button::builder().child(&content).has_frame(false).tooltip_text(b.url.as_str()).build();
             button.add_css_class("bookmark");
             let url = b.url.clone();
             // Click: open here. Middle click or Ctrl+click: a new tab. Right click: a small menu.
@@ -745,6 +754,7 @@ impl Shell {
         let view = BrowserView::new_dormant(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &rec.url, shot.as_deref(), on_event);
         let tab = self.add_tab(view, cell, state, false, rec.uid);
         tab.page.set_title(&tab_title(&tab.state.borrow()));
+        self.favicon_for_address(&tab); // the site's remembered icon, before anything has loaded
         // Use is remembered across runs: a tab unused for a week while the browser was closed is idle for a week.
         if !rec.usage.is_empty() {
             *tab.usage.borrow_mut() = crate::sweep::Usage::from_text(&rec.usage);
@@ -959,7 +969,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -1068,8 +1078,8 @@ impl Shell {
         });
         if let Some(tab) = tab {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
-            tab.page.set_icon(gio::Icon::NONE);
             tab.page.set_tooltip("");
+            self.refresh_tab_icon(&tab);
             tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
             tab.view().set_popup_policy(self.popup_policy);
             self.apply_view_settings(&tab.view());
@@ -1172,6 +1182,7 @@ impl Shell {
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
+            ViewEvent::Favicon(png) => self.set_favicon(tab, png),
             ViewEvent::PdfSaved { path, ok } => self.pdf_done(&path, ok),
             ViewEvent::Fullscreen(on) => self.set_fullscreen(on, true),
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
@@ -1215,6 +1226,7 @@ impl Shell {
                 tab.state.borrow_mut().address = a;
                 // Navigating to another host resets the zoom: put back the person's zoom for this site.
                 self.restore_site_zoom(tab);
+                self.favicon_for_address(tab);
                 tab.view().apply_zoom();
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
@@ -1231,6 +1243,7 @@ impl Shell {
                         s.load_cycles += 1;
                     }
                     s.loading = loading;
+                    tab.page.set_loading(loading); // the tab's icon spins while the page loads
                     s.can_back = can_back;
                     s.can_forward = can_forward;
                 }
