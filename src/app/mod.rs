@@ -3,6 +3,7 @@
 mod input;
 mod history;
 mod downloads;
+mod find;
 mod install;
 mod zoom;
 mod jsdialog;
@@ -174,6 +175,8 @@ pub struct Shell {
     js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
     js_showing: RefCell<Option<(u64, adw::AlertDialog)>>,
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
+    /// The find-in-page bar.
+    find: find::Bar,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -1083,6 +1086,7 @@ impl Shell {
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
+            ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
             ViewEvent::JsDialogDismissed(view) => self.dismiss_js_dialog(view),
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
@@ -1240,6 +1244,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     toolbar.add_top_bar(&header);
     toolbar.add_top_bar(&tab_bar);
     toolbar.add_top_bar(&bookmark_revealer);
+    let find_bar = find::Bar::new();
+    toolbar.add_bottom_bar(&find_bar.revealer);
     toolbar.set_content(Some(&tab_view));
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&toolbar));
@@ -1290,6 +1296,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         js_queue: RefCell::new(std::collections::VecDeque::new()),
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
+        find: find_bar,
         session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),
@@ -1375,6 +1382,32 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     window.add_action(&send_tab);
+    for (name, forward) in [("find-next", true), ("find-prev", false)] {
+        add_action(&window, name, {
+            let weak = weak.clone();
+            move || {
+                if let Some(s) = weak.upgrade() {
+                    s.find_step(forward);
+                }
+            }
+        });
+    }
+    add_action(&window, "find", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.open_find();
+            }
+        }
+    });
+    add_action(&window, "find-close", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.close_find();
+            }
+        }
+    });
     add_action(&window, "zoom-in", {
         let weak = weak.clone();
         move || {
@@ -1537,6 +1570,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let weak = weak.clone();
         move |_| {
             if let Some(s) = weak.upgrade() {
+                s.close_find(); // a search belongs to the tab it was made in
                 s.on_selected();
             }
         }
@@ -1550,6 +1584,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.find", &["<Ctrl>F"]);
+    app.set_accels_for_action("win.find-next", &["<Ctrl>G", "F3"]);
+    app.set_accels_for_action("win.find-prev", &["<Ctrl><Shift>G", "<Shift>F3"]);
     app.set_accels_for_action("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal", "<Ctrl>KP_Add"]);
     app.set_accels_for_action("win.zoom-out", &["<Ctrl>minus", "<Ctrl>KP_Subtract"]);
     app.set_accels_for_action("win.zoom-reset", &["<Ctrl>0", "<Ctrl>KP_0"]);
@@ -1614,6 +1651,46 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let focus = gtk::EventControllerFocus::new();
     focus.connect_leave(move |_| restore());
     entry.add_controller(focus);
+
+    // Find bar: typing searches, Enter goes on, Shift+Enter goes back, Escape closes.
+    shell.find.entry.connect_search_changed({
+        let shell = Rc::downgrade(&shell);
+        move |_| {
+            if let Some(shell) = shell.upgrade() {
+                shell.find_run(true, false);
+            }
+        }
+    });
+    shell.find.entry.connect_activate({
+        let shell = Rc::downgrade(&shell);
+        move |_| {
+            if let Some(shell) = shell.upgrade() {
+                shell.find_run(true, true);
+            }
+        }
+    });
+    shell.find.entry.connect_stop_search({
+        let shell = Rc::downgrade(&shell);
+        move |_| {
+            if let Some(shell) = shell.upgrade() {
+                shell.close_find();
+            }
+        }
+    });
+    let find_keys = gtk::EventControllerKey::new();
+    find_keys.connect_key_pressed({
+        let shell = Rc::downgrade(&shell);
+        move |_, key, _, state| {
+            if (key == gtk::gdk::Key::Return || key == gtk::gdk::Key::KP_Enter) && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                if let Some(shell) = shell.upgrade() {
+                    shell.find_run(false, true);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        }
+    });
+    shell.find.entry.add_controller(find_keys);
 
     window.connect_close_request({
         let shell = Rc::downgrade(&shell);

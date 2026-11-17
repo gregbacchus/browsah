@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom",
+    "install", "suggest", "jsdialog", "zoom", "find",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -348,6 +348,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("zoom") {
         run_zoom(shell, r).await;
+    }
+    if wants("find") {
+        run_find(shell, r).await;
     }
 }
 
@@ -980,6 +983,7 @@ fn start_test_server() -> u16 {
                 "/pwa.html" => ("200 OK", String::new(), "<!doctype html><title>PWA page</title><link rel=manifest href=/manifest.json>".to_owned()),
                 "/manifest.json" => ("200 OK", "Content-Type: application/manifest+json\r\n".to_owned(), "{\"name\":\"Test Manifest App\",\"start_url\":\"/pwa.html\",\"scope\":\"/\",\"display\":\"minimal-ui\",\"theme_color\":\"#336699\",\"icons\":[{\"src\":\"/icon.svg\",\"sizes\":\"any\",\"type\":\"image/svg+xml\",\"purpose\":\"any\"}]}".to_owned()),
                 "/icon.svg" => ("200 OK", "Content-Type: image/svg+xml\r\n".to_owned(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"#336699\"/></svg>".to_owned()),
+                "/find.html" => ("200 OK", String::new(), "<!doctype html><title>Find test</title><p>one needle here</p><p>another Needle there</p><p>and a third needle</p>".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -2413,4 +2417,34 @@ async fn run_zoom(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.zoom-reset", None);
     glib::timeout_future(Duration::from_millis(300)).await;
     r.check("reset returns to 100 % and forgets the site's zoom", (shell.view().user_zoom() - 1.0).abs() < 0.001 && super::store().and_then(|s| s.site_zoom("localhost")).is_none() && (width().await - w100).abs() < 2.0, || format!("{}", shell.view().user_zoom()));
+}
+
+/// Find in page: the bar opens, typing counts the matches, the buttons move between them, closing clears.
+async fn run_find(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    shell.view().navigate(&format!("http://localhost:{port}/find.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "Find test" }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let _ = WidgetExt::activate_action(&shell.window, "win.find", None);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("Ctrl+F opens the find bar", shell.find.is_open(), || "closed".into());
+    shell.find.entry.set_text("needle");
+    let ok = wait_until(10_000, || shell.find_label() == "1/3").await;
+    r.check("typing finds every match, ignoring case, and starts on the first", ok, || shell.find_label());
+    let _ = WidgetExt::activate_action(&shell.window, "win.find-next", None);
+    let ok = wait_until(10_000, || shell.find_label() == "2/3").await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    shot(&shell.window, "find-bar");
+    r.check("next moves to the second match", ok, || shell.find_label());
+    let _ = WidgetExt::activate_action(&shell.window, "win.find-prev", None);
+    let ok = wait_until(10_000, || shell.find_label() == "1/3").await;
+    r.check("previous moves back", ok, || shell.find_label());
+    shell.find.entry.set_text("zebra");
+    let ok = wait_until(10_000, || shell.find_label() == "No matches").await;
+    r.check("a word that is not there says so", ok, || shell.find_label());
+    let _ = WidgetExt::activate_action(&shell.window, "win.find-close", None);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("closing hides the bar and clears the label", !shell.find.is_open() && shell.find_label().is_empty() && shell.view().find_result() == (0, 0), || shell.find_label());
 }

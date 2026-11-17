@@ -112,6 +112,8 @@ pub enum ViewEvent {
     JsDialogDismissed(u64),
     /// Ctrl and the wheel: zoom in (1) or out (-1).
     Zoom(i32),
+    /// Find in page: how many matches and which one is active (1-based; 0 for none).
+    FindResult { count: i32, active: i32 },
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
     ExternalLaunch { scheme: String, url: String, signin: bool },
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
@@ -203,6 +205,8 @@ struct Shared {
     cookies: Mutex<crate::cookies::CookiesConfig>,
     /// The person's zoom for this page (1.0 = 100 %), on top of the scale correction for device resolution.
     user_zoom: Mutex<f64>,
+    /// The last find-in-page result: (matches, active one).
+    find_result: Mutex<(i32, i32)>,
     /// Who the session cookies of this view belong to (its window), and the sites whose cookies the rules
     /// blocked since the page started loading.
     session_owner: Mutex<String>,
@@ -316,6 +320,7 @@ impl Shared {
             permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
             user_zoom: Mutex::new(1.0),
+            find_result: Mutex::new((0, 0)),
             session_owner: Mutex::new(String::new()),
             blocked_cookies: Mutex::new(Default::default()),
             storage: NEXT_STORAGE.with(|s| s.borrow().clone()),
@@ -1148,6 +1153,19 @@ wrap_permission_handler! {
     }
 }
 
+// ---- find in page ---------------------------------------------------------------------------------
+
+wrap_find_handler! {
+    struct ViewFind { shared: Arc<Shared> }
+
+    impl FindHandler {
+        fn on_find_result(&self, _b: Option<&mut Browser>, _id: ::std::os::raw::c_int, count: ::std::os::raw::c_int, _rect: Option<&Rect>, active: ::std::os::raw::c_int, _final: ::std::os::raw::c_int) {
+            *self.shared.find_result.lock().unwrap() = (count, active);
+            send(self.shared.id, ViewEvent::FindResult { count, active });
+        }
+    }
+}
+
 // ---- JavaScript dialogs ---------------------------------------------------------------------------
 
 struct JsCb(JsdialogCallback);
@@ -1376,6 +1394,7 @@ wrap_client! {
         permission: PermissionHandler,
         download: DownloadHandler,
         jsdialog: JsdialogHandler,
+        find: FindHandler,
     }
 
     impl Client {
@@ -1388,6 +1407,7 @@ wrap_client! {
         fn permission_handler(&self) -> Option<PermissionHandler> { Some(self.permission.clone()) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
         fn jsdialog_handler(&self) -> Option<JsdialogHandler> { Some(self.jsdialog.clone()) }
+        fn find_handler(&self) -> Option<FindHandler> { Some(self.find.clone()) }
     }
 }
 
@@ -1401,7 +1421,8 @@ fn make_client(shared: Arc<Shared>) -> Client {
         ViewRequest::new(shared.clone()),
         ViewPermissions::new(shared.clone()),
         ViewDownloads::new(shared.clone()),
-        ViewJsDialog::new(shared),
+        ViewJsDialog::new(shared.clone()),
+        ViewFind::new(shared),
     )
 }
 
@@ -1912,6 +1933,36 @@ impl BrowserView {
         let device = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
         let user = self.user_zoom().ln() / 1.2f64.ln();
         self.with_host(|h| h.set_zoom_level(device + user));
+    }
+
+    /// Find `text` in the page (`next`: the same search again, moving on). Posted to CEF's UI thread.
+    pub fn find(&self, text: &str, forward: bool, match_case: bool, next: bool) {
+        *self.shared.find_result.lock().unwrap() = (0, 0);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let text = text.to_owned();
+            on_ui(move || {
+                let h = h;
+                h.0.find(Some(&CefString::from(text.as_str())), forward as _, match_case as _, next as _);
+            });
+        }
+    }
+
+    /// End the search and remove its highlights. Posted to CEF's UI thread.
+    pub fn stop_find(&self) {
+        *self.shared.find_result.lock().unwrap() = (0, 0);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                h.0.stop_finding(1);
+            });
+        }
+    }
+
+    /// The last find-in-page result: (matches, active match).
+    pub fn find_result(&self) -> (i32, i32) {
+        *self.shared.find_result.lock().unwrap()
     }
 
     /// The person's zoom for this page (1.0 = 100 %).

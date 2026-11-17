@@ -618,6 +618,19 @@ carry no modifier), the keyboard accelerators on real keys and layouts (`Ctrl+=`
 eye, a fractional display scale, zoom of a sleeping or modal view, and no zoom indicator or reset button in the
 header yet.
 
+## Status: find in page (2026-11-17)
+
+A `FindHandler` (view.rs) stores and forwards `on_find_result`; `app/find.rs` is the bar (a `Revealer` at the bottom of the
+`ToolbarView`: `SearchEntry`, count, previous/next/close) and `win.find`, `find-next`, `find-prev`, `find-close`
+(`Ctrl+F`, `Ctrl+G`/`F3`, `Ctrl+Shift+G`/`Shift+F3`). Typing searches case-insensitively; Enter and Shift+Enter move on;
+Escape or a tab switch closes it and clears the highlights in every tab. In windowless mode Chromium reports the first
+result with match 0 until told to move on, so the first result of a new search triggers one `find_next` to settle on
+match 1. Measured (`--selftest` section `find`, 6 checks, and a picture looked at): the bar opens, three matches (one
+capitalised) counted and the first active, next and previous, no-match text, closing clears. **Not measured:**
+match-case and whole-word options (none offered), searching a page that is still loading, a sleeping tab, PDFs, find
+across a tab switch back, the text selection afterwards, and the key bindings on real keys (the test uses the window
+actions).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and
