@@ -28,6 +28,14 @@ next time it opens, the tabs come back: the selected one loads at once, and the 
 remembered, and pinned tabs come from this file each time. Bookmarks are stored there too, per
 workspace. Deleting a workspace (`browsah workspace remove`) deletes its tabs and bookmarks.
 
+## Home page
+
+A workspace can have its own home page: put `home_page: "https://..."` in its `workspace.yaml` (it overrides the
+profile's and the application's, like any option below). The home page is what the workspace's window opens on
+when it has nothing else to show: no remembered tabs and no pinned tabs. A workspace that is reopened shows its
+remembered tabs instead, a workspace with pinned tabs opens on those, and a link sent to the workspace opens as
+a tab (without the home page). New tabs (`Ctrl+T`) open blank with the address bar focused.
+
 ## Overriding configuration
 
 `workspace.yaml` can also contain options from [options.md](options.md); they are merged over the

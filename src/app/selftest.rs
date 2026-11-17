@@ -1422,7 +1422,7 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     std::fs::write(
         dir.join("workspace.yaml"),
         format!(
-            "name: Sweep\nhome_page: 'http://localhost:{port}/scope.html'\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Stale\n      match: {{ url: ['localhost/b.html*'] }}\n      idle_for: 2s\n    - name: Sleepy\n      match: {{ url: ['127.0.0.1'] }}\n      idle_for: 2s\n      action: discard\n    - name: Forms\n      match: {{ url: ['localhost/form.html'] }}\n      idle_for: 2s\n"
+            "name: Sweep\nhome_page: 'http://localhost:{port}/scope.html'\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Stale\n      match: {{ url: ['localhost/b.html*'] }}\n      idle_for: 2s\n    - name: Sleepy\n      match: {{ url: ['127.0.0.1'] }}\n      idle_for: 2s\n      action: discard\n    - name: Forms\n      match: {{ url: ['localhost/form.html'] }}\n      idle_for: 2s\n    - name: Everything\n      idle_for: 2s\ntabs:\n  pinned:\n    - url: 'http://localhost:{port}/b.html?pinned=1'\n"
         ),
     )
     .expect("workspace.yaml");
@@ -1430,11 +1430,15 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "sw"));
 
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"sw".to_variant()));
-    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    // (A workspace with pinned tabs opens on them, not on its home page.)
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
     r.check("a workspace with sweeping rules opens", ok, || "not open".into());
     let Some(sw) = find() else { return };
-    r.check("its rules are loaded", sw.sweeper.as_ref().is_some_and(|s| s.rules.len() == 3), || format!("{:?}", sw.sweeper));
-    let home = sw.current().expect("home tab");
+    r.check("its rules are loaded", sw.sweeper.as_ref().is_some_and(|s| s.rules.len() == 4), || format!("{:?}", sw.sweeper));
+    let pinned = sw.tabs().into_iter().find(|t| t.page.is_pinned());
+    r.check("the workspace has its pinned tab", pinned.is_some(), || "no pinned tab".into());
+    let home = sw.open_tab(&format!("http://localhost:{port}/scope.html"), true);
+    let _ = wait_until(15_000, || home.state.borrow().title == "Scope test").await;
     let stale = sw.open_tab(&format!("http://localhost:{port}/b.html?stale=1"), true);
     let sleepy = sw.open_tab(&format!("http://127.0.0.1:{port}/b.html?sleepy=1"), true);
     let form = sw.open_tab(&format!("http://localhost:{port}/form.html"), true);
@@ -1456,6 +1460,7 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("an idle tab matching a discard rule stays but is put to sleep", sw.tabs().iter().any(|t| t.uid == sleepy.uid) && sleepy.view().is_dormant(), || format!("dormant={}", sleepy.view().is_dormant()));
     r.check("a tab with unsaved form input is left alone and marked", sw.tabs().iter().any(|t| t.uid == form.uid) && form.dirty.get() && form.page.indicator_icon().is_some(), || format!("dirty={}", form.dirty.get()));
     r.check("the tab being looked at is never swept", sw.tabs().iter().any(|t| t.uid == home.uid), || "home swept".into());
+    r.check("a pinned tab is never swept, however idle (a rule matches every tab)", pinned.as_ref().is_some_and(|p| sw.tabs().iter().any(|t| t.uid == p.uid)), || "pinned tab swept".into());
 
     // A swept tab comes back with Ctrl+Shift+T.
     let n = sw.tab_count();
