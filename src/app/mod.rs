@@ -1410,6 +1410,16 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    add_action(&window, "devtools", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                if let Some(t) = s.current() {
+                    t.view().toggle_dev_tools();
+                }
+            }
+        }
+    });
     add_action(&window, "find", {
         let weak = weak.clone();
         move || {
@@ -1602,6 +1612,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.devtools", &["F12", "<Ctrl><Shift>I"]);
     app.set_accels_for_action("win.fullscreen", &["F11"]);
     app.set_accels_for_action("win.find", &["<Ctrl>F"]);
     app.set_accels_for_action("win.find-next", &["<Ctrl>G", "F3"]);

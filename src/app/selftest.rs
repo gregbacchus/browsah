@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -354,6 +354,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("fullscreen") {
         run_fullscreen(shell, r).await;
+    }
+    if wants("devtools") {
+        run_devtools(shell, r).await;
     }
 }
 
@@ -2488,4 +2491,17 @@ async fn run_fullscreen(shell: &Rc<Shell>, r: &mut Report) {
         }
     }
     r.check("leaving with F11 also makes the page leave its fullscreen", !shell.is_fullscreen() && page_left, || format!("{} {page_left}", shell.is_fullscreen()));
+}
+
+/// Developer tools: the action opens them for the page and toggles them closed.
+async fn run_devtools(shell: &Rc<Shell>, r: &mut Report) {
+    let view = shell.view();
+    r.check("developer tools start closed", !view.has_dev_tools(), || String::new());
+    let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
+    let ok = wait_until(10_000, || view.has_dev_tools()).await;
+    r.check("F12 opens the developer tools", ok, || "not open".into());
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
+    let ok = wait_until(10_000, || !view.has_dev_tools()).await;
+    r.check("F12 again closes them", ok, || "still open".into());
 }

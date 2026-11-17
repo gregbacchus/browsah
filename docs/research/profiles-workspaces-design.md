@@ -643,6 +643,18 @@ while the page is fullscreen makes the page leave. **Not measured:** a real vide
 keyboard (Chromium's own handling), the compositor's behaviour on a second monitor, hover-to-reveal bars, a page
 requesting fullscreen from a background tab or a modal, keeping the screen awake during video.
 
+## Status: developer tools (2026-11-17)
+
+`win.devtools` (`F12`, `Ctrl+Shift+I`) calls `BrowserHost::show_dev_tools` with a plain `WindowInfo` (Chromium's own
+window) and no client of ours, from CEF's UI thread; calling it again closes them. Two first attempts failed and are worth
+knowing: forcing the Alloy runtime style on the tools' window gives "Alloy style is not supported for this browser" (no
+window), and passing our own client made the tools' title ("DevTools - <address>") overwrite the page window's title because
+the client routes into this view. Measured (`--selftest` section `devtools`, 3 checks, and `WAYLAND_DEBUG=client`): the
+action opens the tools (a second `xdg_toplevel` titled "DevTools - <address>" appears, the page window's title is
+untouched) and toggles them closed. **Not measured:** how the window looks and is placed, that it closes when its page's
+window does, closing it with its own X and then pressing F12 (the toggle reads `has_dev_tools` on CEF's UI thread, so it
+should reopen), inspect-element from the context menu, and DevTools in a web app or modal.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

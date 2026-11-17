@@ -209,6 +209,8 @@ struct Shared {
     user_zoom: Mutex<f64>,
     /// The last find-in-page result: (matches, active one).
     find_result: Mutex<(i32, i32)>,
+    /// Whether developer tools were open after the last toggle (read on CEF's UI thread, kept here).
+    dev_tools: AtomicBool,
     /// Who the session cookies of this view belong to (its window), and the sites whose cookies the rules
     /// blocked since the page started loading.
     session_owner: Mutex<String>,
@@ -323,6 +325,7 @@ impl Shared {
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
             user_zoom: Mutex::new(1.0),
             find_result: Mutex::new((0, 0)),
+            dev_tools: AtomicBool::new(false),
             session_owner: Mutex::new(String::new()),
             blocked_cookies: Mutex::new(Default::default()),
             storage: NEXT_STORAGE.with(|s| s.borrow().clone()),
@@ -1783,6 +1786,31 @@ impl BrowserView {
     /// How many keys, clicks and scrolls the user has sent to this page.
     pub fn input_events(&self) -> u64 {
         self.input_events.get()
+    }
+
+    /// Open Chromium's developer tools for this page in a window of their own (or close them if open).
+    pub fn toggle_dev_tools(&self) {
+        let shared = self.shared.clone();
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                if h.0.has_dev_tools() != 0 {
+                    h.0.close_dev_tools();
+                    shared.dev_tools.store(false, Ordering::Relaxed);
+                    return;
+                }
+                // A plain window and no client of ours: the tools must not feed their title or frames into this view.
+                let window_info = WindowInfo::default();
+                h.0.show_dev_tools(Some(&window_info), None, Some(&BrowserSettings::default()), None);
+                shared.dev_tools.store(h.0.has_dev_tools() != 0, Ordering::Relaxed);
+            });
+        }
+    }
+
+    /// Whether developer tools were open after the last toggle.
+    pub fn has_dev_tools(&self) -> bool {
+        self.shared.dev_tools.load(Ordering::Relaxed)
     }
 
     /// Ask the page to leave fullscreen (it was the browser's key, not the page's, that was pressed).
