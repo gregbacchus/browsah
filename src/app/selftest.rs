@@ -2873,7 +2873,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
 
     // The options: the thickness is the border's width, and a window can turn it off.
     let th = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.x() as i32).unwrap_or(-1);
-    r.check("the border is 6 px thick by default", th == 6, || format!("page starts at x={th}"));
+    r.check("the border is 4 px thick by default", th == 4, || format!("page starts at x={th}"));
     let mut cfg = w.settings.borrow().clone();
     cfg.window.frame.thickness = 14;
     cfg.window.frame.radius = 0;
@@ -2891,7 +2891,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     let head = pixels(&w.window, &[(200, 20)]);
     r.check("(and the header is still tinted)", head.len() == 1 && near(head[0], tint), || format!("{head:?} tint {tint:?}"));
     cfg.window.frame.enabled = true;
-    cfg.window.frame.thickness = 6;
+    cfg.window.frame.thickness = 4;
     cfg.window.frame.radius = 8;
     w.apply_config(&cfg);
     glib::timeout_future(Duration::from_millis(600)).await;

@@ -716,14 +716,14 @@ a bookmark bar showing under the tab bar, the same area with a web app's header.
 A window with a colour (its workspace's, else its profile's) shows it as a border around the page, like a terminal with a
 coloured window chrome: the page sits in a `.browsah-frame` box (`ToolbarView` content) whose style gives it the colour as
 background and padding on the sides and bottom, and the tab view inside it rounded corners (GTK CSS has no `overflow`, so
-the clip is `set_overflow(Hidden)` in code). `window.frame.enabled`, `thickness` (default 6 px, 0 to 40) and `radius` (default 8)
+the clip is `set_overflow(Hidden)` in code). `window.frame.enabled`, `thickness` (default 4 px, 0 to 40) and `radius` (default 8)
 are live options, per workspace; the window's style sheet is rewritten when the configuration is reloaded
 (`refresh_color_css`). The bottom border is dropped while the find bar (the only footer) is open, by a `has-footer` class on
 the window. The frame stays when maximized (asked for) and goes in fullscreen, where the bars are hidden. The bottom bar is
 tinted too, so the find bar sits in the colour. Measured (`--selftest` section `frame`, 12 checks, pictures looked at, whole
 self-test 322 of 322): pixels at the sides, bottom and the page's corner (tinted in the corner, white just inside it) for
-unmaximized and maximized windows; the default 6 px; a changed thickness and turning the frame off applied at once with the
-header still tinted; fullscreen shows only the page. The first thickness (8 px) was judged too thick. **Not measured:** the
+unmaximized and maximized windows; the default 4 px; a changed thickness and turning the frame off applied at once with the
+header still tinted; fullscreen shows only the page. The first thickness (8 px) was judged too thick, then 6 px; the default is 4 px. **Not measured:** the
 light theme, a window with no colour (unchanged, no frame), tiled windows, HiDPI beyond the test machine's scale 2, the find bar
 footer by eye, the web app window with its tab bar hidden.
 
