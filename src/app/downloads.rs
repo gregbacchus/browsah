@@ -71,6 +71,7 @@ impl Ui {
         let clear = gtk::Button::builder().label("Clear list").has_frame(false).halign(gtk::Align::End).build();
         let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(8).margin_bottom(8).margin_start(8).margin_end(8).build();
         let scroller = gtk::ScrolledWindow::builder().child(&list).propagate_natural_height(true).max_content_height(380).min_content_width(360).hscrollbar_policy(gtk::PolicyType::Never).build();
+        content.set_size_request(400, -1);
         content.append(&scroller);
         content.append(&clear);
         let popover = gtk::Popover::builder().child(&content).build();
@@ -152,8 +153,8 @@ fn icon_button(icon: &str, tip: &str) -> gtk::Button {
 fn row_widget(row: &Row) -> gtk::Box {
     let outer = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).margin_top(4).margin_bottom(4).build();
     let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
-    let name = gtk::Label::builder().label(if row.name.is_empty() { "download" } else { &row.name }).halign(gtk::Align::Start).ellipsize(gtk::pango::EllipsizeMode::Middle).max_width_chars(32).build();
-    let status = gtk::Label::builder().label(status_text(row)).halign(gtk::Align::Start).build();
+    let name = gtk::Label::builder().label(if row.name.is_empty() { "download" } else { &row.name }).halign(gtk::Align::Start).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).width_chars(24).max_width_chars(40).build();
+    let status = gtk::Label::builder().label(status_text(row)).halign(gtk::Align::Start).xalign(0.0).build();
     status.add_css_class("dim-label");
     status.add_css_class("caption");
     text.append(&name);

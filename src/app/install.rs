@@ -168,11 +168,11 @@ impl Shell {
                 return;
             }
             let info = read_manifest(&view).await.unwrap_or_else(|| page_info(&title, &address));
-            shell.confirm_install(view, info);
+            let _ = shell.confirm_install(view, info);
         });
     }
 
-    fn confirm_install(self: &Rc<Self>, view: Rc<BrowserView>, info: AppInfo) {
+    pub(super) fn confirm_install(self: &Rc<Self>, view: Rc<BrowserView>, info: AppInfo) -> adw::AlertDialog {
         let dialog = adw::AlertDialog::new(Some("Install as web app"), None);
         let source = if info.from_manifest { "from the site's manifest" } else { "this site has no manifest, so this is the page itself" };
         dialog.set_body(&format!("{}\n\nOpens on {} ({source}).", info.name, info.start_url));
@@ -202,6 +202,7 @@ impl Shell {
             });
         });
         dialog.present(Some(&self.window));
+        dialog
     }
 }
 

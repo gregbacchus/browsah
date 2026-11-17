@@ -65,6 +65,27 @@ fn screenshot(window: &adw::ApplicationWindow, path: &str) -> bool {
     renderer.render_texture(&node, None).save_to_png(path).is_ok()
 }
 
+/// With `BROWSAH_SHOTS=<directory>` set, save a picture of a widget (a popover, a dialog or a whole window) as
+/// `<directory>/<name>.png`, for checking the layout by eye. Does nothing without it.
+fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
+    let Some(dir) = std::env::var_os("BROWSAH_SHOTS") else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    let paintable = gtk::WidgetPaintable::new(Some(widget));
+    let (w, h) = (paintable.intrinsic_width(), paintable.intrinsic_height());
+    let ok = (|| {
+        if w <= 0 || h <= 0 {
+            return false;
+        }
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, w as f64, h as f64);
+        let Some(node) = snapshot.to_node() else { return false };
+        let Some(renderer) = widget.native().and_then(|n| n.renderer()) else { return false };
+        renderer.render_texture(&node, None).save_to_png(&path).is_ok()
+    })();
+    println!("shot {name}: {}", if ok { "saved" } else { "failed" });
+}
+
 /// The sections `BROWSAH_SELFTEST_ONLY` can name, in the order they run (a test keeps this in step with `run`).
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
@@ -1868,6 +1889,13 @@ async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
     r.check("cancelling the question saves nothing", ok && files == 1, || format!("{files} files"));
 
     // The downloads list.
+    {
+        let pop = da.downloads.button.popover().expect("popover");
+        pop.popup();
+        glib::timeout_future(Duration::from_millis(400)).await;
+        shot(&pop, "downloads-finished");
+        pop.popdown();
+    }
     let rows = super::downloads::rows();
     let done: Vec<&str> = rows.iter().filter(|(_, s)| *s == super::downloads::RowState::Done).map(|(n, _)| n.as_str()).collect();
     r.check("finished downloads are in the list", ["note.txt", "note (1).txt", "chosen.txt"].iter().all(|n| done.contains(n)), || format!("{rows:?}"));
@@ -1881,6 +1909,15 @@ async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
     dl.current().expect("tab").view().navigate(&format!("http://localhost:{port}/slow"));
     let ok = wait_until(15_000, || super::downloads::rows().iter().any(|(n, s)| n == "slow.bin" && matches!(s, super::downloads::RowState::Active { received, .. } if *received > 0))).await;
     r.check("a download in progress is listed with the bytes received so far", ok, || format!("{:?}", super::downloads::rows()));
+    {
+        // (The `da` window is the one in front.)
+        let pop = da.downloads.button.popover().expect("popover");
+        pop.popup();
+        glib::timeout_future(Duration::from_millis(500)).await;
+        shot(&pop, "downloads-running");
+        pop.popdown();
+        shot(&da.window, "window-with-downloads-button");
+    }
     r.check("the button shows while it runs", dl.downloads.button.is_visible() && dl.downloads.shown_rows() == 1, || format!("{}", dl.downloads.shown_rows()));
     super::downloads::cancel_active();
     let ok = wait_until(15_000, || super::downloads::rows().iter().any(|(n, s)| n == "slow.bin" && *s == super::downloads::RowState::Cancelled)).await;
@@ -2152,6 +2189,10 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
     r.check("a web app opens on its start page", ok, || format!("{:?}", find().map(|s| s.current().map(|t| t.state.borrow().title.clone()))));
     let Some(w) = find() else { return };
+    glib::timeout_future(Duration::from_millis(600)).await;
+    if let Some(w) = find() {
+        shot(&w.window, "web-app-window");
+    }
     r.check("a web app shows only its page: one pinned tab, no address bar, no new tabs", w.tab_count() == 1 && w.current().is_some_and(|t| t.page.is_pinned()) && gtk::prelude::WidgetExt::parent(&w.entry).is_none() && !w.allow_new_tabs, || format!("tabs={} entry={}", w.tab_count(), gtk::prelude::WidgetExt::is_visible(&w.entry)));
     r.check("a web app keeps back and reload, and shows popups as modals", w.back.is_visible() && w.popup_policy == crate::workspace::PopupPolicy::Modal, || "controls or popup policy".into());
     // Out of scope: the default scope is the start page's own site, so the link to 127.0.0.1 leaves the app.
@@ -2188,6 +2229,12 @@ async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
     let ok = info.as_ref().is_some_and(|i| i.name == "Test Manifest App" && i.start_url.ends_with("/pwa.html") && i.display == crate::workspace::AppDisplay::Minimal && i.color.as_deref() == Some("#336699") && i.scope == ["localhost"] && i.icons.len() == 1);
     r.check("the page's web manifest is read through DevTools", ok, || format!("{info:?}"));
     let Some(info) = info else { return };
+    {
+        let dialog = shell.confirm_install(view.clone(), info.clone());
+        glib::timeout_future(Duration::from_millis(600)).await;
+        shot(&shell.window, "install-dialog");
+        dialog.force_close();
+    }
     let id = super::install::save_app(&view, &info, "Test Manifest App").await;
     r.check("installing creates the web app's workspace", id.as_deref() == Ok("test-manifest-app"), || format!("{id:?}"));
     let Ok(id) = id else { return };
@@ -2237,12 +2284,19 @@ async fn run_suggest(shell: &Rc<Shell>, r: &mut Report) {
     let _ = st.clear_history(None); // the test profile's own database: start from nothing
     let _ = st.record_visit(None, &url, "Page B suggestion", now);
     let _ = st.record_visit(None, "http://other.invalid/", "Something else", now);
+    shell.window.present();
+    glib::timeout_future(Duration::from_millis(500)).await;
     shell.entry.grab_focus();
+    glib::timeout_future(Duration::from_millis(200)).await;
     shell.entry.set_text("page b sugg");
     let ok = wait_until(5_000, || shell.suggestion_urls().contains(&url)).await;
     let offered = shell.suggestion_urls();
     r.check("typing offers a matching history entry", ok && !offered.iter().any(|u| u.contains("other.invalid")), || format!("{offered:?}"));
     r.check("nothing is highlighted until an arrow key is used", shell.chosen_suggestion().is_none(), || format!("{:?}", shell.chosen_suggestion()));
+    let _ = shell.move_suggestion(1);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    shot(shell.suggestion_popover(), "suggestions");
+    let _ = shell.move_suggestion(-1);
     let moved = shell.move_suggestion(1);
     r.check("the down arrow highlights the first suggestion", moved && shell.chosen_suggestion().as_deref() == Some(url.as_str()), || format!("{:?}", shell.chosen_suggestion()));
     let moved = shell.move_suggestion(-1);

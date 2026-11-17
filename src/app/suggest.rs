@@ -16,6 +16,13 @@ pub struct Popup {
 impl Popup {
     pub fn new(entry: &gtk::Entry) -> Popup {
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).activate_on_single_click(true).focusable(false).build();
+        list.add_css_class("suggest-list");
+        // A highlighted suggestion must stand out in light and dark themes alike.
+        let css = gtk::CssProvider::new();
+        css.load_from_string(".suggest-list row:selected { background: alpha(@accent_bg_color, 0.35); }");
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
         let scroller = gtk::ScrolledWindow::builder().child(&list).propagate_natural_height(true).max_content_height(320).hscrollbar_policy(gtk::PolicyType::Never).build();
         let popover = gtk::Popover::builder().child(&scroller).autohide(false).has_arrow(false).position(gtk::PositionType::Bottom).focusable(false).build();
         popover.add_css_class("menu");
@@ -41,8 +48,8 @@ fn row_for(s: &Suggestion) -> gtk::ListBoxRow {
         Kind::Tab => "\u{25a1} ",
         Kind::History => "",
     };
-    let title = gtk::Label::builder().label(format!("{kind}{}", if s.title.is_empty() { &s.url } else { &s.title })).halign(gtk::Align::Start).ellipsize(gtk::pango::EllipsizeMode::End).build();
-    let url = gtk::Label::builder().label(&s.url).halign(gtk::Align::Start).ellipsize(gtk::pango::EllipsizeMode::Middle).build();
+    let title = gtk::Label::builder().label(format!("{kind}{}", if s.title.is_empty() { &s.url } else { &s.title })).halign(gtk::Align::Start).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
+    let url = gtk::Label::builder().label(&s.url).halign(gtk::Align::Start).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).build();
     url.add_css_class("dim-label");
     url.add_css_class("caption");
     let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).margin_top(4).margin_bottom(4).margin_start(8).margin_end(8).build();
@@ -109,6 +116,11 @@ impl Shell {
     pub(super) fn chosen_suggestion(&self) -> Option<String> {
         let i = self.suggest.list.selected_row()?.index();
         self.suggest.items.borrow().get(i as usize).map(|s| s.url.clone())
+    }
+
+    /// The popover (for the self-test's pictures).
+    pub fn suggestion_popover(&self) -> &gtk::Popover {
+        &self.suggest.popover
     }
 
     /// The addresses now offered (for the self-test).

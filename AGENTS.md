@@ -56,6 +56,11 @@ Do **not** run everything after every change. Run what the change can affect:
   seconds. Add a section's check next to the feature, and run that section while developing. Run the **whole**
   self-test (about four minutes; run it in the background and wait for it, `timeout 298`) once, before a commit
   that touches shared code (view.rs handlers, the shell, config layering), not for an isolated feature.
+- **Look at new UI.** `BROWSAH_SHOTS=/some/dir` makes the self-test save pictures of the widgets it calls `shot(...)` on
+  (popovers, dialogs, windows; `downloads-finished`, `downloads-running`, `suggestions`, `install-dialog`,
+  `web-app-window`...) as PNGs you can open with the Read tool. Add a `shot` next to a new piece of UI and look at it:
+  passing checks say nothing about layout (a first look found a downloads list too narrow to show file names, labels
+  centred by `xalign`, and a highlighted suggestion with no visible highlight).
 - Never start the user's real profile in a test: the self-test uses the throwaway profile `selftest`, and a CLI
   experiment should set `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` to a temporary directory.
 - Do not run two self-tests at once (they share the profile and collide on CEF's lock).

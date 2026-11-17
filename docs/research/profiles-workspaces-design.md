@@ -579,6 +579,17 @@ received, and cancelling it through the row's handle ends it as cancelled. A fir
 desktop; the test sets `BROWSAH_NO_OS_LAUNCH`), a failed (interrupted) download, a download that outlives its window,
 resuming, drag-out, and the file-moved note.
 
+## Visual pass (2026-11-17)
+
+Pictures taken by the self-test (`BROWSAH_SHOTS`, GTK's own renderer on the widget, Ubuntu dark theme, not a compositor
+screenshot) of the downloads popover (running and finished), the address-bar suggestions, the install dialog and a
+standalone web app window. Found and fixed: the downloads popover was narrow enough that file names showed as "…"
+(now 400 px wide); labels were centred inside their allocation until `xalign(0)`; the highlighted suggestion had no
+visible highlight (now an accent tint under `.suggest-list row:selected`). The install dialog and the web app window
+(only back, forward, reload and the page title) looked right. **Not looked at:** the tab context menu (with *Copy allow
+rules*, *Install as web app…*), the header with the downloads button in a workspace window (its picture failed, the
+window was not in front), light theme, HiDPI, long names and many rows, the dash and launcher entries, notifications.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and
