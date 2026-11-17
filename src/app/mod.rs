@@ -5,6 +5,7 @@ mod history;
 mod downloads;
 mod find;
 mod fullscreen;
+mod print;
 mod install;
 mod zoom;
 mod jsdialog;
@@ -178,6 +179,8 @@ pub struct Shell {
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
     find: find::Bar,
+    /// PDFs being written: what to do when each is done.
+    pdf_jobs: RefCell<std::collections::HashMap<String, print::PdfJob>>,
     /// The window's bars (hidden in fullscreen), and whether a page asked for the fullscreen.
     toolbar: adw::ToolbarView,
     page_fullscreen: Cell<bool>,
@@ -352,6 +355,8 @@ impl Shell {
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
         cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
         cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
+        cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
+        cookies.append(Some("Print\u{2026}"), Some("win.print"));
         self.tab_menu.append_section(None, &cookies);
         if page.is_pinned() {
             return; // a workspace's pinned tabs stay where they are
@@ -1092,6 +1097,7 @@ impl Shell {
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
+            ViewEvent::PdfSaved { path, ok } => self.pdf_done(&path, ok),
             ViewEvent::Fullscreen(on) => self.set_fullscreen(on, true),
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
@@ -1304,6 +1310,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
         find: find_bar,
+        pdf_jobs: RefCell::new(std::collections::HashMap::new()),
         toolbar: toolbar.clone(),
         page_fullscreen: Cell::new(false),
         fullscreen: Cell::new(false),
@@ -1402,6 +1409,22 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
     }
+    add_action(&window, "save-pdf", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.save_pdf();
+            }
+        }
+    });
+    add_action(&window, "print", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.print_page();
+            }
+        }
+    });
     add_action(&window, "fullscreen", {
         let weak = weak.clone();
         move || {
@@ -1612,6 +1635,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.print", &["<Ctrl>P"]);
+    app.set_accels_for_action("win.save-pdf", &["<Ctrl><Shift>P"]);
     app.set_accels_for_action("win.devtools", &["F12", "<Ctrl><Shift>I"]);
     app.set_accels_for_action("win.fullscreen", &["F11"]);
     app.set_accels_for_action("win.find", &["<Ctrl>F"]);

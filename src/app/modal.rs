@@ -239,7 +239,7 @@ impl Modal {
                     o.download_event(id, &name, &url, state, cancel);
                 }
             }
-            ViewEvent::Zoom(_) | ViewEvent::FindResult { .. } | ViewEvent::Fullscreen(_) => {}
+            ViewEvent::Zoom(_) | ViewEvent::FindResult { .. } | ViewEvent::Fullscreen(_) | ViewEvent::PdfSaved { .. } => {}
             ViewEvent::JsDialog(q) => {
                 if let Some(o) = self.owner.upgrade() {
                     o.show_js_dialog(q);

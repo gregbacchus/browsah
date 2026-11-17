@@ -112,6 +112,8 @@ pub enum ViewEvent {
     JsDialogDismissed(u64),
     /// Ctrl and the wheel: zoom in (1) or out (-1).
     Zoom(i32),
+    /// A page was written to a PDF (or that failed).
+    PdfSaved { path: String, ok: bool },
     /// A page entered (true) or left (false) element fullscreen.
     Fullscreen(bool),
     /// Find in page: how many matches and which one is active (1-based; 0 for none).
@@ -1163,6 +1165,18 @@ wrap_permission_handler! {
     }
 }
 
+// ---- PDF -----------------------------------------------------------------------------------------
+
+wrap_pdf_print_callback! {
+    struct ViewPdf { shared: Arc<Shared> }
+
+    impl PdfPrintCallback {
+        fn on_pdf_print_finished(&self, path: Option<&CefString>, ok: ::std::os::raw::c_int) {
+            send(self.shared.id, ViewEvent::PdfSaved { path: path.map(|p| p.to_string()).unwrap_or_default(), ok: ok != 0 });
+        }
+    }
+}
+
 // ---- find in page ---------------------------------------------------------------------------------
 
 wrap_find_handler! {
@@ -1981,6 +1995,21 @@ impl BrowserView {
         let device = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
         let user = self.user_zoom().ln() / 1.2f64.ln();
         self.with_host(|h| h.set_zoom_level(device + user));
+    }
+
+    /// Write the page to a PDF file. The result arrives as a `PdfSaved` event. Posted to CEF's UI thread.
+    pub fn print_to_pdf(&self, path: &std::path::Path, paper_inches: (f64, f64), backgrounds: bool) {
+        let shared = self.shared.clone();
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let path = path.to_string_lossy().into_owned();
+            on_ui(move || {
+                let h = h;
+                let settings = PdfPrintSettings { print_background: backgrounds as _, paper_width: paper_inches.0, paper_height: paper_inches.1, prefer_css_page_size: 1, ..Default::default() };
+                let mut cb = ViewPdf::new(shared);
+                h.0.print_to_pdf(Some(&CefString::from(path.as_str())), Some(&settings), Some(&mut cb));
+            });
+        }
     }
 
     /// Find `text` in the page (`next`: the same search again, moving on). Posted to CEF's UI thread.

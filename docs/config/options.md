@@ -176,6 +176,21 @@ cookies:
       action: session       # works while open, forgotten on close
 ```
 
+## `print`
+
+Printing (`Ctrl+P`) and saving a page as a PDF (`Ctrl+Shift+P`). Can differ per workspace; applies to the next print.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `print.paper` | `a4` or `letter` | `a4` | The paper size of the PDF (a page's own CSS `@page` size wins when it sets one). |
+| `print.backgrounds` | bool | `true` | Include background colours and images. |
+
+```yaml
+print:
+  paper: letter
+  backgrounds: false
+```
+
 ## `gpu`
 
 | Key | Type | Default | Description |

@@ -63,5 +63,9 @@ input:
   touchpad_acceleration: 0.025 # extra scaling for fast swipes, 0 to 1; 0 = linear
   touchpad_speed: 6.0      # touchpad scroll multiplier, 0.1 to 20; raise if scrolling feels slow
 
+print:
+  paper: a4                 # a4 | letter
+  backgrounds: true         # print background colours and images
+
 gpu:
   workarounds: true        # per-GPU environment fixes (AMD_DEBUG=nodcc on AMD)

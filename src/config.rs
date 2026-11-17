@@ -53,6 +53,7 @@ pub struct Config {
     pub permissions: crate::permissions::PermissionsConfig,
     pub downloads: crate::downloads::DownloadsConfig,
     pub cookies: crate::cookies::CookiesConfig,
+    pub print: PrintConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -136,6 +137,7 @@ impl Default for Config {
             permissions: Default::default(),
             downloads: Default::default(),
             cookies: Default::default(),
+            print: Default::default(),
         }
     }
 }
@@ -289,6 +291,41 @@ impl Loaded {
 }
 
 /// Options that only the application file may set.
+/// Paper size for printing and saving as PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Paper {
+    #[default]
+    A4,
+    Letter,
+}
+
+impl Paper {
+    /// Width and height in inches.
+    pub fn inches(self) -> (f64, f64) {
+        match self {
+            Paper::A4 => (8.27, 11.69),
+            Paper::Letter => (8.5, 11.0),
+        }
+    }
+}
+
+/// The `print:` section: printing and saving a page as a PDF.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct PrintConfig {
+    pub paper: Paper,
+    /// Print background colours and images.
+    pub backgrounds: bool,
+}
+
+impl Default for PrintConfig {
+    fn default() -> Self {
+        Self { paper: Paper::A4, backgrounds: true }
+    }
+}
+
 /// Whether a workspace's cookies and site data are kept apart from the rest of the profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -505,6 +542,7 @@ mod tests {
         add("permissions", field_names::<crate::permissions::PermissionsConfig>());
         add("downloads", field_names::<crate::downloads::DownloadsConfig>());
         add("cookies", field_names::<crate::cookies::CookiesConfig>());
+        add("print", field_names::<PrintConfig>());
         add("cookies.rules[]", field_names::<crate::cookies::CookieRuleConfig>());
         add("permissions.sites[]", field_names::<crate::permissions::SiteConfig>());
         out
@@ -537,7 +575,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -697,6 +735,15 @@ mod tests {
         // Without a workspace file the window is the profile's.
         assert_eq!(load_window(&app, &prof, None).unwrap().config.search_url, "https://b/?q={query}");
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn paper_sizes_in_inches() {
+        assert_eq!(Paper::A4.inches(), (8.27, 11.69));
+        assert_eq!(Paper::Letter.inches(), (8.5, 11.0));
+        let c: Config = serde_yaml_ng::from_str("print: { paper: letter, backgrounds: false }").unwrap();
+        assert!(c.print.paper == Paper::Letter && !c.print.backgrounds);
+        assert!(Config::default().print.paper == Paper::A4);
     }
 
     #[test]

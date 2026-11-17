@@ -655,6 +655,19 @@ untouched) and toggles them closed. **Not measured:** how the window looks and i
 window does, closing it with its own X and then pressing F12 (the toggle reads `has_dev_tools` on CEF's UI thread, so it
 should reopen), inspect-element from the context menu, and DevTools in a web app or modal.
 
+## Status: print and save as PDF (2026-11-17)
+
+`BrowserHost::print_to_pdf` works in windowless mode (a `PdfPrintCallback` reports the result as a `PdfSaved` event);
+CEF's own print dialog does not, because that needs a `PrintHandler` and a print UI. So: `Ctrl+Shift+P` (and the tab
+menu) asks for a file name with a `FileDialog` and writes the PDF; `Ctrl+P` (*Print...*) writes a temporary PDF under
+`~/.cache/browsah/print/` (files older than a day are removed on the next print) and opens it in the desktop's PDF
+viewer, which has the printer dialog. Options `print.paper` (`a4` or `letter`, in inches for CEF) and `print.backgrounds`;
+the page's own `@page` size wins (`prefer_css_page_size`). Measured (`--selftest` section `print`, 3 checks; unit tests for
+names and paper sizes): a page is written as a real PDF (`%PDF`), the MediaBox is A4 (595 pt wide), and the job is
+cleared when the file is reported. **Not measured:** the file dialog and the Print hand-off to a viewer (the test sets
+`BROWSAH_NO_OS_LAUNCH`), Letter paper, headers and footers (none), page ranges, landscape, a very long or still-loading
+page, selection-only printing, direct printing to a printer without a viewer.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

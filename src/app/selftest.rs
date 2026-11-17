@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -357,6 +357,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("devtools") {
         run_devtools(shell, r).await;
+    }
+    if wants("print") {
+        run_print(shell, r).await;
     }
 }
 
@@ -2504,4 +2507,25 @@ async fn run_devtools(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
     let ok = wait_until(10_000, || !view.has_dev_tools()).await;
     r.check("F12 again closes them", ok, || "still open".into());
+}
+
+/// Saving a page as a PDF: the file is written, is a PDF, and is on A4 paper by default.
+async fn run_print(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    shell.view().navigate(&format!("http://localhost:{port}/find.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "Find test" }).await;
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let path = std::env::temp_dir().join(format!("browsah-selftest-{}.pdf", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    shell.write_pdf(&path, super::print::PdfJob::Save);
+    let ok = wait_until(15_000, || std::fs::metadata(&path).map(|m| m.len() > 500).unwrap_or(false)).await;
+    let bytes = std::fs::read(&path).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    r.check("the page is written as a PDF file", ok && bytes.starts_with(b"%PDF"), || format!("{} bytes", bytes.len()));
+    r.check("the paper is A4 by default", text.contains("/MediaBox [ 0 0 595") || text.contains("/MediaBox [0 0 595"), || text.lines().find(|l| l.contains("MediaBox")).unwrap_or("no MediaBox").to_owned());
+    let done = wait_until(5_000, || shell.pdf_jobs_pending() == 0).await;
+    r.check("the job is finished when the file is reported", done, || format!("{} pending", shell.pdf_jobs_pending()));
+    let _ = std::fs::remove_file(&path);
 }
