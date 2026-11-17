@@ -536,6 +536,20 @@ the dash), the confirmation dialog in real use (the self-test calls the function
 real site (only an SVG on a local server was tried), manifest shortcuts, `launch_handler`, protocol handlers
 (not used), a later import that compares the saved `id`, a profile badge on the icon.
 
+## Status: notifications (2026-11-17)
+
+No display code was needed: with `permissions.notifications: allow`, `new Notification(...)` made Chromium call
+`org.freedesktop.Notifications.Notify` itself (seen with `dbus-monitor`, the real binary, a local test page).
+What was wrong was attribution: the call named the app "Chromium" with a `desktop-entry` hint of whatever launched
+the process (`CHROME_DESKTOP` in the environment; here `com.anthropic.Claude`). `main` now sets `CHROME_DESKTOP` to
+`<profile application id>.desktop` before CEF starts (not for tests), and the hint became `be.geee.browsah.default`.
+**Not verified:** how GNOME Shell shows it (header name and icon, grouping), what a click does (Chromium handles
+`ActionInvoked` and fires the page's `onclick`; nothing selects the sending tab), the notification's own icon (a
+Chromium logo file in a temporary directory), a web app's notifications (they carry the profile's id, not the app's).
+Reproduce: serve a page that calls `Notification.requestPermission()` then `new Notification("x")`, run with a
+temporary `XDG_*` directory and `permissions: { notifications: allow }`, and `dbus-monitor --session
+"interface='org.freedesktop.Notifications'"`.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

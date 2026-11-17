@@ -146,6 +146,13 @@ fn main() {
         flags.insert(0, "--ozone-platform=wayland".into());
     }
 
+    // Chromium names the launcher entry in the desktop notifications it sends (the `desktop-entry` hint) from
+    // this variable, so a page's notifications are shown under the profile's own name and icon, and a click
+    // raises the profile. (Left alone for the test profile: tests must not look like the user's launcher.)
+    if !test_run {
+        // SAFETY: nothing else is running yet; this is the start of main, before CEF's threads exist.
+        unsafe { std::env::set_var("CHROME_DESKTOP", format!("{}.desktop", profile.app_id())) };
+    }
     let runtime = match cef_rt::init(flags, Some(profile.cef_dir())) {
         cef_rt::Init::Subprocess(code) => std::process::exit(code),
         cef_rt::Init::Browser(rt) => rt,

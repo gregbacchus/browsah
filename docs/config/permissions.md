@@ -38,8 +38,13 @@ browsah permissions reset [--origin https://x.example] [--profile ID] --yes   # 
 
 (`reset` is refused while the profile is running.)
 
-**What this does not do yet:** pages that are allowed to show notifications still do not show any (there is
-no notification display); location needs a location service the system provides and may be unavailable;
+**Notifications.** A page that is allowed to show notifications has them shown by the desktop (Chromium sends them
+to `org.freedesktop.Notifications` itself), marked as coming from the profile's launcher entry
+(`be.geee.browsah.<profile>`), so GNOME groups them under the profile's name and icon. They need the profile's
+`.desktop` entry (`browsah profile add` writes it) to be named and iconed properly.
+
+**What this does not do yet:** a notification's own icon is Chromium's logo, not the site's; clicking one is
+handled by Chromium (the page's `onclick`) and does not select the tab that sent it; location needs a location service the system provides and may be unavailable;
 sharing the screen needs a portal flow that is not built. The permission itself is decided as above.
 
 ## Downloads
