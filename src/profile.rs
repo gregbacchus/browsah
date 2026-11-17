@@ -217,8 +217,11 @@ fn list_in(root: &Path) -> Vec<Profile> {
             }
         }
     }
-    if !out.iter().any(|p| p.id == DEFAULT_ID) {
-        out.push(Profile { id: DEFAULT_ID.into(), config: ProfileConfig::default(), dir: root.join(DEFAULT_ID) });
+    // The built-in `default` profile (what a plain `browsah` starts) is there once it has been used or created, and when it
+    // is the only profile (so there is always one to start). Otherwise a profile you removed would keep coming back.
+    let default_dir = root.join(DEFAULT_ID);
+    if !out.iter().any(|p| p.id == DEFAULT_ID) && (default_dir.is_dir() || out.is_empty()) {
+        out.push(Profile { id: DEFAULT_ID.into(), config: ProfileConfig::default(), dir: default_dir });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
@@ -464,13 +467,25 @@ fn serde_json_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Why a profile cannot be removed (`None`: it can). `others` is how many other profiles there are. The self-test's profile is
+/// built in; `default` can go once there is another profile (it comes back, empty, if a plain `browsah` is started).
+fn removal_refusal(id: &str, others: usize) -> Option<String> {
+    if id == TEST_ID {
+        return Some(format!("the {id:?} profile is built in and cannot be removed"));
+    }
+    if id == DEFAULT_ID && others == 0 {
+        return Some("the \"default\" profile is the only one: create another (browsah profile add NAME) before removing it".to_owned());
+    }
+    None
+}
+
 fn remove(args: &[String]) -> i32 {
     let Some(id) = args.first().filter(|a| !a.starts_with("--")) else {
         eprintln!("{USAGE}");
         return 2;
     };
-    if id == DEFAULT_ID || id == TEST_ID {
-        eprintln!("the {id:?} profile is built in and cannot be removed");
+    if let Some(why) = removal_refusal(id, list().iter().filter(|p| p.id != *id).count()) {
+        eprintln!("{why}");
         return 2;
     }
     let p = match Profile::resolve(id) {
@@ -587,12 +602,37 @@ mod tests {
         assert_eq!(w.display_name(), "Work");
         assert_eq!(w.cef_dir(), root.join("work/cef"));
         let ids: Vec<String> = list_in(&root).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["work"], "`default` was never created, so with another profile it is not listed");
+        // Once it exists (it has been used) it is listed, in order; with a file of its own too.
+        std::fs::create_dir_all(root.join("default/cef")).unwrap();
+        let ids: Vec<String> = list_in(&root).into_iter().map(|p| p.id).collect();
         assert_eq!(ids, ["default", "work"]);
+        std::fs::remove_dir_all(root.join("default")).unwrap();
+        std::fs::create_dir_all(root.join("alpha")).unwrap();
+        std::fs::write(root.join("alpha/profile.yaml"), "name: Alpha\n").unwrap();
+        let ids: Vec<String> = list_in(&root).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["alpha", "work"], "removed or never made: not listed");
 
         // A broken file is an error naming the file, not a silent default.
         std::fs::write(root.join("work/profile.yaml"), "color: 12\n").unwrap();
         assert!(Profile::resolve_in(&root, "work").unwrap_err().contains("profile.yaml"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_default_profile_is_listed_when_it_exists_or_is_alone() {
+        let root = temp("default-listing");
+        // Nothing at all: the built-in default, so there is always a profile to start.
+        assert_eq!(list_in(&root).into_iter().map(|p| p.id).collect::<Vec<_>>(), ["default"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removing_profiles() {
+        assert!(removal_refusal("selftest", 3).is_some(), "the test profile is built in");
+        assert!(removal_refusal("default", 0).is_some(), "not the only profile");
+        assert!(removal_refusal("default", 1).is_none(), "once there is another");
+        assert!(removal_refusal("work", 0).is_none());
     }
 
     #[test]

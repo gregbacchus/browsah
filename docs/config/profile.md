@@ -22,7 +22,10 @@ browsah --profile=work [URL]                 # run a profile, or hand it a link 
 application (application id `be.geee.browsah.<id>`) and can be chosen as the default
 browser. A profile is one process: launching it again, or opening a link with it, hands the work
 to the running process. The ids `default` and `selftest` exist without being created (`selftest`
-is used by `--selftest` and the benchmarks so they never touch a real profile).
+is used by `--selftest` and the benchmarks so they never touch a real profile). `default` is what a plain `browsah` starts. It is listed
+(`profile list`, the selector) once it exists, that is once it has been used, or when it is the only profile; with other profiles and no
+`default` directory it is not listed. `browsah profile remove default --yes` removes it like any other profile once there is another one
+(starting a plain `browsah` creates it again).
 
 All options apply at startup. Unknown keys are ignored (in release builds).
 
