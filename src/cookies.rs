@@ -62,13 +62,24 @@ impl CookiesConfig {
     }
 }
 
+/// The host a request address points at (lower case, no port or credentials).
+pub fn host_of(url: &str) -> String {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', '#']).next().unwrap_or("");
+    host.rsplit('@').next().unwrap_or(host).split(':').next().unwrap_or(host).to_ascii_lowercase()
+}
+
+/// `cookies:` rules that allow `hosts`, ready to paste into a configuration file.
+pub fn allow_rules_yaml(hosts: &[String]) -> String {
+    let list = hosts.iter().map(|h| format!("\"{h}\"")).collect::<Vec<_>>().join(", ");
+    format!("cookies:\n  rules:\n    - match: [{list}]\n      action: allow\n")
+}
+
 /// Identifies one session cookie within one cookie store: the store, the cookie's domain (or, if it has
 /// none, the host of the request), its name and its path.
 pub fn session_key(store: &str, request_url: &str, domain: &str, name: &str, path: &str) -> String {
-    let host = request_url.split("://").nth(1).unwrap_or(request_url).split(['/', '?', '#']).next().unwrap_or("");
-    let host = host.rsplit('@').next().unwrap_or(host).split(':').next().unwrap_or(host);
+    let host = host_of(request_url);
     let domain = domain.trim().trim_start_matches('.');
-    let domain = if domain.is_empty() { host } else { domain };
+    let domain = if domain.is_empty() { host.as_str() } else { domain };
     format!("{store}\u{1}{}\u{1}{name}\u{1}{path}", domain.to_ascii_lowercase())
 }
 
@@ -125,6 +136,14 @@ mod tests {
         assert_ne!(k("https://a.example/", ""), k("https://b.example/", ""));
         assert_ne!(session_key("one", "https://a/", "", "n", "/"), session_key("two", "https://a/", "", "n", "/"), "stores differ");
         assert_ne!(session_key("s", "https://a/", "", "n", "/"), session_key("s", "https://a/", "", "m", "/"));
+    }
+
+    #[test]
+    fn allow_rules_for_blocked_sites_parse_back() {
+        let yaml = allow_rules_yaml(&["a.example".to_owned(), "cdn.b.example".to_owned()]);
+        let cfg: crate::config::Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(cfg.cookies.decide("https://cdn.b.example/x"), Action::Allow);
+        assert_eq!(host_of("https://User@A.Example:8080/p?q"), "a.example");
     }
 
     #[test]

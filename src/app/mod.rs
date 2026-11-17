@@ -68,6 +68,8 @@ pub struct Tab {
     input_seen: std::cell::Cell<u64>,
 }
 
+static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 thread_local! {
     /// The profile's database (GTK thread).
     static STORE: RefCell<Option<Rc<Store>>> = const { RefCell::new(None) };
@@ -157,6 +159,8 @@ pub struct Shell {
     pending_close_reason: RefCell<Option<String>>,
     /// Nothing in this window is remembered (a sign-in another application started).
     pub private: Cell<bool>,
+    /// Whose session cookies these are: the workspace's id, or a number for an ephemeral window.
+    session_owner: String,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -321,6 +325,11 @@ impl Shell {
         *self.menu_page.borrow_mut() = page.cloned();
         self.tab_menu.remove_all();
         let Some(page) = page else { return };
+        let blocked = self.tab_for_page(page).map(|t| t.view().blocked_cookie_sites().len()).unwrap_or(0);
+        let cookies = gio::Menu::new();
+        let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
+        cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
+        self.tab_menu.append_section(None, &cookies);
         if page.is_pinned() {
             return; // a workspace's pinned tabs stay where they are
         }
@@ -695,13 +704,14 @@ impl Shell {
         }
     }
 
-    /// Forget the cookies `cookies:` marks `session`, when this window is the last to use its store.
+    /// The window is closing: delete the session cookies it saved.
     pub(crate) fn end_session_cookies(self: &Rc<Self>) {
-        let dir = self.storage_dir();
-        if dir.is_none() && windows().iter().any(|w| !Rc::ptr_eq(w, self) && w.storage_dir().is_none()) {
-            return; // other windows still use the profile's cookies
-        }
-        view::end_session_cookies(dir.as_deref(), self.settings.borrow().cookies.clone());
+        view::end_session_cookies(self.storage_dir().as_deref(), self.settings.borrow().cookies.clone(), &self.session_owner, true);
+    }
+
+    /// The window has opened: delete session cookies nobody owns (an earlier run left them).
+    pub(crate) fn purge_stale_session_cookies(self: &Rc<Self>) {
+        view::end_session_cookies(self.storage_dir().as_deref(), self.settings.borrow().cookies.clone(), &self.session_owner, false);
     }
 
     pub(crate) fn prepare_storage(&self) {
@@ -733,6 +743,10 @@ impl Shell {
                 t.view().set_frame_rate(cfg.rendering.frame_rate);
             }
         }
+    }
+
+    fn tab_for_page(&self, page: &adw::TabPage) -> Option<Rc<Tab>> {
+        self.tabs.borrow().iter().find(|t| &t.page == page).cloned()
     }
 
     /// The selected tab.
@@ -1251,6 +1265,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         last_sweep: RefCell::new(Vec::new()),
         pending_close_reason: RefCell::new(None),
         private: Cell::new(false),
+        session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),
         prompt_dialog: RefCell::new(None),
@@ -1335,6 +1350,21 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     window.add_action(&send_tab);
+    add_action(&window, "copy-cookie-rules", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                let page = s.menu_page.borrow().clone().or_else(|| s.tab_view.selected_page());
+                let hosts = page.and_then(|p| s.tab_for_page(&p)).map(|t| t.view().blocked_cookie_sites()).unwrap_or_default();
+                if hosts.is_empty() {
+                    s.toast("No cookies were blocked on this page");
+                } else {
+                    gtk::prelude::WidgetExt::display(&s.window).clipboard().set_text(&crate::cookies::allow_rules_yaml(&hosts));
+                    s.toast(&format!("Copied allow rules for {} site{}; paste them into a config file", hosts.len(), if hosts.len() == 1 { "" } else { "s" }));
+                }
+            }
+        }
+    });
     add_action(&window, "close-menu-tab", {
         let weak = weak.clone();
         move || {
@@ -1539,7 +1569,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
-    shell.end_session_cookies(); // anything an earlier run left behind
+    shell.purge_stale_session_cookies();
     shell.rebuild_bookmarks();
 
     // A workspace's pinned tabs come first.

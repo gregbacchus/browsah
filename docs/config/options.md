@@ -154,14 +154,16 @@ downloads:
 
 ## `cookies`
 
-Which sites' cookies are used. A denied site's cookies are neither sent with its requests nor saved from its responses (so it cannot sign you in or track you through cookies). Applies to newly loaded pages after a reload of the configuration. Other site data (local storage, IndexedDB) is not filtered; keep it apart with a workspace's `storage` option instead. Can differ per workspace.
+Which sites' cookies are used. A denied site's cookies are neither sent with its requests nor saved from its responses (so it cannot sign you in or track you through cookies). Applies to newly loaded pages after a reload of the configuration.
+
+**Finding what to allow:** with `default: deny` (or deny rules), right-click a tab and choose *Copy allow rules for N blocked cookie sites*: it copies a `cookies:` block allowing the sites whose cookies were blocked since that page started loading. Paste it into `config.yaml`, `profile.yaml` or a workspace's `workspace.yaml` (merge it into an existing `cookies:` section). Use it when a site stops working, then keep only the sites you want. Other site data (local storage, IndexedDB) is not filtered; keep it apart with a workspace's `storage` option instead. Can differ per workspace.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `cookies.default` | `allow`, `session` or `deny` | `allow` | For sites no rule covers. `deny` makes the rules an allow list; `session` makes every site's cookies forgotten at the end of the session. |
 | `cookies.rules` | list | none | Rules, tried in order; the first whose `match` fits decides. |
 | `cookies.rules[].match` | list of text | none | Address patterns as for a pinned tab's scope (`tracker.example.com`, `*.ads.example`, `shop.example.org/cart/*`); any may match. |
-| `cookies.rules[].action` | `allow`, `session` or `deny` | none (required) | What to do with cookies of matching sites. `session`: they work normally while you browse, and are deleted when the window closes (or, for the profile's shared storage, when the last window using it closes), so nothing is kept for next time. Each session cookie is tied to this run of the browser: one left on disk by an earlier run (a crash, a failed delete) is never sent, and is deleted when a window opens. |
+| `cookies.rules[].action` | `allow`, `session` or `deny` | none (required) | What to do with cookies of matching sites. `session`: they work normally while you browse, and are deleted when the window closes (or, for the profile's shared storage, when the last window using it closes), so nothing is kept for next time. A session cookie belongs to the workspace (or ephemeral window) that saved it: only that window sends it, even where other windows share the same cookie store, and it is deleted when that window closes. One left on disk by an earlier run (a crash, a failed delete) is never sent, and is deleted when a window opens. |
 
 ```yaml
 cookies:

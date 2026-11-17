@@ -245,6 +245,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_cookies(shell, r).await;
     run_storage(shell, r).await;
     run_session_cookies(shell, r).await;
+    run_session_scope(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1935,6 +1936,74 @@ async fn run_session_cookies(shell: &Rc<Shell>, r: &mut Report) {
         let t = tab.state.borrow().title.clone();
         r.check("a cookie from an earlier run is not sent once its site is a session one", t == "Cookies []", || t.clone());
     }
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ids {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// Session cookies belong to the workspace that saved them (even in the profile's shared store), and blocked
+/// cookie sites are listed so allow rules can be copied.
+async fn run_session_scope(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let ids = ["sa1", "sb1", "bl1"];
+    for id in ids {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let rules = if id == "bl1" { "default: deny" } else { "rules:\n    - match: ['localhost']\n      action: session" };
+        std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\ncookies:\n  {rules}\n")).expect("ws");
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    let open = |id: &'static str| {
+        let app = app.clone();
+        async move {
+            ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+            wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await
+        }
+    };
+    let visit = |id: &'static str, path: &'static str, title: &'static str| async move {
+        let tab = find(id)?.current()?;
+        tab.view().navigate(&format!("http://localhost:{port}/{path}"));
+        wait_until(15_000, || tab.state.borrow().title.starts_with(title) && !tab.state.borrow().loading).await;
+        let t = tab.state.borrow().title.clone();
+        Some(t)
+    };
+    open("sa1").await;
+    visit("sa1", "cookie-set", "Cookie set").await;
+    let a = visit("sa1", "cookie-show", "Cookies [").await;
+    r.check("a session cookie works in the workspace that saved it", a.as_deref() == Some("Cookies [ck=1]"), || format!("{a:?}"));
+    open("sb1").await;
+    let b = visit("sb1", "cookie-show", "Cookies [").await;
+    r.check("another workspace in the same store is not sent that session cookie", b.as_deref() == Some("Cookies []"), || format!("{b:?}"));
+    if let Some(w) = find("sa1") {
+        w.window.close();
+    }
+    let _ = wait_until(5_000, || find("sa1").is_none()).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    open("sa1").await;
+    let c = visit("sa1", "cookie-show", "Cookies [").await;
+    r.check("closing the workspace deletes its session cookie from the shared store", c.as_deref() == Some("Cookies []"), || format!("{c:?}"));
+
+    open("bl1").await;
+    visit("bl1", "cookie-set", "Cookie set").await;
+    let sites = find("bl1").and_then(|s| s.current()).map(|t| t.view().blocked_cookie_sites()).unwrap_or_default();
+    r.check("cookies blocked by the rules are listed by site", sites == vec!["localhost".to_owned()], || format!("{sites:?}"));
+    visit("bl1", "b.html", "Page B").await;
+    let sites = find("bl1").and_then(|s| s.current()).map(|t| t.view().blocked_cookie_sites()).unwrap_or_default();
+    r.check("the list starts again with the next page", sites.is_empty(), || format!("{sites:?}"));
+
     for w in super::windows() {
         if !Rc::ptr_eq(&w, shell) {
             w.window.close();

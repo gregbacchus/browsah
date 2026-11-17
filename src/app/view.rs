@@ -184,6 +184,10 @@ struct Shared {
     /// What the configuration says about permissions, and where downloads go (set by the shell).
     permissions: Mutex<crate::permissions::PermissionsConfig>,
     cookies: Mutex<crate::cookies::CookiesConfig>,
+    /// Who the session cookies of this view belong to (its window), and the sites whose cookies the rules
+    /// blocked since the page started loading.
+    session_owner: Mutex<String>,
+    blocked_cookies: Mutex<std::collections::BTreeSet<String>>,
     /// Where this view keeps its site data when apart from the profile's (a workspace's `storage: isolated`).
     storage: Option<std::path::PathBuf>,
     downloads: Mutex<(std::path::PathBuf, bool)>,
@@ -205,14 +209,18 @@ pub fn set_next_storage(dir: Option<std::path::PathBuf>) {
 }
 
 wrap_cookie_visitor! {
-    struct SessionCookies { rules: crate::cookies::CookiesConfig }
+    struct SessionCookies { rules: crate::cookies::CookiesConfig, store: String, mine: std::collections::HashSet<String>, ending: bool }
 
     impl CookieVisitor {
         fn visit(&self, cookie: Option<&Cookie>, _count: ::std::os::raw::c_int, _total: ::std::os::raw::c_int, delete_cookie: Option<&mut ::std::os::raw::c_int>) -> ::std::os::raw::c_int {
             if let (Some(c), Some(del)) = (cookie, delete_cookie) {
                 let domain = c.domain.to_string();
+                let key = crate::cookies::session_key(&self.store, "", &domain, &c.name.to_string(), &c.path.to_string());
                 let url = format!("https://{}/", domain.trim_start_matches('.'));
-                if self.rules.decide(&url) == crate::cookies::Action::Session {
+                // Ending a window: its own session cookies. Otherwise (a window opening): session cookies that no
+                // window owns, left by an earlier run.
+                let doomed = if self.ending { self.mine.contains(&key) } else { self.rules.decide(&url) == crate::cookies::Action::Session && !self.mine.contains(&key) };
+                if doomed {
                     *del = 1;
                 }
             }
@@ -221,10 +229,21 @@ wrap_cookie_visitor! {
     }
 }
 
-/// Delete the cookies the rules say to forget at the end of a session, from the folder's store (`None`:
-/// the profile's own), then write the store to disk.
-pub fn end_session_cookies(storage: Option<&std::path::Path>, rules: crate::cookies::CookiesConfig) {
-    if !rules.has_session_rules() {
+/// Clean up session cookies in the folder's store (`None`: the profile's own), then write the store to disk.
+/// `ending`: the window `owner` is closing, so delete the ones it saved. Otherwise a window is opening: delete
+/// the ones `rules` call session that no window owns (an earlier run left them).
+pub fn end_session_cookies(storage: Option<&std::path::Path>, rules: crate::cookies::CookiesConfig, owner: &str, ending: bool) {
+    let store = storage.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let mine: std::collections::HashSet<String> = {
+        let mut all = SESSION_COOKIES.lock().unwrap();
+        let map = all.get_or_insert_with(Default::default);
+        if ending {
+            map.remove(owner).unwrap_or_default()
+        } else {
+            map.values().flatten().cloned().collect()
+        }
+    };
+    if (ending && mine.is_empty()) || (!ending && !rules.has_session_rules()) {
         return;
     }
     let rc = match storage {
@@ -234,7 +253,7 @@ pub fn end_session_cookies(storage: Option<&std::path::Path>, rules: crate::cook
     let Some(rc) = rc else { return };
     on_ui(move || {
         if let Some(manager) = rc.cookie_manager(None) {
-            let mut visitor = SessionCookies::new(rules);
+            let mut visitor = SessionCookies::new(rules, store, mine, ending);
             manager.visit_all_cookies(Some(&mut visitor));
             manager.flush_store(None);
         }
@@ -276,6 +295,8 @@ impl Shared {
             popup_policy: Mutex::new(crate::workspace::PopupPolicy::Tab),
             permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
+            session_owner: Mutex::new(String::new()),
+            blocked_cookies: Mutex::new(Default::default()),
             storage: NEXT_STORAGE.with(|s| s.borrow().clone()),
             downloads: Mutex::new((gtk::glib::home_dir(), false)),
             accel,
@@ -725,25 +746,29 @@ wrap_context_menu_handler! {
     }
 }
 
-/// The session cookies saved during this run of the browser. A cookie a `session` rule covers is sent only if
-/// it is in here: one left on disk by an earlier run (a crash, a failed delete) is never sent, whatever it holds.
-static RUN_SESSION_COOKIES: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+/// The session cookies each window has saved (by owner, then store/domain/name/path). A cookie a `session` rule
+/// covers is sent only to the window that saved it, so one left behind by anything else (an earlier run, another
+/// workspace) is never returned. They are deleted when the window closes.
+static SESSION_COOKIES: Mutex<Option<HashMap<String, std::collections::HashSet<String>>>> = Mutex::new(None);
 
 wrap_cookie_access_filter! {
     struct CookieRules { shared: Arc<Shared> }
 
     impl CookieAccessFilter {
         // Cookies sent with a request, and cookies a response asks to save: allowed or denied by the site's
-        // address (`cookies:` in the configuration). `session` cookies are tied to this run.
+        // address (`cookies:` in the configuration). `session` cookies belong to the window that saved them.
         fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
             match self.shared.cookies.lock().unwrap().decide(&url) {
                 crate::cookies::Action::Allow => 1,
-                crate::cookies::Action::Deny => 0,
+                crate::cookies::Action::Deny => {
+                    self.shared.blocked_cookies.lock().unwrap().insert(crate::cookies::host_of(&url));
+                    0
+                }
                 crate::cookies::Action::Session => {
                     let Some(c) = cookie else { return 0 };
-                    let key = self.session_key(&url, c);
-                    RUN_SESSION_COOKIES.lock().unwrap().as_ref().is_some_and(|set| set.contains(&key)) as _
+                    let (owner, key) = (self.shared.session_owner.lock().unwrap().clone(), self.session_key(&url, c));
+                    SESSION_COOKIES.lock().unwrap().as_ref().and_then(|m| m.get(&owner)).is_some_and(|set| set.contains(&key)) as _
                 }
             }
         }
@@ -752,11 +777,14 @@ wrap_cookie_access_filter! {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
             match self.shared.cookies.lock().unwrap().decide(&url) {
                 crate::cookies::Action::Allow => 1,
-                crate::cookies::Action::Deny => 0,
+                crate::cookies::Action::Deny => {
+                    self.shared.blocked_cookies.lock().unwrap().insert(crate::cookies::host_of(&url));
+                    0
+                }
                 crate::cookies::Action::Session => {
                     if let Some(c) = cookie {
-                        let key = self.session_key(&url, c);
-                        RUN_SESSION_COOKIES.lock().unwrap().get_or_insert_with(Default::default).insert(key);
+                        let (owner, key) = (self.shared.session_owner.lock().unwrap().clone(), self.session_key(&url, c));
+                        SESSION_COOKIES.lock().unwrap().get_or_insert_with(Default::default).entry(owner).or_default().insert(key);
                     }
                     1
                 }
@@ -877,6 +905,7 @@ wrap_request_handler! {
             if frame.is_main() == 0 || is_redirect != 0 {
                 return 0;
             }
+            self.shared.blocked_cookies.lock().unwrap().clear(); // a new page: its blocked cookies start afresh
             let target = CefString::from(&request.url()).to_string();
             let current = CefString::from(&frame.url()).to_string();
             // The router: a clicked link (a user gesture on a GET) or any other navigation of a
@@ -1331,8 +1360,14 @@ impl BrowserView {
     }
 
     /// Which sites' cookies this view may send and save.
-    pub fn set_cookies(&self, cfg: crate::cookies::CookiesConfig) {
+    pub fn set_cookies(&self, cfg: crate::cookies::CookiesConfig, owner: &str) {
         *self.shared.cookies.lock().unwrap() = cfg;
+        *self.shared.session_owner.lock().unwrap() = owner.to_owned();
+    }
+
+    /// Sites whose cookies the rules blocked since this page started loading.
+    pub fn blocked_cookie_sites(&self) -> Vec<String> {
+        self.shared.blocked_cookies.lock().unwrap().iter().cloned().collect()
     }
 
     /// Where this view's downloads go, and whether to ask.
