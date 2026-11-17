@@ -12,10 +12,18 @@ default_profile: work      # the selector opens web links in this profile withou
 
 # URL routing rules for every profile (docs/config/routing.md); profiles and workspaces add their own.
 routing:
+  unwrap_known: true        # unwrap the built-in redirectors (Google, Facebook, Outlook...); false turns the list off
+  app_sign_in: ephemeral    # links from other applications that look like a sign-in they started; allow turns detection off
   rules:
     - name: Meeting links open in the desktop client
       match: { scheme: [zoommtg] }
       open: system
+    - name: Sign-ins from other applications stay out of my workspaces
+      match: { app_sign_in: true, kind: [external] }   # kind: external | link | typed
+      open: ephemeral
+    - name: Links clicked in the mail workspace
+      match: { from: ["workspace:mail"], url: ["docs.example.com"] }   # from: external | ephemeral | workspace:<id>
+      open: workspace:docs
 
 theme: system             # system | light | dark: the colour scheme web pages see (prefers-color-scheme); system follows the desktop
 storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)
@@ -44,12 +52,28 @@ history:
   exclude: []              # addresses never remembered, e.g. ["*.bank.example"]
 
 permissions:                # what pages may do: allow, deny or ask (docs/config/permissions.md)
-  default: ask
+  default: ask              # for any kind with no setting of its own
+  camera: ask               # each kind: allow | deny | ask (default: the `default` above)
+  microphone: ask
+  location: deny
   notifications: ask
+  clipboard: ask            # reading the clipboard
+  screen: ask               # sharing the screen or a window
+  midi: deny
   sites:                    # per-site rules, first match that says something about a kind wins
     - match: ["meet.example.com", "*.zoom.us"]
+      default: ask          # any kind this rule does not name
       camera: allow
       microphone: allow
+      screen: allow
+    - match: ["maps.example.com"]
+      location: allow
+    - match: ["chat.example.com"]
+      notifications: allow
+    - match: ["docs.example.com"]
+      clipboard: allow
+    - match: ["studio.example.com"]
+      midi: allow
 
 downloads:
   directory: ~/Downloads    # where files go (omit for your Downloads folder)

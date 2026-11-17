@@ -12,6 +12,7 @@ cef = "156.5.0"
 gdk-wayland = { version = "0.11.5", package = "gdk4-wayland" }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
 libc = "0.2.191"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

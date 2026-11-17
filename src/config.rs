@@ -187,7 +187,6 @@ impl Default for GpuConfig {
 impl Config {
     /// Parse YAML text. Unknown keys are ignored in release builds so old and new files keep
     /// loading; test builds reject them.
-    #[cfg(test)]
     pub fn parse(text: &str) -> Result<Config, serde_yaml_ng::Error> {
         if text.trim().is_empty() {
             return Ok(Config::default());
@@ -380,7 +379,7 @@ pub const APP_ONLY: &[&str] = &["watch_config", "default_profile"];
 pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
 
 /// What a workspace file may not set: the application-only and the process-only options.
-const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+pub(crate) const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
 
 /// One layer merged over the application file.
 pub struct Layer<'a> {
@@ -631,6 +630,66 @@ mod tests {
             .expect("examples/config.yaml exists");
         let cfg = Config::parse(&text).expect("the example must parse with deny_unknown_fields");
         assert!(cfg.search_url.contains("{query}"));
+    }
+
+    /// Every key path in a YAML value (`window.frame.enabled`, `cookies.rules[].action`); list entries
+    /// share one `[]` path, and a trailing `+` (append) is dropped.
+    fn yaml_paths(v: &serde_yaml_ng::Value, prefix: &str, out: &mut std::collections::HashSet<String>) {
+        use serde_yaml_ng::Value;
+        match v {
+            Value::Mapping(m) => {
+                for (k, v) in m {
+                    let k = k.as_str().unwrap_or("").trim_end_matches('+');
+                    let path = if prefix.is_empty() { k.to_owned() } else { format!("{prefix}.{k}") };
+                    out.insert(path.clone());
+                    yaml_paths(v, &path, out);
+                }
+            }
+            Value::Sequence(items) => {
+                for i in items {
+                    yaml_paths(i, &format!("{prefix}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn example_config_shows_every_option() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/config.yaml")).unwrap();
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).unwrap();
+        let mut shown = std::collections::HashSet::new();
+        yaml_paths(&value, "", &mut shown);
+        let missing: Vec<String> = all_option_paths().into_iter().filter(|p| !shown.contains(p)).collect();
+        assert!(missing.is_empty(), "examples/config.yaml does not show these options (add each, with a comment): {missing:#?}");
+    }
+
+    #[test]
+    fn examples_show_every_profile_workspace_app_routing_and_sweep_option() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let mut shown = std::collections::HashSet::new();
+        for f in ["config.yaml", "profile.yaml", "workspace.yaml", "webapp.yaml"] {
+            let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(f)).unwrap()).unwrap();
+            yaml_paths(&v, "", &mut shown);
+        }
+        let mut want: Vec<String> = Vec::new();
+        let mut add = |prefix: &str, fields: Vec<String>| want.extend(fields.into_iter().map(|f| if prefix.is_empty() { f } else { format!("{prefix}.{f}") }));
+        add("", field_names::<crate::profile::ProfileConfig>());
+        add("", field_names::<crate::workspace::WorkspaceConfig>());
+        add("nav", field_names::<crate::workspace::NavConfig>());
+        add("tabs", field_names::<crate::workspace::TabsConfig>());
+        add("tabs.pinned[]", field_names::<crate::workspace::PinnedTab>());
+        add("modals", field_names::<crate::workspace::ModalsConfig>());
+        add("app", field_names::<crate::workspace::AppConfig>());
+        add("sweep", field_names::<crate::sweep::SweepConfig>());
+        add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
+        add("sweep.rules[].match", field_names::<crate::sweep::MatchConfig>());
+        add("routing", field_names::<crate::router::RoutingConfig>());
+        add("routing.rules[]", field_names::<crate::router::RuleConfig>());
+        add("routing.rules[].match", field_names::<crate::router::MatchConfig>());
+        add("routing.unwrap[]", field_names::<crate::router::UnwrapConfig>());
+        let missing: Vec<String> = want.into_iter().filter(|p| !shown.contains(p)).collect();
+        assert!(missing.is_empty(), "no file in examples/ shows these options (add each, with a comment): {missing:#?}");
     }
 
     #[test]

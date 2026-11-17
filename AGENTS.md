@@ -32,22 +32,38 @@ coverage you did not run. The tools enforce this: the self-test binary refuses t
 holds a reason (`scripts/test selftest all "<reason>"` sets it), and `scripts/test unit` refuses to run without a name. Do not set
 these to get around the refusal; setting them is only for the two cases above.
 
-## Rule: keep the configuration documentation up to date
+## Rule: keep the configuration documentation and examples up to date
 
-Whenever you add, rename, remove or change the meaning, type or default of ANY option in
-`src/config.rs`, update in the same change:
+Whenever you add, rename, remove or change the meaning, type, range, default or reload behaviour of ANY option
+(in `src/config.rs` or in any other config struct: profile, workspace, web app `app:`, `routing`, `sweep`,
+`permissions`, `cookies`, `downloads`, ...), update ALL of these in the same change. Passing tests are not
+proof the docs are right: the tests only check that paths exist.
 
-1. `docs/config/options.md`: every option has a table row whose first column is the full dotted
-   path in backticks (`` `rendering.frame_rate` ``), with type, default and description. Say when
-   it applies (all options currently apply at startup).
-2. `examples/config.yaml`: the worked example with every option and a comment. A test loads it
-   with the real types, rejecting unknown keys.
-3. `README.md` / `docs/config/README.md` if it is user-visible.
-4. `all_option_paths()` in the `config.rs` tests if you add a **new config struct**.
-5. Every config struct keeps `#[cfg_attr(test, serde(deny_unknown_fields))]` (release builds
-   ignore unknown keys on purpose; test builds reject them so docs and examples cannot hide typos).
+1. **The docs page that owns the option** (`docs/config/*.md`; index in `docs/README.md`): every option has a table
+   row whose first column is the full dotted path in backticks (`` `rendering.frame_rate` ``; `[]` = each list entry),
+   with type, the actual default, and a description. Say **when it applies** (live, on reload, new windows or tabs
+   only, or restart), how it layers (profile/workspace overrides, `key+` append), and how it interacts with other
+   options. Keep the section's example YAML block correct.
+2. **`docs/config/value-types.md`** if you add a new kind of value (colour form, pattern, duration, action).
+3. **`docs/config/README.md`**: the sections table, and the "Layers and reloading" table if it is restart-only or
+   application-only (`config::RESTART_REQUIRED`, `APP_ONLY`, `WORKSPACE_IGNORED`).
+4. **The examples** (`examples/config.yaml`, `profile.yaml`, `workspace.yaml`, `webapp.yaml`): show the option with a
+   sensible value and a comment, and delete stale keys. Tests load them with the real types rejecting unknown keys, and
+   `example_config_shows_every_option` / `examples_show_every_profile_workspace_app_routing_and_sweep_option` fail when
+   an option appears in no example.
+5. **`README.md`** and `docs/roadmap.md` if it is user-visible or changes what is planned.
+6. **Tests' option lists**: `all_option_paths()` (and the `roots` list in
+   `docs_do_not_describe_options_that_do_not_exist`) in `src/config.rs` when you add a **new config struct**; the
+   field lists in the profile, workspace, routing and example-coverage tests when you add a struct there.
+7. Every config struct keeps `#[cfg_attr(test, serde(deny_unknown_fields))]` (release builds ignore unknown keys on
+   purpose; test builds reject them so docs and examples cannot hide typos).
+8. The "all options" copies and the Documentation window are built from the examples and `docs/` automatically: keep the examples in the 2-space block style they use (the generator reads lines, not full YAML) and keep links between docs pages valid (`scripts/test unit docsite` and `scripts/test unit fullconfig` check both).
+9. Run the narrow docs/example tests (`scripts/test unit docs_`, `scripts/test unit example`). A failure means the
+   docs are out of date: fix the docs, never the test.
 
-`cargo test --release` fails if the docs and the types disagree. Fix the docs, never the test.
+**Before reporting a config change as done**, re-read each item above against the implementation (the row, the real
+default, the reload behaviour, the example, the README) and say in your message what you checked and anything you
+could not verify. If an item is unaffected, verify that and say so; no empty edit is needed.
 
 ## Rule: record findings in docs/research/
 
@@ -112,10 +128,12 @@ take minutes.
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
+| `src/fullconfig.rs` | The "all options" copy of a config file (`browsah config full`, the menu): `examples/*.yaml` are the templates, so their comments are the explanations; set values are kept, the rest commented out (pure, tested; window: `app/fullconfig.rs`) |
+| `src/docsite.rs` | The docs rendered as a static site (`pulldown-cmark`); `build.rs` compiles `docs/**/*.md`, `README.md` and `examples/*.yaml` into the binary; the test fails on a broken link or anchor between pages (window: `app/docs.rs`, written to the cache folder) |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
 | `src/cli.rs` | Command-line options |
 | `src/bench/` | `--bench=single|tabs|fps`, kept as a regression check for the rendering path |
-| `bench/`, `docs/`, `examples/` | Test pages (`bench/pages/` for `--selftest` and `--latency`), documentation (config, research, roadmap), example config |
+| `bench/`, `docs/`, `examples/` | Test pages (`bench/pages/` for `--selftest` and `--latency`), documentation (`docs/README.md` indexes `docs/config/` for every option, `docs/research/`, `docs/roadmap.md`), the four example files (`config`, `profile`, `workspace`, `webapp`; see the config rule above) |
 
 ## Conventions and gotchas
 

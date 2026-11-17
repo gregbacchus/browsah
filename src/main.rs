@@ -8,6 +8,8 @@ mod cli;
 mod config;
 mod cookies;
 mod frames;
+mod fullconfig;
+mod docsite;
 mod downloads;
 mod gpu;
 mod groups;
@@ -45,6 +47,11 @@ fn main() {
     // `browsah config show [--profile=ID] [--config=PATH]`: the effective configuration.
     if args.first().map(String::as_str) == Some("config") && args.get(1).map(String::as_str) == Some("show") {
         std::process::exit(config_show(&args[2..]));
+    }
+
+    // `browsah config full [--profile=ID [--workspace=ID]]`: a file with every option and its explanation.
+    if args.first().map(String::as_str) == Some("config") && args.get(1).map(String::as_str) == Some("full") {
+        std::process::exit(config_full(&args[2..]));
     }
 
     // The profile selector (the system web browser entry) needs no CEF and no profile.
@@ -175,6 +182,48 @@ fn main() {
 
     runtime.shutdown();
     std::process::exit(code);
+}
+
+/// Print a configuration file padded out with every option, its default and its explanation, with what the real file
+/// sets switched on: the application file, a profile's (`--profile=ID`) or a workspace's (`--profile=ID --workspace=ID`).
+fn config_full(args: &[String]) -> i32 {
+    let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
+    let (level, title, file) = match (value("--profile"), value("--workspace")) {
+        (None, None) => {
+            let file = value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+            (fullconfig::Level::Application, "browsah".to_owned(), file)
+        }
+        (id, ws) => {
+            let profile = match profile::Profile::resolve(&id.unwrap_or_else(|| profile::DEFAULT_ID.to_owned())) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("browsah: {e}");
+                    return 2;
+                }
+            };
+            match ws {
+                None => (fullconfig::Level::Profile, profile.id.clone(), profile.dir.join("profile.yaml")),
+                Some(w) => match workspace::Workspace::resolve(&profile, &w) {
+                    Ok(w) => (fullconfig::Level::Workspace, w.id.clone(), w.dir.join("workspace.yaml")),
+                    Err(e) => {
+                        eprintln!("browsah: {e}");
+                        return 2;
+                    }
+                },
+            }
+        }
+    };
+    let existing = std::fs::read_to_string(&file).ok();
+    match fullconfig::generate(level, &title, existing.as_deref()) {
+        Ok(text) => {
+            print!("{text}");
+            0
+        }
+        Err(e) => {
+            eprintln!("browsah: {}: {e}", file.display());
+            1
+        }
+    }
 }
 
 /// Print the effective configuration for a profile (and optionally one of its workspaces) and

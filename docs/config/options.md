@@ -1,6 +1,6 @@
 # Options
 
-All options apply at startup. Defaults are shown; omit a key to get its default.
+Defaults are shown; omit a key to get its default. Each option says when it applies: most apply as soon as the file is reloaded, and `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.width` and `window.height` need a restart (the list is in [Layers and reloading](README.md#layers-and-reloading)). Every option can also be set in a [profile](profile.md) or [workspace](workspace.md) file, except the application-only ones (`watch_config`, `default_profile`), and the process-wide ones in a workspace. Types are explained in [value types](value-types.md).
 
 ## Startup and search
 
@@ -22,7 +22,6 @@ search_url: https://duckduckgo.com/?q={query}
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `watch_config` | bool | `true` | Reload this file and the profile's `profile.yaml` when they change, and apply what can change live (see [Layers and reloading](README.md#layers-and-reloading)). Set `false` to read the files only at start-up. Application-only: a profile cannot set it. `--no-watch` turns it off for one run. Read at start-up; turning it off in a running browser stops watching, turning it on needs a restart. |
-
 | `default_profile` | text | none | The profile the [selector](selector.md) opens web links in without asking, by id. Without it the selector asks (unless there is only one profile). Application-only. |
 
 ```yaml

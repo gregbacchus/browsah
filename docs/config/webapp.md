@@ -38,5 +38,5 @@ What the window does:
 A web app can have its own colour scheme for its pages: `theme: dark` (or `light`, or `system`, the default) in its `workspace.yaml`,
 like any workspace ([options.md](options.md): `theme`).
 
-The options are the `app.*` rows of [workspace.md](workspace.md#web-apps-app); an example is
+The options are the `app.*` rows of [workspace.md](workspace.md#options); an example is
 [`examples/webapp.yaml`](../../examples/webapp.yaml). Web apps do not appear in a tab's *Send to workspace* list.

@@ -8,6 +8,9 @@ color:                      # accent colour for light and dark appearance
   dark: "#61a5c2"
 
 nav:                        # which controls the window shows
+  back: true                # the back button and Alt+Left
+  reload: true              # the reload and stop buttons
+  tab_bar: true             # false for a window with a single pinned tab
   address_bar: readonly     # editable (default), readonly or hidden
   forward: false
   new_tab_button: false

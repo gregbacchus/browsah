@@ -27,7 +27,7 @@ is used by `--selftest` and the benchmarks so they never touch a real profile). 
 `default` directory it is not listed. `browsah profile remove default --yes` removes it like any other profile once there is another one
 (starting a plain `browsah` creates it again).
 
-All options apply at startup. Unknown keys are ignored (in release builds).
+`name`, `color` and `default_workspace` are read at startup; overrides of other options apply as described in [Layers and reloading](README.md#layers-and-reloading). Unknown keys are ignored (in release builds).
 
 ## Overriding configuration
 

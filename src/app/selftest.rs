@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -399,6 +399,12 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("menu") {
         run_menu(shell, r).await;
+    }
+    if wants("fullconfig") {
+        run_fullconfig(shell, r).await;
+    }
+    if wants("docs") {
+        run_docs(shell, r).await;
     }
     if wants("hidpi") {
         run_hidpi(shell, r).await;
@@ -2753,6 +2759,69 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     });
     r.check("it lists the profile's workspaces to open", sub_has_workspace, || format!("{labels:?}"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The "all options" window: a generated copy of a file with every option, from the menu. Nothing is saved.
+async fn run_fullconfig(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::fullconfig::Level;
+    let view = shell.open_full_config(Level::Profile);
+    r.check("the profile's all-options window opens", view.is_some(), String::new);
+    if let Some(v) = view {
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let (s, e) = v.buffer.bounds();
+        let text = v.buffer.text(&s, &e, false).to_string();
+        r.check("it shows the options unset as comments, with their explanations", text.contains("# search_url:") && text.contains("maximum fps") && text.contains("# routing:"), || text.chars().take(300).collect());
+        r.check("and is a valid configuration as it stands", super::fullconfig::check(Level::Profile, &text).is_ok(), String::new);
+        shot(&v.window, "fullconfig-window");
+        r.check("it knows which file it is a copy of", v.file.ends_with("profile.yaml"), || v.file.display().to_string());
+        v.window.close();
+    }
+    r.check("a window with no workspace has no workspace config to show", shell.open_full_config(Level::Workspace).is_none(), String::new);
+    shell.menu_button.popup();
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let menu_ok = {
+        let model = shell.menu_button.menu_model();
+        let mut labels = Vec::new();
+        if let Some(m) = &model {
+            for i in 0..m.n_items() {
+                if let Some(section) = m.item_link(i, "section") {
+                    for j in 0..section.n_items() {
+                        labels.extend(section.item_attribute_value(j, "label", None).and_then(|v| v.str().map(str::to_owned)));
+                    }
+                }
+            }
+        }
+        labels.iter().any(|l| l.starts_with("Profile config")) && labels.iter().any(|l| l.starts_with("Workspace config")) && labels.iter().any(|l| l.starts_with("Application config"))
+    };
+    shell.menu_button.popdown();
+    r.check("the main menu offers the application, profile and workspace config", menu_ok, String::new);
+}
+
+/// The "Documentation" window: the docs rendered as a site in a window of their own.
+async fn run_docs(shell: &Rc<Shell>, r: &mut Report) {
+    let Some(w) = shell.open_docs() else {
+        r.check("the documentation opens in a window", false, String::new);
+        return;
+    };
+    let st = w.state();
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.title.starts_with("browsah documentation") }).await;
+    let title = st.borrow().title.clone();
+    r.check("it opens at the documentation index (the redirect from the site's front page is followed)", title.starts_with("browsah documentation"), || title.clone());
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let tab = w.current().expect("tab");
+    let links = eval_string(&tab, "String(document.querySelectorAll('nav a').length)").await.and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+    let layout = eval_string(&tab, "getComputedStyle(document.body).display + ' ' + Math.round(document.querySelector('nav').getBoundingClientRect().width)").await.unwrap_or_default();
+    r.check("it has a navigation of all the pages and is laid out as a site (side bar and content)", links > 20 && layout.starts_with("flex 270"), || format!("{links} links, {layout}"));
+    shot(&w.window, "docs-index");
+    let url = format!("file://{}/docs/config/options.html#window", super::docs::site_dir().display());
+    let before = st.borrow().load_cycles;
+    w.view().navigate(&url);
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let facts = eval_string(&tab, "[document.querySelectorAll('table').length > 3, !!document.getElementById('startup-and-search'), document.querySelector('nav a.current') ? document.querySelector('nav a.current').textContent : ''].join('|')").await.unwrap_or_default();
+    r.check("a page shows its tables, heading anchors and marks itself in the navigation", facts == "true|true|Options", || facts.clone());
+    shot(&w.window, "docs-options");
+    w.window.close();
 }
 
 /// HiDPI: a page's device pixel ratio, frame size and scrollbar thickness follow the display's scale. Run with

@@ -1,5 +1,7 @@
 # Configuration overview
 
+All pages are indexed in [docs/README.md](../README.md); the types used in the *Type* columns are in [value types](value-types.md). Every option is a table row whose first column is its full path in backticks (`rendering.frame_rate`; `[]` means each entry of a list: `cookies.rules[].action`).
+
 browsah reads one optional YAML file.
 
 | File | Purpose |
@@ -14,8 +16,19 @@ work (for example a window narrower than 400 px) are replaced by the nearest usa
 A copy-paste starting point with every option set is
 [`examples/config.yaml`](../../examples/config.yaml).
 
-Options apply **at startup**: restart the browser after editing the file. (Live reload is not
-implemented yet.)
+Most options apply as soon as the file changes (see [Layers and reloading](#layers-and-reloading) for
+which do and which need a restart); each option's description says when it applies.
+
+## Seeing every option
+
+The main menu has **Documentation** (these pages rendered as a small site, in a window of their own, with a side bar
+and links between pages) and **Application / Profile / Workspace config (all options)…**. The last three open a
+*generated copy* of the file: the documented example for that level with every option and its explanation, the options
+your file sets switched on with your values and everything else commented out (remove `# ` to set one). It is a copy: edit it,
+copy from it, or choose *Save over the file…* to replace the real file (the text is checked first, and the old file is kept
+as `<name>.bak`; comments you wrote in the old file are not carried over). The same text is printed by
+`browsah config full` (application file), `browsah config full --profile=ID` and
+`browsah config full --profile=ID --workspace=ID`; a web app is a workspace.
 
 ## Sections
 
@@ -23,10 +36,16 @@ implemented yet.)
 |---|---|
 | `home_page`, `search_url` | [Options](options.md#startup-and-search) |
 | `window` | [Options](options.md#window) |
+| `theme`, `storage`, `new_tab_page` | [Options](options.md#startup-and-search) |
+| `watch_config`, `default_profile` | [Options](options.md#behaviour) |
 | `rendering` | [Options](options.md#rendering) |
 | `chromium` | [Options](options.md#chromium) |
 | `input` | [Options](options.md#input) |
 | `gpu` | [Options](options.md#gpu) |
+| `history` | [Options](options.md#history), [History](history.md) |
+| `permissions`, `downloads` | [Options](options.md#permissions), [Permissions](permissions.md) |
+| `cookies`, `print` | [Options](options.md#cookies) |
+| `routing` | [Routing](routing.md) |
 
 ## Layers and reloading
 
@@ -37,7 +56,7 @@ Settings come in layers, each a YAML file with the same option names as [options
 3. a workspace's file, `.../profiles/<id>/workspaces/<id>/workspace.yaml` (see [workspace.md](workspace.md)),
    for that workspace's window only.
 
-(Web apps will add a layer of their own.) The upper layer is merged over the lower:
+A web app is a workspace with an `app:` section, so it uses the workspace layer ([webapp.md](webapp.md)). The upper layer is merged over the lower:
 
 - maps merge key by key, so a profile can change one option inside `input` and keep the rest;
 - a value or a list in the upper layer replaces the lower one;
@@ -70,7 +89,7 @@ The profile selector (which profile gets a link from another application) is des
 
 Tab sweeping rules are described in [sweep.md](sweep.md).
 
-Profiles have their own file, [profile.yaml](profile.md) (name and colour; more will arrive with workspaces and routing).
+Profiles have their own file, [profile.yaml](profile.md) (name, colour, default workspace, and any option overrides).
 
 Command-line flags override the matching config options: `--mode=paint|accel`
 (`rendering.mode`), `--backing=off` (`rendering.device_resolution`), a bare URL or `--url=URL`

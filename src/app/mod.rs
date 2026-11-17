@@ -7,6 +7,8 @@ mod favicon;
 mod find;
 mod groups;
 mod fullscreen;
+mod docs;
+mod fullconfig;
 mod print;
 mod install;
 mod zoom;
@@ -1702,6 +1704,24 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    for (name, level) in [("config-app", crate::fullconfig::Level::Application), ("config-profile", crate::fullconfig::Level::Profile), ("config-workspace", crate::fullconfig::Level::Workspace)] {
+        add_action(&window, name, {
+            let weak = weak.clone();
+            move || {
+                if let Some(s) = weak.upgrade() {
+                    s.open_full_config(level);
+                }
+            }
+        });
+    }
+    add_action(&window, "docs", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.open_docs();
+            }
+        }
+    });
     add_action(&window, "reopen-tab", {
         let weak = weak.clone();
         move || {
@@ -2013,6 +2033,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     // Workspaces with sweeping rules are swept while their window is closed too.
     if !opts.selftest && !opts.latency {
         let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
+        fullconfig::set_app_file(app_file.clone());
         sweep::start_background_sweeping(profile.clone(), app_file);
     }
     // Old history is deleted when the browser starts.
@@ -2437,6 +2458,12 @@ fn main_menu() -> gio::Menu {
     tabs.append(Some("History"), Some("win.history"));
     tabs.append(Some("Reopen closed tab"), Some("win.reopen-tab"));
     menu.append_section(None, &tabs);
+    let config = gio::Menu::new();
+    config.append(Some("Documentation"), Some("win.docs"));
+    config.append(Some("Application config (all options)\u{2026}"), Some("win.config-app"));
+    config.append(Some("Profile config (all options)\u{2026}"), Some("win.config-profile"));
+    config.append(Some("Workspace config (all options)\u{2026}"), Some("win.config-workspace"));
+    menu.append_section(None, &config);
     menu
 }
 

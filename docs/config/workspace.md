@@ -24,7 +24,7 @@ of the profile's launcher entry (right-click its icon in the dash). The main men
 
 **Sending tabs.** Right-click a tab and choose *Send to workspace* to move it, still running, to another
 workspace's window (opened if needed) or to a new window. Pinned tabs cannot be sent. A window whose
-last tab is sent away closes. All options apply at startup unless stated otherwise.
+last tab is sent away closes. The options below are read when the workspace's window opens unless stated otherwise; overrides of options from [options.md](options.md) follow [Layers and reloading](README.md#layers-and-reloading).
 
 **What a workspace remembers.** When its window closes, the workspace's tabs (address, title,
 selection) are saved in the profile's database (`data.sqlite`), with a screenshot of each page. The

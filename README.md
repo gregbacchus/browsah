@@ -108,8 +108,12 @@ press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event
 ## Configuration
 
 One optional YAML file, `~/.config/browsah/config.yaml` (or `--config=PATH`); every option is
-optional. Documented in [docs/config/](docs/config/README.md); a full example is
-[examples/config.yaml](examples/config.yaml).
+optional. Documented in [docs/](docs/README.md) (every option: [docs/config/](docs/config/README.md)); worked examples of
+every option are in [examples/](examples/): `config.yaml`, `profile.yaml`, `workspace.yaml`, `webapp.yaml`.
+
+The main menu's **Documentation** shows the docs rendered as a site, and **Application / Profile / Workspace config (all
+options)** shows your file padded out with every option, its default and its explanation (a copy you can save over the
+real file); `browsah config full [--profile=ID [--workspace=ID]]` prints the same.
 
 ## Tests
 
