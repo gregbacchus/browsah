@@ -65,7 +65,25 @@ fn screenshot(window: &adw::ApplicationWindow, path: &str) -> bool {
     renderer.render_texture(&node, None).save_to_png(path).is_ok()
 }
 
+/// The sections `BROWSAH_SELFTEST_ONLY` can name, in the order they run (a test keeps this in step with `run`).
+const SECTIONS: &[&str] = &[
+    "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
+    "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
+    "install",
+];
+
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
+    if let Ok(list) = std::env::var("BROWSAH_SELFTEST_ONLY") {
+        if list.trim() == "list" {
+            println!("self-test sections (BROWSAH_SELFTEST_ONLY=name[,name...]):\n  {}", SECTIONS.join("\n  "));
+            std::process::exit(0);
+        }
+        let unknown: Vec<&str> = list.split(',').map(str::trim).filter(|s| !SECTIONS.contains(s)).collect();
+        if !unknown.is_empty() {
+            eprintln!("BROWSAH_SELFTEST_ONLY: unknown section(s) {unknown:?}; BROWSAH_SELFTEST_ONLY=list shows them");
+            std::process::exit(2);
+        }
+    }
     super::prompts::set_ui_test(true); // questions are held for the test to answer, not shown
     super::view::set_synthetic_pointer_only(true);
     glib::MainContext::default().spawn_local(async move {
@@ -2158,4 +2176,19 @@ async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(&id));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_section_list_matches_the_sections_that_run() {
+        let src = include_str!("selftest.rs");
+        let mut run: Vec<&str> = src.lines().filter_map(|l| l.trim().strip_prefix("if wants(\"").and_then(|r| r.split('"').next())).collect();
+        run.insert(0, "basic"); // a labelled block rather than a call
+        run.dedup();
+        let mut listed: Vec<&str> = super::SECTIONS.to_vec();
+        run.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(run, listed, "SECTIONS must name exactly the sections `run` checks with wants()");
+    }
 }

@@ -41,6 +41,10 @@ BROWSAH_SELFTEST_ONLY=install ./target/release/browsah --selftest   # one self-t
 
 ### Be targeted when testing
 
+`scripts/test` is the way in: `scripts/test unit cookies` (unit tests by name), `scripts/test selftest install,cookies`
+(self-test sections, seconds), `scripts/test selftest list` (the section names; a misspelt name is an error, not a
+silent no-op), `scripts/test selftest all` (the whole thing). A test keeps the section list in step with `run`.
+
 Do **not** run everything after every change. Run what the change can affect:
 
 - **Unit tests:** `cargo test --release <name>` for the module you touched (`cookies`, `workspace`, `config::`,
