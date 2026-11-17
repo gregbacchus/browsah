@@ -81,6 +81,7 @@ take minutes.
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs, `app`), scope patterns, the `browsah workspace` command line |
 | `src/webapp.rs` | Web apps (a workspace with an `app:` section): application id, `.desktop` entry and icon, the `browsah app` command line |
+| `src/groups.rs` | Tab group model: palette, ids, the dot icon, where a joining tab goes, collapsed title (pure, tested); the window side is `app/groups.rs` |
 | `src/suggest.rs` | Address-bar suggestion ranking (pure, tested); the popover is `app/suggest.rs` |
 | `src/cookies.rs` | Cookie rules (`cookies:`): `allow`/`session`/`deny` per site, session-cookie keys, allow-rule YAML for blocked sites |
 | `src/history.rs` | History helpers and the `browsah history` command line |

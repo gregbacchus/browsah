@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,17 @@ pub struct TabRecord {
     pub selected: bool,
     /// How the tab has been used (`sweep::Usage::to_text`).
     pub usage: String,
+    /// The tab's group (0: none).
+    pub group: u32,
+}
+
+/// A tab group as remembered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRecord {
+    pub id: u32,
+    pub name: String,
+    pub color: String,
+    pub collapsed: bool,
 }
 
 /// A bookmark: one per address in a workspace.
@@ -195,6 +206,19 @@ impl Store {
         if version < 7 {
             self.conn.execute_batch("CREATE TABLE IF NOT EXISTS site_zoom (host TEXT PRIMARY KEY, factor REAL NOT NULL);")?;
         }
+        if version < 8 {
+            self.conn.execute_batch(
+                "ALTER TABLE tabs ADD COLUMN grp INTEGER NOT NULL DEFAULT 0;
+                 CREATE TABLE IF NOT EXISTS tab_groups (
+                    workspace TEXT NOT NULL,
+                    id        INTEGER NOT NULL,
+                    name      TEXT NOT NULL,
+                    color     TEXT NOT NULL,
+                    collapsed INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (workspace, id)
+                );",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
     }
 
@@ -266,9 +290,9 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM tabs WHERE workspace = ?1", params![workspace])?;
         {
-            let mut insert = tx.prepare("INSERT INTO tabs (workspace, position, uid, url, title, pinned, selected, usage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+            let mut insert = tx.prepare("INSERT INTO tabs (workspace, position, uid, url, title, pinned, selected, usage, grp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
             for (i, t) in tabs.iter().enumerate() {
-                insert.execute(params![workspace, i as i64, t.uid as i64, t.url, t.title, t.pinned, t.selected, t.usage])?;
+                insert.execute(params![workspace, i as i64, t.uid as i64, t.url, t.title, t.pinned, t.selected, t.usage, t.group as i64])?;
             }
         }
         tx.commit()
@@ -276,16 +300,34 @@ impl Store {
 
     /// A workspace's remembered tabs, in order.
     pub fn load_tabs(&self, workspace: &str) -> Vec<TabRecord> {
-        let Ok(mut stmt) = self.conn.prepare("SELECT uid, url, title, pinned, selected, usage FROM tabs WHERE workspace = ?1 ORDER BY position") else {
+        let Ok(mut stmt) = self.conn.prepare("SELECT uid, url, title, pinned, selected, usage, grp FROM tabs WHERE workspace = ?1 ORDER BY position") else {
             return Vec::new();
         };
         let rows = stmt.query_map(params![workspace], |r| {
-            Ok(TabRecord { uid: r.get::<_, i64>(0)? as u64, url: r.get(1)?, title: r.get(2)?, pinned: r.get(3)?, selected: r.get(4)?, usage: r.get(5)? })
+            Ok(TabRecord { uid: r.get::<_, i64>(0)? as u64, url: r.get(1)?, title: r.get(2)?, pinned: r.get(3)?, selected: r.get(4)?, usage: r.get(5)?, group: r.get::<_, i64>(6)? as u32 })
         });
         match rows {
             Ok(rows) => rows.flatten().collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    // ---- tab groups --------------------------------------------------------------------------------
+
+    pub fn save_groups(&self, workspace: &str, groups: &[GroupRecord]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM tab_groups WHERE workspace = ?1", params![workspace])?;
+        for g in groups {
+            tx.execute("INSERT INTO tab_groups (workspace, id, name, color, collapsed) VALUES (?1, ?2, ?3, ?4, ?5)", params![workspace, g.id as i64, g.name, g.color, g.collapsed])?;
+        }
+        tx.commit()
+    }
+
+    pub fn load_groups(&self, workspace: &str) -> Vec<GroupRecord> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT id, name, color, collapsed FROM tab_groups WHERE workspace = ?1 ORDER BY id") else { return Vec::new() };
+        stmt.query_map(params![workspace], |r| Ok(GroupRecord { id: r.get::<_, i64>(0)? as u32, name: r.get(1)?, color: r.get(2)?, collapsed: r.get(3)? }))
+            .map(|r| r.flatten().collect())
+            .unwrap_or_default()
     }
 
     // ---- zoom --------------------------------------------------------------------------------------
@@ -402,6 +444,7 @@ impl Store {
     /// Forget everything stored for a workspace.
     pub fn delete_workspace(&self, workspace: &str) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM tabs WHERE workspace = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM tab_groups WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM visits WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM closed_tabs WHERE workspace = ?1", params![workspace])?;
@@ -414,7 +457,22 @@ mod tests {
     use super::*;
 
     fn rec(uid: u64, url: &str, selected: bool) -> TabRecord {
-        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1") }
+        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1"), group: 0 }
+    }
+
+    #[test]
+    fn tab_groups_round_trip_with_their_tabs() {
+        let s = Store::open_memory();
+        let mut a = rec(1, "https://a", true);
+        a.group = 2;
+        s.save_tabs("w", &[a, rec(2, "https://b", false)]).unwrap();
+        s.save_groups("w", &[GroupRecord { id: 2, name: "News".into(), color: "#3584e4".into(), collapsed: true }]).unwrap();
+        assert_eq!(s.load_tabs("w").iter().map(|t| t.group).collect::<Vec<_>>(), [2, 0]);
+        let g = s.load_groups("w");
+        assert_eq!((g.len(), g[0].name.as_str(), g[0].collapsed), (1, "News", true));
+        assert!(s.load_groups("other").is_empty());
+        s.delete_workspace("w").unwrap();
+        assert!(s.load_groups("w").is_empty());
     }
 
     #[test]

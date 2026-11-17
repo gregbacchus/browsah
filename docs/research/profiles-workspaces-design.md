@@ -668,6 +668,24 @@ cleared when the file is reported. **Not measured:** the file dialog and the Pri
 `BROWSAH_NO_OS_LAUNCH`), Letter paper, headers and footers (none), page ranges, landscape, a very long or still-loading
 page, selection-only printing, direct printing to a printer without a viewer.
 
+## Status: tab groups (2026-11-17)
+
+`AdwTabView` has no groups, so a group is a model on top of it (`groups.rs`, `app/groups.rs`): each `Tab` has a group id
+(0: none); joining moves the page next to the group's last tab (`join_position`, pure and tested) and sets a coloured dot as
+the page's icon (a `BytesIcon` of a small SVG) and the group name as its tooltip. **Collapsing** inserts a placeholder page
+(`▸ Name (n)`) and moves the group's pages into a second, never shown `AdwTabView` (`transfer_page`; there is no public
+detach), so the tabs stay alive and nothing is lost; selecting or closing the placeholder expands the group (after the
+signal, via an idle callback; a flag stops the collapse's own selection changes from re-expanding it). While pages are
+transferred the `page-detached` handler is told to ignore them (it would treat them as dragged away). Parked tabs are saved
+where their placeholder is, so the order survives. Schema 8 adds `tabs.grp` and a `tab_groups` table. Sweeping skips parked
+tabs. Measured (`--selftest` section `groups`, 14 checks, pictures looked at, plus the neighbouring tab, window, restore,
+locked, bookmark, send-to-workspace, sweep and history sections: 124 checks): grouping moves tabs together; icon, tooltip,
+rename and recolour; collapse leaves one stand-in and a real tab selected; the saved records still hold all tabs; expand
+restores order; a collapsed group comes back collapsed after a restart; removing the last tab forgets the group; closing a
+group closes its tabs. **Not measured:** the dialogs (name, rename), the menus themselves, dragging a grouped tab within the bar
+(it can leave its group's run; the dot stays), a new tab from a grouped tab does not join the group, middle-click close of a
+stand-in, many groups, light theme, and no group name chip in the bar (only the dot and, collapsed, the title).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

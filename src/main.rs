@@ -10,6 +10,7 @@ mod cookies;
 mod frames;
 mod downloads;
 mod gpu;
+mod groups;
 mod history;
 mod permissions;
 mod profile;

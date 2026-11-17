@@ -115,7 +115,20 @@ tabs:
       scope: ["mail.example.com", "accounts.example.com/signin/*"]
 ```
 
-## Web apps (`app:`)
+## Tab groups
+
+Tabs can be grouped: right-click a tab and choose *Add to new group…* (it asks for a name) or *Add to group*. A group
+has a name and a colour (change them with *Rename group…* and *Group colour*); its tabs sit next to each other and show
+the colour as a dot in front of the title, with the group's name as their tooltip. *Remove from group* takes a tab out
+(a group with no tabs left disappears), *Ungroup* takes them all out, and *Close group* closes its tabs.
+
+*Collapse group* folds the group into a single tab, `▸ Name (3)`, in the group's place; the tabs are kept alive but
+out of sight (they do not count in the bar, are not swept and make no frames). Select the stand-in tab (or close it, or
+choose *Expand group*) to bring them back. A window must keep at least one other tab to show, so the only tabs of a window
+cannot be collapsed. Groups are remembered with the workspace's tabs (collapsed or not, by name and colour) and come back at
+the next start; a tab dragged to another window leaves its group, and pinned tabs cannot be grouped. Ephemeral windows
+have groups while they are open but remember nothing.
+
 
 A web app is a workspace for one site: a window with the page and little else, its own icon and its own
 entry in GNOME's launcher and dash. Make one with `browsah app add` ([webapp.md](webapp.md)), or add an

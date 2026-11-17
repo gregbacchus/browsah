@@ -155,7 +155,7 @@ impl Shell {
         let mut notes = Vec::new();
         let mut closed = 0;
         let mut discarded = 0;
-        for tab in self.tabs() {
+        for tab in self.tabs().into_iter().filter(|t| !t.parked.get()) {
             let protected = selected.as_ref().is_some_and(|s| Rc::ptr_eq(s, &tab))
                 || tab.page.is_pinned()
                 || tab.dirty.get()

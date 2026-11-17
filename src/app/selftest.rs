@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -360,6 +360,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("print") {
         run_print(shell, r).await;
+    }
+    if wants("groups") {
+        run_groups(shell, r).await;
     }
 }
 
@@ -1648,7 +1651,7 @@ async fn run_closed_workspace_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let _ = store().clear_history(None);
     std::fs::write(dir.join("workspace.yaml"), "name: Closed\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Gone\n      match: { url: ['localhost'] }\n      idle_for: 1h\n").expect("workspace.yaml");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let tab = |uid: u64, url: &str, used: i64, pinned: bool| TabRecord { uid, url: url.into(), title: format!("T{uid}"), pinned, selected: uid == 1, usage: format!("{used}:1") };
+    let tab = |uid: u64, url: &str, used: i64, pinned: bool| TabRecord { uid, url: url.into(), title: format!("T{uid}"), pinned, selected: uid == 1, usage: format!("{used}:1"), group: 0 };
     let old = now - 3 * 86_400;
     store().save_tabs("sx", &[
         tab(1, "http://localhost:1/old-selected", old, false),
@@ -2528,4 +2531,95 @@ async fn run_print(shell: &Rc<Shell>, r: &mut Report) {
     let done = wait_until(5_000, || shell.pdf_jobs_pending() == 0).await;
     r.check("the job is finished when the file is reported", done, || format!("{} pending", shell.pdf_jobs_pending()));
     let _ = std::fs::remove_file(&path);
+}
+
+/// Tab groups: making one, putting tabs in it (they move next to each other), collapsing to one tab and opening again,
+/// taking tabs out, closing a group, and remembering groups (collapsed or not) with the workspace's tabs.
+async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.workspaces_dir().join("gr1");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("gr1"));
+    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\n")).expect("ws");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "gr1"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"gr1".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+    let Some(ws) = find() else { return };
+    let t1 = ws.current().expect("tab");
+    let t2 = ws.open_tab(&format!("http://localhost:{port}/b.html?2"), false);
+    let t3 = ws.open_tab(&format!("http://localhost:{port}/b.html?3"), false);
+    let t4 = ws.open_tab(&format!("http://localhost:{port}/b.html?4"), false);
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let pos = |t: &Rc<super::Tab>| ws.tab_view.page_position(&t.page);
+
+    let gid = ws.create_group("News", None);
+    ws.assign_group(&t2, gid);
+    ws.assign_group(&t4, gid);
+    r.check("tabs put in a group sit next to each other", (pos(&t2) - pos(&t4)).abs() == 1 && pos(&t3) > pos(&t4).max(pos(&t2)), || format!("{} {} {} {}", pos(&t1), pos(&t2), pos(&t3), pos(&t4)));
+    r.check("a grouped tab shows the group's colour as its icon and its name as tooltip", t2.page.icon().is_some() && t2.page.tooltip().is_some_and(|t| t.contains("News")) && t1.page.icon().is_none(), || format!("{:?}", t2.page.tooltip()));
+    ws.rename_group(gid, "Daily news");
+    ws.set_group_color(gid, "#e01b24");
+    r.check("renaming and recolouring a group updates its tabs", t4.page.tooltip().is_some_and(|t| t.contains("Daily news")) && ws.group(gid).is_some_and(|g| g.color == "#e01b24"), || format!("{:?}", t4.page.tooltip()));
+
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&ws.window, "groups-expanded");
+    let pages_before = ws.tab_view.n_pages();
+    ws.tab_view.set_selected_page(&t3.page);
+    ws.collapse_group(gid);
+    r.check("collapsing replaces the group's tabs by one stand-in tab", ws.tab_view.n_pages() == pages_before - 1 && ws.group(gid).is_some_and(|g| g.collapsed) && t2.parked.get() && t4.parked.get(), || format!("{} pages (was {pages_before})", ws.tab_view.n_pages()));
+    let title = (0..ws.tab_view.n_pages()).map(|i| ws.tab_view.nth_page(i).title().to_string()).find(|t| t.contains("Daily news")).unwrap_or_default();
+    r.check("the stand-in says which group it is and how many tabs it holds", title.contains("(2)"), || title.clone());
+    r.check("the shown tab is a real one, not the stand-in", ws.selected_placeholder().is_none() && ws.current().is_some(), || String::new());
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&ws.window, "groups-collapsed");
+    let saved = ws.tab_records();
+    ws.save_now();
+    let groups = super::store().map(|s| s.load_groups("gr1")).unwrap_or_default();
+    r.check("a collapsed group's tabs are still remembered, with the group", saved.len() == 4 && saved.iter().filter(|t| t.group == gid).count() == 2 && groups.len() == 1 && groups[0].collapsed && groups[0].name == "Daily news", || format!("{} records, {groups:?}", saved.len()));
+    ws.expand_group(gid);
+    r.check("expanding puts the tabs back, together, and removes the stand-in", ws.tab_view.n_pages() == pages_before && !t2.parked.get() && (pos(&t2) - pos(&t4)).abs() == 1 && ws.selected_placeholder().is_none(), || format!("{} pages", ws.tab_view.n_pages()));
+
+    // Collapsed when the window closes: it comes back collapsed, with its tabs asleep behind it.
+    ws.collapse_group(gid);
+    ws.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"gr1".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.tab_count() >= 4)).await;
+    let Some(ws) = find() else { return };
+    let stand_in = (0..ws.tab_view.n_pages()).any(|i| ws.tab_view.nth_page(i).title().contains("Daily news"));
+    r.check("a collapsed group comes back collapsed after a restart", stand_in && ws.group(gid).is_some_and(|g| g.collapsed && g.color == "#e01b24") && ws.tab_count() == 4, || format!("{} tabs, {:?}", ws.tab_count(), ws.groups()));
+    ws.expand_group(gid);
+    let members = ws.group_tabs(gid);
+    r.check("its tabs are the group's again after expanding", members.len() == 2 && members.iter().all(|t| t.page.icon().is_some()), || format!("{}", members.len()));
+
+    // Taking tabs out; an empty group disappears.
+    let (a, b) = (members[0].clone(), members[1].clone());
+    ws.remove_from_group(&a);
+    r.check("a tab taken out of a group is plain again", a.group.get() == 0 && a.page.icon().is_none() && ws.group(gid).is_some(), || String::new());
+    ws.remove_from_group(&b);
+    r.check("a group with no tabs left is forgotten", ws.group(gid).is_none(), || format!("{:?}", ws.groups()));
+
+    // Closing a group closes its tabs.
+    let g2 = ws.create_group("Temp", None);
+    let tabs = ws.tabs();
+    ws.assign_group(&tabs[1], g2);
+    ws.assign_group(&tabs[2], g2);
+    let before = ws.tab_count();
+    ws.close_group(g2);
+    let ok = wait_until(5_000, || ws.tab_count() == before - 2).await;
+    r.check("closing a group closes its tabs", ok && ws.group(g2).is_none(), || format!("{} tabs (was {before})", ws.tab_count()));
+
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("gr1"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

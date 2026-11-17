@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod downloads;
 mod find;
+mod groups;
 mod fullscreen;
 mod print;
 mod install;
@@ -64,6 +65,10 @@ pub struct Tab {
     owner: RefCell<Weak<Shell>>,
     /// Stable id; names the tab's screenshot and its row in the database.
     pub uid: u64,
+    /// The tab's group (0: none).
+    pub group: std::cell::Cell<u32>,
+    /// In a collapsed group: out of the tab bar, but alive.
+    pub parked: std::cell::Cell<bool>,
     /// The address last written to the history (a reload is not a new visit).
     last_recorded: RefCell<String>,
     /// How the tab has been used, for sweeping.
@@ -179,6 +184,14 @@ pub struct Shell {
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
     find: find::Bar,
+    /// Tab groups, the tab-bar page standing for each collapsed one, and the tabs inside those.
+    groups: RefCell<Vec<crate::groups::Group>>,
+    placeholders: RefCell<Vec<(u32, adw::TabPage)>>,
+    parked: RefCell<Vec<(u32, Rc<Tab>)>>,
+    /// True while tabs are being detached or attached by collapsing or expanding a group.
+    collapsing: Cell<bool>,
+    /// Where a collapsed group's pages wait (never shown).
+    parking: adw::TabView,
     /// PDFs being written: what to do when each is done.
     pdf_jobs: RefCell<std::collections::HashMap<String, print::PdfJob>>,
     /// The window's bars (hidden in fullscreen), and whether a page asked for the fullscreen.
@@ -357,6 +370,7 @@ impl Shell {
         cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
         cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
         cookies.append(Some("Print\u{2026}"), Some("win.print"));
+        self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
         if page.is_pinned() {
             return; // a workspace's pinned tabs stay where they are
@@ -622,23 +636,31 @@ impl Shell {
     fn tab_records(&self) -> Vec<TabRecord> {
         let selected = self.tab_view.selected_page();
         let tabs = self.tabs.borrow();
-        (0..self.tab_view.n_pages())
-            .filter_map(|i| {
-                let page = self.tab_view.nth_page(i);
-                let tab = tabs.iter().find(|t| t.page == page)?;
-                let s = tab.state.borrow();
-                if s.address.is_empty() || s.address == "about:blank" {
-                    return None;
-                }
-                Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: page.is_pinned(), selected: selected.as_ref() == Some(&page), usage: tab.usage.borrow().to_text() })
-            })
-            .collect()
+        let record = |tab: &Rc<Tab>, selected: bool| {
+            let s = tab.state.borrow();
+            if s.address.is_empty() || s.address == "about:blank" {
+                return None;
+            }
+            Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: tab.page.is_pinned(), selected, usage: tab.usage.borrow().to_text(), group: tab.group.get() })
+        };
+        let mut out = Vec::new();
+        for i in 0..self.tab_view.n_pages() {
+            let page = self.tab_view.nth_page(i);
+            if let Some(gid) = self.placeholder_group(&page) {
+                // A collapsed group: its tabs are saved where its placeholder is.
+                out.extend(self.parked.borrow().iter().filter(|(g, _)| *g == gid).filter_map(|(_, t)| record(t, false)));
+            } else if let Some(tab) = tabs.iter().find(|t| t.page == page) {
+                out.extend(record(tab, selected.as_ref() == Some(&page)));
+            }
+        }
+        out
     }
 
     /// Remember the tabs now (and forget screenshots of tabs that are gone).
     pub fn save_now(&self) {
         let (Some(p), Some(store)) = (&self.persist, store()) else { return };
         let records = self.tab_records();
+        let _ = store.save_groups(&p.workspace, &self.group_records());
         if let Err(e) = store.save_tabs(&p.workspace, &records) {
             eprintln!("browsah: cannot save tabs of workspace {}: {e}", p.workspace);
             return;
@@ -679,11 +701,14 @@ impl Shell {
     /// selected one wakes at once, the others when first shown.
     fn restore(self: &Rc<Self>, records: &[TabRecord]) {
         self.restoring.set(true);
+        let groups = self.persist.as_ref().and_then(|p| store().map(|s| s.load_groups(&p.workspace))).unwrap_or_default();
+        self.restore_groups(&groups);
         let mut target = None;
         for rec in records {
             // Every remembered tab starts without a browser (the selected one is woken below, and
             // shows its screenshot while it loads).
             let tab = self.open_tab_dormant(rec);
+            self.restore_tab_group(&tab, rec.group);
             if rec.selected {
                 target = Some(tab);
             }
@@ -694,6 +719,7 @@ impl Shell {
             self.tab_view.set_selected_page(&t.page);
             self.on_selected(); // wakes it if it was only remembered
         }
+        self.restore_collapsed(&groups);
     }
 
     /// A tab for a remembered page: no browser until it is shown.
@@ -909,7 +935,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -951,6 +977,19 @@ impl Shell {
 
     /// The selected tab changed: show its state and give its page the keyboard focus.
     fn on_selected(&self) {
+        if let Some(gid) = self.selected_placeholder() {
+            // A collapsed group's stand-in was chosen: open the group (after this signal has finished).
+            if !self.collapsing.get() {
+                let window = self.window.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
+                        s.expand_group(gid);
+                    }
+                });
+            }
+            let _ = gid;
+            return;
+        }
         self.editing.set(false);
         self.refresh();
         let current = self.current();
@@ -974,12 +1013,17 @@ impl Shell {
     /// A page left this window's tab view without being closed (dragged to another window): keep
     /// its tab until the other window adopts it.
     fn detach_page(&self, page: &adw::TabPage) {
+        if self.collapsing.get() {
+            return; // a group folding up: the tab is parked, not leaving
+        }
         let tab = {
             let mut tabs = self.tabs.borrow_mut();
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
+            tab.group.set(0); // groups belong to a window
             IN_FLIGHT.with(|f| f.borrow_mut().push(tab));
+            self.prune_groups();
             // A window whose last tab was sent elsewhere has nothing left to show.
             if self.tabs.borrow().is_empty() {
                 let window = self.window.downgrade();
@@ -1000,6 +1044,8 @@ impl Shell {
         });
         if let Some(tab) = tab {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
+            tab.page.set_icon(gio::Icon::NONE);
+            tab.page.set_tooltip("");
             tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
             tab.view().set_popup_policy(self.popup_policy);
             self.apply_view_settings(&tab.view());
@@ -1021,6 +1067,7 @@ impl Shell {
             self.record_closed(&tab, &reason, None);
             tab.view().close();
         }
+        self.prune_groups();
         self.schedule_save();
         if self.tabs.borrow().is_empty() {
             self.window.close();
@@ -1310,6 +1357,11 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
         find: find_bar,
+        groups: RefCell::new(Vec::new()),
+        placeholders: RefCell::new(Vec::new()),
+        parked: RefCell::new(Vec::new()),
+        collapsing: Cell::new(false),
+        parking: adw::TabView::new(),
         pdf_jobs: RefCell::new(std::collections::HashMap::new()),
         toolbar: toolbar.clone(),
         page_fullscreen: Cell::new(false),
@@ -1408,6 +1460,57 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 }
             }
         });
+    }
+    // Tab groups (the tab menu's entries).
+    {
+        let simple: &[(&str, fn(&Rc<Shell>, Option<Rc<Tab>>, u32))] = &[
+            ("group-new", |s, t, _| {
+                if let Some(t) = t {
+                    s.new_group_for(t);
+                }
+            }),
+            ("group-remove", |s, t, _| {
+                if let Some(t) = t {
+                    s.remove_from_group(&t);
+                }
+            }),
+            ("group-rename", |s, _, g| s.rename_group_dialog(g)),
+            ("group-toggle", |s, _, g| {
+                if s.group(g).is_some_and(|x| x.collapsed) {
+                    s.expand_group(g);
+                } else {
+                    s.collapse_group(g);
+                }
+            }),
+            ("group-ungroup", |s, _, g| s.ungroup(g)),
+            ("group-close", |s, _, g| s.close_group(g)),
+        ];
+        for (name, f) in simple {
+            let weak = weak.clone();
+            let f = *f;
+            add_action(&window, name, move || {
+                if let Some(s) = weak.upgrade() {
+                    let (tab, gid) = s.menu_target();
+                    f(&s, tab, gid);
+                }
+            });
+        }
+        for name in ["group-add", "group-color"] {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            let weak = weak.clone();
+            action.connect_activate(move |a, param| {
+                let (Some(s), Some(v)) = (weak.upgrade(), param.and_then(|p| p.str().map(str::to_owned))) else { return };
+                let (tab, gid) = s.menu_target();
+                if a.name() == "group-add" {
+                    if let (Some(t), Ok(id)) = (tab, v.parse::<u32>()) {
+                        s.assign_group(&t, id);
+                    }
+                } else {
+                    s.set_group_color(gid, &v);
+                }
+            });
+            window.add_action(&action);
+        }
     }
     add_action(&window, "save-pdf", {
         let weak = weak.clone();
@@ -1605,6 +1708,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     tab_view.connect_close_page({
         let weak = weak.clone();
         move |tv, page| {
+            // A collapsed group's stand-in: closing it opens the group (nothing is lost).
+            if let Some(s) = weak.upgrade() {
+                if let Some(gid) = s.placeholder_group(page) {
+                    tv.close_page_finish(page, false);
+                    s.expand_group(gid);
+                    return glib::Propagation::Stop;
+                }
+            }
             // Pinned tabs (a workspace's always-present tabs) are not closable.
             if page.is_pinned() {
                 tv.close_page_finish(page, false);

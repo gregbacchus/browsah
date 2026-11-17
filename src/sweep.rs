@@ -354,7 +354,7 @@ mod tests {
     }
 
     fn rec(uid: u64, url: &str, usage: &str, pinned: bool) -> TabRecord {
-        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned, selected: uid == 1, usage: usage.into() }
+        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned, selected: uid == 1, usage: usage.into(), group: 0 }
     }
 
     #[test]
