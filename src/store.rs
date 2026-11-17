@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +192,9 @@ impl Store {
                 );",
             )?;
         }
+        if version < 7 {
+            self.conn.execute_batch("CREATE TABLE IF NOT EXISTS site_zoom (host TEXT PRIMARY KEY, factor REAL NOT NULL);")?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
     }
 
@@ -283,6 +286,23 @@ impl Store {
             Ok(rows) => rows.flatten().collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    // ---- zoom --------------------------------------------------------------------------------------
+
+    /// The zoom factor remembered for a site (host), if it is not 100 %.
+    pub fn site_zoom(&self, host: &str) -> Option<f64> {
+        self.conn.query_row("SELECT factor FROM site_zoom WHERE host = ?1", params![host], |r| r.get(0)).ok()
+    }
+
+    /// Remember a site's zoom factor (100 % forgets it).
+    pub fn set_site_zoom(&self, host: &str, factor: f64) -> rusqlite::Result<()> {
+        if (factor - 1.0).abs() < 0.001 {
+            self.conn.execute("DELETE FROM site_zoom WHERE host = ?1", params![host])?;
+        } else {
+            self.conn.execute("INSERT INTO site_zoom (host, factor) VALUES (?1, ?2) ON CONFLICT(host) DO UPDATE SET factor = ?2", params![host, factor])?;
+        }
+        Ok(())
     }
 
     // ---- downloads ---------------------------------------------------------------------------------
@@ -395,6 +415,18 @@ mod tests {
 
     fn rec(uid: u64, url: &str, selected: bool) -> TabRecord {
         TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1") }
+    }
+
+    #[test]
+    fn site_zoom_is_remembered_and_forgotten_at_100_percent() {
+        let s = Store::open_memory();
+        assert_eq!(s.site_zoom("a.example"), None);
+        s.set_site_zoom("a.example", 1.5).unwrap();
+        s.set_site_zoom("a.example", 1.25).unwrap();
+        assert_eq!(s.site_zoom("a.example"), Some(1.25));
+        assert_eq!(s.site_zoom("b.example"), None);
+        s.set_site_zoom("a.example", 1.0).unwrap();
+        assert_eq!(s.site_zoom("a.example"), None);
     }
 
     #[test]

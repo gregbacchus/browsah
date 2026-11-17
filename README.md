@@ -24,7 +24,7 @@ Needs GTK >= 4.14 and libadwaita >= 1.5 (Ubuntu 24.04 or newer) and a Wayland se
 a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar, `Ctrl+R`/`F5`
 reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close tab,
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
-number.
+number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site.
 
 Page dialogs: `alert`, `confirm` and `prompt` from a page, and the "Leave this page?" question for a page with
 unsaved changes, are shown as a dialog over the window (headed with the page's address); the page waits for the answer.

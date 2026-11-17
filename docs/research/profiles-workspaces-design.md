@@ -605,6 +605,19 @@ background tabs and from modals, a dialog still open when its tab is closed (`on
 queued ones on navigation, but a page blocked in a dialog cannot navigate, so that path is untested), long messages,
 "stop showing dialogs from this page".
 
+## Status: page zoom (2026-11-17)
+
+The person's zoom (`BrowserView::user_zoom`, a factor) is added to the existing device-resolution correction in
+`apply_zoom` (CEF's zoom level is `ln(factor) / ln(1.2)`), so HiDPI keeps working. Steps are the usual 25 % to 500 %
+list (`app/zoom.rs`); `Ctrl+Plus/Minus/0` are window actions, `Ctrl` with a wheel notch sends a `Zoom` event. The factor is
+stored per host in `site_zoom` (schema 7; 100 % deletes the row) and `restore_site_zoom` puts it back on every address
+change, since CEF resets zoom when the host changes. Measured (`--selftest` section `zoom`, 6 checks): two steps give
+125 % and the page's `innerWidth` shrinks to 80 %; remembered for the site; another site is 100 %; coming back
+restores it; zoom out; reset forgets it. **Not measured:** Ctrl with the wheel (the self-test's emitted scroll signals
+carry no modifier), the keyboard accelerators on real keys and layouts (`Ctrl+=` and `Ctrl++`), the "Zoom 125%" toast by
+eye, a fractional display scale, zoom of a sleeping or modal view, and no zoom indicator or reset button in the
+header yet.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

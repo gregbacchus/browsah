@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog",
+    "install", "suggest", "jsdialog", "zoom",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -345,6 +345,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("jsdialog") {
         run_jsdialog(shell, r).await;
+    }
+    if wants("zoom") {
+        run_zoom(shell, r).await;
     }
 }
 
@@ -2371,4 +2374,43 @@ async fn run_jsdialog(shell: &Rc<Shell>, r: &mut Report) {
     }
     super::prompts::set_ui_test(true);
     r.check("closing the dialog answers the page (a cancelled prompt gives null)", title_is("typed:null").await, || st.borrow().title.clone());
+}
+
+/// Page zoom: the keyboard actions change the page's layout width, the zoom is remembered per site and put back,
+/// and Ctrl with the wheel zooms too.
+async fn run_zoom(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let go = |url: String| {
+        let st = st.clone();
+        let view = shell.view();
+        async move {
+            let before = st.borrow().load_cycles;
+            view.navigate(&url);
+            wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+            glib::timeout_future(Duration::from_millis(300)).await;
+        }
+    };
+    let width = || async { eval_string(&shell.current().expect("tab"), "String(window.innerWidth)").await.and_then(|w| w.parse::<f64>().ok()).unwrap_or(0.0) };
+    if let Some(s) = super::store() {
+        let _ = s.set_site_zoom("localhost", 1.0);
+        let _ = s.set_site_zoom("127.0.0.1", 1.0);
+    }
+    go(format!("http://localhost:{port}/b.html")).await;
+    let w100 = width().await;
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-in", None);
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-in", None);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let w125 = width().await;
+    r.check("two zoom-in steps make the page 125 % (its layout width shrinks to 80 %)", (shell.view().user_zoom() - 1.25).abs() < 0.001 && w100 > 0.0 && ((w125 / w100) - 0.8).abs() < 0.03, || format!("{w100} -> {w125}, zoom {}", shell.view().user_zoom()));
+    r.check("the zoom is remembered for the site", super::store().and_then(|s| s.site_zoom("localhost")) == Some(1.25), || String::new());
+    go(format!("http://127.0.0.1:{port}/b.html")).await;
+    r.check("another site is not zoomed", (shell.view().user_zoom() - 1.0).abs() < 0.001 && (width().await - w100).abs() < 2.0, || format!("{}", shell.view().user_zoom()));
+    go(format!("http://localhost:{port}/b.html?again")).await;
+    r.check("coming back to the site puts its zoom back", (shell.view().user_zoom() - 1.25).abs() < 0.001 && ((width().await / w100) - 0.8).abs() < 0.03, || format!("{}", shell.view().user_zoom()));
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-out", None);
+    r.check("zoom out steps back down", (shell.view().user_zoom() - 1.1).abs() < 0.001, || format!("{}", shell.view().user_zoom()));
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-reset", None);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("reset returns to 100 % and forgets the site's zoom", (shell.view().user_zoom() - 1.0).abs() < 0.001 && super::store().and_then(|s| s.site_zoom("localhost")).is_none() && (width().await - w100).abs() < 2.0, || format!("{}", shell.view().user_zoom()));
 }

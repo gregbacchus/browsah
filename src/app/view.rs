@@ -110,6 +110,8 @@ pub enum ViewEvent {
     JsDialog(Arc<JsDialogQuestion>),
     /// The page's dialog is no longer wanted (it navigated away or was closed).
     JsDialogDismissed(u64),
+    /// Ctrl and the wheel: zoom in (1) or out (-1).
+    Zoom(i32),
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
     ExternalLaunch { scheme: String, url: String, signin: bool },
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
@@ -199,6 +201,8 @@ struct Shared {
     /// What the configuration says about permissions, and where downloads go (set by the shell).
     permissions: Mutex<crate::permissions::PermissionsConfig>,
     cookies: Mutex<crate::cookies::CookiesConfig>,
+    /// The person's zoom for this page (1.0 = 100 %), on top of the scale correction for device resolution.
+    user_zoom: Mutex<f64>,
     /// Who the session cookies of this view belong to (its window), and the sites whose cookies the rules
     /// blocked since the page started loading.
     session_owner: Mutex<String>,
@@ -311,6 +315,7 @@ impl Shared {
             popup_policy: Mutex::new(crate::workspace::PopupPolicy::Tab),
             permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
+            user_zoom: Mutex::new(1.0),
             session_owner: Mutex::new(String::new()),
             blocked_cookies: Mutex::new(Default::default()),
             storage: NEXT_STORAGE.with(|s| s.borrow().clone()),
@@ -1904,8 +1909,20 @@ impl BrowserView {
     /// host resets the zoom, so call this again after address changes and when loading ends.
     pub fn apply_zoom(&self) {
         let k = self.shared.view.lock().unwrap().k();
-        let level = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
-        self.with_host(|h| h.set_zoom_level(level));
+        let device = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
+        let user = self.user_zoom().ln() / 1.2f64.ln();
+        self.with_host(|h| h.set_zoom_level(device + user));
+    }
+
+    /// The person's zoom for this page (1.0 = 100 %).
+    pub fn user_zoom(&self) -> f64 {
+        *self.shared.user_zoom.lock().unwrap()
+    }
+
+    /// Set the person's zoom and apply it.
+    pub fn set_user_zoom(&self, factor: f64) {
+        *self.shared.user_zoom.lock().unwrap() = factor;
+        self.apply_zoom();
     }
 
     /// Ask CEF to close the browser. Call before shutting CEF down.
@@ -2007,6 +2024,12 @@ impl BrowserView {
                     eprintln!("browsah: scroll dx={dx:.2} dy={dy:.2} unit={unit:?}");
                 }
                 // Touchpad events (not wheel notches) are accelerated by their size.
+                if unit == gdk::ScrollUnit::Wheel && ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    if dy != 0.0 {
+                        send(v.shared.id, ViewEvent::Zoom(if dy < 0.0 { 1 } else { -1 }));
+                    }
+                    return glib::Propagation::Stop;
+                }
                 let accel = |d: f64| if unit == gdk::ScrollUnit::Wheel { d } else { d * input::touchpad_acceleration(d) };
                 v.scroll_by(input::wheel_delta_f(accel(dx), unit, k), input::wheel_delta_f(accel(dy), unit, k), ctrl.current_event_state());
                 glib::Propagation::Stop

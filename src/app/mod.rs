@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod downloads;
 mod install;
+mod zoom;
 mod jsdialog;
 mod suggest;
 mod latency;
@@ -1081,6 +1082,7 @@ impl Shell {
             ViewEvent::PermissionDismissed(id) => self.dismiss_permission(id),
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
+            ViewEvent::Zoom(dir) => self.zoom_step(dir),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
             ViewEvent::JsDialogDismissed(view) => self.dismiss_js_dialog(view),
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
@@ -1119,7 +1121,8 @@ impl Shell {
             }
             ViewEvent::Address(a) => {
                 tab.state.borrow_mut().address = a;
-                // Navigating to another host resets the zoom.
+                // Navigating to another host resets the zoom: put back the person's zoom for this site.
+                self.restore_site_zoom(tab);
                 tab.view().apply_zoom();
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
@@ -1372,6 +1375,30 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     window.add_action(&send_tab);
+    add_action(&window, "zoom-in", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.zoom_step(1);
+            }
+        }
+    });
+    add_action(&window, "zoom-out", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.zoom_step(-1);
+            }
+        }
+    });
+    add_action(&window, "zoom-reset", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.zoom_step(0);
+            }
+        }
+    });
     add_action(&window, "install-app", {
         let weak = weak.clone();
         move || {
@@ -1523,6 +1550,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal", "<Ctrl>KP_Add"]);
+    app.set_accels_for_action("win.zoom-out", &["<Ctrl>minus", "<Ctrl>KP_Subtract"]);
+    app.set_accels_for_action("win.zoom-reset", &["<Ctrl>0", "<Ctrl>KP_0"]);
     app.set_accels_for_action("win.close-tab", &["<Ctrl>W"]);
     app.set_accels_for_action("win.next-tab", &["<Ctrl>Tab", "<Ctrl>Page_Down"]);
     app.set_accels_for_action("win.prev-tab", &["<Ctrl><Shift>Tab", "<Ctrl>ISO_Left_Tab", "<Ctrl>Page_Up"]);
