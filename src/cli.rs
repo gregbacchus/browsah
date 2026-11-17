@@ -40,6 +40,8 @@ pub struct Options {
     pub profile: Option<String>,
     /// Workspace to open (`--workspace=ID`).
     pub workspace: Option<String>,
+    /// Open a window with no workspace instead of the remembered workspaces (`--new-window`).
+    pub new_window: bool,
     /// Do not reload config files when they change (`--no-watch`).
     pub no_watch: bool,
     /// Alternative config file (`--config=PATH`).
@@ -62,6 +64,7 @@ impl Options {
             latency: false,
             profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
             workspace: None,
+            new_window: false,
             no_watch: false,
             config_path: None,
             flags: Vec::new(),
@@ -76,6 +79,7 @@ impl Options {
                 "--backing=off" => o.backing = Some(false),
                 "--selftest" => o.selftest = true,
                 "--no-watch" => o.no_watch = true,
+                "--new-window" => o.new_window = true,
                 "--latency" => o.latency = true,
                 _ if a.starts_with("--tabs=") => o.tabs = a[7..].parse().unwrap_or(0),
                 _ if a.starts_with("--tab-mode=") => o.tab_mode = a[11..].to_string(),

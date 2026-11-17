@@ -178,6 +178,8 @@ pub struct Shell {
     suggest: suggest::Popup,
     /// The downloads button and its list.
     pub downloads: Rc<downloads::Ui>,
+    /// The main menu's button.
+    pub menu_button: gtk::MenuButton,
     /// Dialogs pages opened with script: waiting, the one showing, and (in tests) the one held.
     js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
     js_showing: RefCell<Option<(u64, adw::AlertDialog)>>,
@@ -1288,6 +1290,12 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmarks_on = workspace.is_some() && nav.bookmarks_bar;
     let star = icon_button("non-starred-symbolic", "Bookmark this page (Ctrl+D)", "win.bookmark-page");
     star.set_visible(bookmarks_on);
+    // The main menu (not in a web app's window, which shows only its page).
+    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").tooltip_text("Menu").build();
+    menu_button.set_create_popup_func(|button| button.set_menu_model(Some(&main_menu())));
+    if !workspace.as_ref().is_some_and(|w| w.is_app()) {
+        header.pack_end(&menu_button);
+    }
     let downloads_ui = downloads::Ui::new();
     header.pack_end(&downloads_ui.button);
     header.pack_end(&star);
@@ -1357,6 +1365,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         private: Cell::new(false),
         suggest: suggest::Popup::new(&entry),
         downloads: downloads_ui.clone(),
+        menu_button: menu_button.clone(),
         js_queue: RefCell::new(std::collections::VecDeque::new()),
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
@@ -2113,6 +2122,16 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
     app.add_action(&new_ephemeral);
     app.set_accels_for_action("app.new-window", &["<Ctrl><Shift>N"]);
+    // The same, asked for by another launch (`browsah --new-window [URL]`): a link opens in the new window.
+    let new_ephemeral_at = gio::SimpleAction::new("new-window-at", Some(glib::VariantTy::STRING));
+    new_ephemeral_at.connect_activate({
+        let (cfg, new_window, app) = (cfg.clone(), new_window.clone(), app.clone());
+        move |_, param| {
+            let url = param.and_then(|p| p.str().map(str::to_owned)).filter(|u| !u.is_empty()).unwrap_or_else(|| cfg.borrow().home_page.clone());
+            new_window(&app, None, &url, Vec::new());
+        }
+    });
+    app.add_action(&new_ephemeral_at);
 
     // `browsah --workspace=ID` against a running profile arrives here.
     let open_ws_action = gio::SimpleAction::new("open-workspace", Some(glib::VariantTy::STRING));
@@ -2145,7 +2164,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             };
             // Which workspaces to open: the one asked for, else those open at last exit, else the
             // profile's default; with none of those, an ephemeral window.
-            let ids: Vec<String> = match (&opts.workspace, test_run) {
+            let ids: Vec<String> = match (&opts.workspace, test_run || opts.new_window) {
                 (Some(id), _) => vec![id.clone()],
                 (None, true) => Vec::new(),
                 (None, false) => startup_workspaces(&profile),
@@ -2324,6 +2343,37 @@ fn shell_of(window: &adw::ApplicationWindow) -> Option<Rc<Shell>> {
 /// The workspace id of the window, if it shows one.
 fn windows_workspace_id(window: &adw::ApplicationWindow) -> Option<String> {
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).and_then(|s| s.workspace.as_ref().map(|w| w.id.clone())))
+}
+
+/// The main menu: a window with no workspace, the profile's workspaces, and the page tools.
+fn main_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let windows = gio::Menu::new();
+    windows.append(Some("New window"), Some("app.new-window"));
+    if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
+        let list = crate::workspace::Workspace::list(&profile);
+        if !list.is_empty() {
+            let sub = gio::Menu::new();
+            for w in &list {
+                let item = gio::MenuItem::new(Some(&format!("{}{}", w.display_name(), if w.is_app() { " (app)" } else { "" })), None);
+                item.set_action_and_target_value(Some("app.open-workspace"), Some(&w.id.to_variant()));
+                sub.append_item(&item);
+            }
+            windows.append_submenu(Some("Open workspace"), &sub);
+        }
+    }
+    menu.append_section(None, &windows);
+    let page = gio::Menu::new();
+    page.append(Some("Find in page"), Some("win.find"));
+    page.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
+    page.append(Some("Print\u{2026}"), Some("win.print"));
+    page.append(Some("Developer tools"), Some("win.devtools"));
+    menu.append_section(None, &page);
+    let tabs = gio::Menu::new();
+    tabs.append(Some("History"), Some("win.history"));
+    tabs.append(Some("Reopen closed tab"), Some("win.reopen-tab"));
+    menu.append_section(None, &tabs);
+    menu
 }
 
 /// The colour a window is tinted with: its workspace's, else its profile's (an ephemeral window, or a workspace with

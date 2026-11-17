@@ -17,6 +17,11 @@ when it last ran (closing windows one at a time forgets them, except the last), 
 `default_workspace`, else a window with no workspace. Such an **ephemeral window** (also made with
 `Ctrl+Shift+N`) is not remembered.
 
+**A window with no workspace** can be opened at any time, whatever else is open, in four ways: `Ctrl+Shift+N`; the main menu (the
+button at the right of the header) → *New window*; `browsah --profile=<id> --new-window [URL]` (a running profile opens it; a
+profile that is not running starts with just this window instead of the remembered workspaces); and the *New Window* action
+of the profile's launcher entry (right-click its icon in the dash). The main menu also lists the profile's workspaces to open.
+
 **Sending tabs.** Right-click a tab and choose *Send to workspace* to move it, still running, to another
 workspace's window (opened if needed) or to a new window. Pinned tabs cannot be sent. A window whose
 last tab is sent away closes. All options apply at startup unless stated otherwise.

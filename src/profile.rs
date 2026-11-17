@@ -261,7 +261,12 @@ pub fn desktop_entry(p: &Profile, exe: &Path, libs: &Path) -> String {
          StartupNotify=true\n\
          StartupWMClass={id}\n\
          Categories=Network;WebBrowser;\n\
-         MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;\n",
+         MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;\n\
+         Actions=new-window;\n\
+         \n\
+         [Desktop Action new-window]\n\
+         Name=New Window\n\
+         Exec=env LD_LIBRARY_PATH={libs} {exe} --profile={pid} --new-window\n",
         name = p.display_name(),
         libs = exec_quote(&libs.to_string_lossy()),
         exe = exec_quote(&exe.to_string_lossy()),
@@ -341,6 +346,7 @@ pub fn is_running(p: &Profile) -> bool {
 const USAGE: &str = "usage:
   browsah profile add <id> [--name NAME] [--color \"LIGHT [DARK]\"]
   browsah profile list
+  browsah profile install <id>      (write the launcher entry and icon again, e.g. after an update)
   browsah profile remove <id> --yes [--keep-data]
 
 An id is lower case letters, digits, - and _, starting with a letter. Colours are #rrggbb.
@@ -365,6 +371,26 @@ pub fn cli(args: &[String]) -> i32 {
             }
             0
         }
+        Some("install") => match args.get(1).map(|id| Profile::resolve(id)) {
+            Some(Ok(p)) => match install(&p, &exe, &libs) {
+                Ok(()) => {
+                    println!("wrote the launcher entry {}.desktop and its icon", p.app_id());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("cannot install: {e}");
+                    1
+                }
+            },
+            Some(Err(e)) => {
+                eprintln!("{e}");
+                1
+            }
+            None => {
+                eprintln!("{USAGE}");
+                2
+            }
+        },
         Some("remove") => remove(&args[1..]),
         _ => {
             eprintln!("{USAGE}");

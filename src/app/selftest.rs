@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -363,6 +363,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("groups") {
         run_groups(shell, r).await;
+    }
+    if wants("menu") {
+        run_menu(shell, r).await;
     }
 }
 
@@ -2621,5 +2624,38 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     }
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("gr1"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The main menu: it lists a window with no workspace, the profile's workspaces and the page tools.
+async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let dir = profile.workspaces_dir().join("mn1");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    std::fs::write(dir.join("workspace.yaml"), "name: Menu test\n").expect("ws");
+    shell.menu_button.popup();
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let model = shell.menu_button.menu_model();
+    let mut labels = Vec::new();
+    if let Some(m) = &model {
+        for i in 0..m.n_items() {
+            if let Some(section) = m.item_link(i, "section") {
+                for j in 0..section.n_items() {
+                    labels.extend(section.item_attribute_value(j, "label", None).and_then(|v| v.str().map(str::to_owned)));
+                }
+            }
+        }
+    }
+    shot(&shell.window, "main-menu");
+    if let Some(p) = shell.menu_button.popover() {
+        shot(&p, "main-menu-popover");
+    }
+    shell.menu_button.popdown();
+    r.check("the main menu offers a new window (no workspace) and the page tools", ["New window", "Open workspace", "Find in page", "Developer tools", "History"].iter().all(|l| labels.iter().any(|x| x == l)), || format!("{labels:?}"));
+    let sub_has_workspace = model.as_ref().is_some_and(|m| {
+        (0..m.n_items()).filter_map(|i| m.item_link(i, "section")).any(|s| (0..s.n_items()).filter_map(|j| s.item_link(j, "submenu")).any(|sub| (0..sub.n_items()).any(|k| sub.item_attribute_value(k, "label", None).and_then(|v| v.str().map(str::to_owned)).as_deref() == Some("Menu test"))))
+    });
+    r.check("it lists the profile's workspaces to open", sub_has_workspace, || format!("{labels:?}"));
     let _ = std::fs::remove_dir_all(&dir);
 }

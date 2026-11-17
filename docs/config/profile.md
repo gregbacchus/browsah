@@ -11,6 +11,7 @@ Each profile has its own directory, `$XDG_DATA_HOME/browsah/profiles/<id>/`
 Profiles are managed with the command line:
 
 ```bash
+browsah profile install work                                    # write the launcher entry and icon again (e.g. after an update)
 browsah profile add work --name "Work" --color "#4a2f80 #7a56c2"   # light then dark
 browsah profile list
 browsah profile remove work --yes            # deletes the directory; --keep-data keeps it

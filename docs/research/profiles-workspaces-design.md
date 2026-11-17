@@ -686,6 +686,19 @@ group closes its tabs. **Not measured:** the dialogs (name, rename), the menus t
 (it can leave its group's run; the dot stays), a page popup (`target=_blank`, `window.open`) from a grouped tab joins its group (built, not driven by a test; other new tabs, such as Ctrl+T, do not), middle-click close of a
 stand-in, many groups, light theme, and no group name chip in the bar (only the dot and, collapsed, the title).
 
+## Status: windows without a workspace, main menu (2026-11-17)
+
+Asked how to open a window with no workspace once a workspace is open: `Ctrl+Shift+N` existed but nothing showed it. Added a
+main menu (header button, built each time it opens: *New window*, *Open workspace* with the profile's workspaces, find,
+PDF, print, developer tools, history, reopen closed tab), `browsah --new-window [URL]` (forwarded to a running profile as
+the `new-window-at` action; when starting, it skips the remembered workspaces), and a *New Window* action in the profile's
+`.desktop` entry (`browsah profile install <id>` rewrites an existing entry). Windows with no colour of their own now take
+the profile's colour. Measured: `--selftest` section `menu` (menu model and workspace list, picture looked at), and by hand
+in a temporary data directory with the real binary: a running profile with a workspace open gets a second, plain window
+(two toplevels, the second without the workspace's name in its title); starting with `--new-window` opens one plain window
+although a workspace was remembered. **Not measured:** the launcher action in GNOME's dash (not installed for existing
+entries until `profile install`), the profile colour on screen, the menu on a small window.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

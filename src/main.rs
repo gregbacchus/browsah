@@ -120,6 +120,11 @@ fn main() {
         // workspace to show, or just "show a window".
         let hint = opts.workspace.clone().unwrap_or_default();
         match (&opts.url, &opts.workspace) {
+            // A window with no workspace (with the link, if one was given).
+            _ if opts.new_window => {
+                let url = opts.url.as_deref().map(|u| app::resolve_address(u, &cfg.search_url)).unwrap_or_default();
+                gio::prelude::ActionGroupExt::activate_action(&app, "new-window-at", Some(&url.to_variant()));
+            }
             (Some(url), _) => app.open(&[gio::File::for_uri(&app::resolve_address(url, &cfg.search_url))], &hint),
             (None, Some(w)) => gio::prelude::ActionGroupExt::activate_action(&app, "open-workspace", Some(&w.to_variant())),
             (None, None) => app.activate(),
