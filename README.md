@@ -81,6 +81,9 @@ allowed, denied or asked about by rules (per kind and per site, in any layer), a
 remember are kept per profile (`browsah permissions list`). Downloads go to a configurable folder per profile or
 workspace, optionally asking where to save each file. See [docs/config/permissions.md](docs/config/permissions.md).
 
+Web apps: `browsah app add mail --url https://mail.example.com/` makes a window for one site with its own
+launcher entry and icon (a workspace with an `app:` section). See [docs/config/webapp.md](docs/config/webapp.md).
+
 Cookies and storage: `cookies:` rules (any layer) allow or deny cookies per site, and a workspace with
 `storage: isolated` keeps all its cookies and site data apart from the rest of the profile. See
 [docs/config/options.md](docs/config/options.md).

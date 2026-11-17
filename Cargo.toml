@@ -9,6 +9,7 @@ repository = "https://github.com/gregbacchus/browsah"
 [dependencies]
 adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
 cef = "156.5.0"
+gdk-wayland = { version = "0.11.5", package = "gdk4-wayland" }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
 libc = "0.2.191"
 rusqlite = { version = "0.43.0", features = ["bundled"] }

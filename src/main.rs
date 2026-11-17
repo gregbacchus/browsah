@@ -17,6 +17,7 @@ mod router;
 mod selector;
 mod store;
 mod sweep;
+mod webapp;
 mod workspace;
 
 use adw::prelude::*;
@@ -62,6 +63,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("app") {
+        std::process::exit(webapp::cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("workspace") {
         std::process::exit(workspace::cli(&args[1..]));

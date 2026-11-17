@@ -60,7 +60,7 @@ says what happened. An invalid file is reported and the running settings are kep
 | immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*` |
 | next start (the message says so) | `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
-Permissions and downloads are described in [permissions.md](permissions.md). Cookie rules and `storage` are in [options.md](options.md).
+Permissions and downloads are described in [permissions.md](permissions.md). Cookie rules and `storage` are in [options.md](options.md). Web apps (a workspace for one site with its own launcher entry) are in [webapp.md](webapp.md).
 
 Where links go is configured under `routing:` in any of these files: see [routing.md](routing.md).
 

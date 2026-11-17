@@ -246,6 +246,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_storage(shell, r).await;
     run_session_cookies(shell, r).await;
     run_session_scope(shell, r).await;
+    run_webapp(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2014,4 +2015,41 @@ async fn run_session_scope(shell: &Rc<Shell>, r: &mut Report) {
         let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }
+}
+
+/// A web app: a workspace window with only its page, no new tabs and popups as modals; it is left out of the
+/// tab menu's list of workspaces.
+async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.workspaces_dir().join("wa1");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
+    std::fs::write(dir.join("workspace.yaml"), format!("name: Web app\napp:\n  url: 'http://localhost:{port}/scope.html'\n  display: standalone\n")).expect("ws");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "wa1"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wa1".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    r.check("a web app opens on its start page", ok, || format!("{:?}", find().map(|s| s.current().map(|t| t.state.borrow().title.clone()))));
+    let Some(w) = find() else { return };
+    r.check("a web app shows only its page: one pinned tab, no address bar, no new tabs", w.tab_count() == 1 && w.current().is_some_and(|t| t.page.is_pinned()) && gtk::prelude::WidgetExt::parent(&w.entry).is_none() && !w.allow_new_tabs, || format!("tabs={} entry={}", w.tab_count(), gtk::prelude::WidgetExt::is_visible(&w.entry)));
+    r.check("a web app keeps back and reload, and shows popups as modals", w.back.is_visible() && w.popup_policy == crate::workspace::PopupPolicy::Modal, || "controls or popup policy".into());
+    // Out of scope: the default scope is the start page's own site, so the link to 127.0.0.1 leaves the app.
+    let before = super::windows().len();
+    if let Some(t) = w.current() {
+        t.view().navigate(&format!("http://127.0.0.1:{port}/b.html"));
+    }
+    let ok = wait_until(15_000, || super::windows().len() > before).await;
+    r.check("a link outside the app's site opens in a window of its own", ok, || format!("{} windows (was {before})", super::windows().len()));
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

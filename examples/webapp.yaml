@@ -1,0 +1,18 @@
+# A web app is a workspace (workspace.yaml in a directory under the profile's workspaces/) with an `app:`
+# section. Make one with: browsah app add mail --url https://mail.example.com/ --name "Mail"
+name: Mail
+color: "#2a6f97 #61a5c2"          # the icon's colours when there is no icon file
+
+app:
+  url: https://mail.example.com/inbox     # the page it opens on
+  scope: ["mail.example.com", "accounts.example.com/signin/*"]   # where it may navigate (default: the url's site)
+  display: standalone                     # standalone (just the page) | minimal (plus a read-only address) | browser
+  icon: icon.png                          # a file in this directory (default: a generated icon)
+  id: https://mail.example.com/           # the web manifest's id, when it was installed from one
+
+# Any option of config.yaml can follow, as in a workspace; for example this app keeps its cookies apart:
+storage: isolated
+cookies:
+  rules:
+    - match: ["ads.example.net"]
+      action: deny

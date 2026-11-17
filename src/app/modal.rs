@@ -96,7 +96,7 @@ impl Shell {
         // The workspaces to choose from.
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
             let here = self.workspace.as_ref().map(|w| w.id.clone());
-            for w in crate::workspace::Workspace::list(&profile) {
+            for w in crate::workspace::Workspace::list(&profile).into_iter().filter(|w| !w.is_app()) {
                 let b = gtk::Button::builder().label(w.display_name()).has_frame(false).build();
                 let (m, id, popover) = (Rc::downgrade(&modal), w.id.clone(), popover.downgrade());
                 b.connect_clicked(move |_| {

@@ -272,15 +272,20 @@ pub fn desktop_entry(p: &Profile, exe: &Path, libs: &Path) -> String {
 /// A simple scalable icon: a rounded square shading from the light to the dark colour, with the
 /// profile's initial.
 pub fn icon_svg(p: &Profile) -> String {
-    let (light, dark) = match &p.config.color {
+    icon_svg_for(&p.id, p.display_name(), p.config.color.as_ref())
+}
+
+/// The same icon for anything with an id, a name and maybe colours (a web app).
+pub fn icon_svg_for(id: &str, name: &str, color: Option<&ColorPair>) -> String {
+    let (light, dark) = match color {
         Some(c) => (c.light.clone(), c.dark.clone()),
         None => {
             // No colour chosen: derive one from the id so profiles still look different.
-            let h = p.id.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
+            let h = id.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
             (format!("hsl({h} 55% 55%)"), format!("hsl({h} 55% 32%)"))
         }
     };
-    let initial = p.display_name().chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "B".into());
+    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "B".into());
     let initial = initial.replace('&', "&amp;").replace('<', "&lt;");
     format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\">\n\

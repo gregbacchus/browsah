@@ -336,7 +336,7 @@ impl Shell {
         let send = gio::Menu::new();
         let here = self.workspace.as_ref().map(|w| w.id.as_str());
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
-            for w in crate::workspace::Workspace::list(&profile) {
+            for w in crate::workspace::Workspace::list(&profile).into_iter().filter(|w| !w.is_app()) {
                 if Some(w.id.as_str()) == here {
                     continue;
                 }
@@ -1569,6 +1569,18 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
+    // A web app's window is its own application to the desktop: its own launcher entry, icon and place in the dash.
+    // (GTK sets the profile's id when the window is shown, so this runs after that, when the window is mapped.)
+    if shell.workspace.as_ref().is_some_and(|w| w.is_app()) {
+        let id = shell.workspace.as_ref().map(|w| w.id.clone()).unwrap_or_default();
+        window.connect_map(move |win| {
+            use gtk::prelude::NativeExt;
+            let Some(profile) = PROFILE.with(|p| p.borrow().clone()) else { return };
+            if let Some(top) = win.surface().and_then(|s| s.downcast::<gdk_wayland::WaylandToplevel>().ok()) {
+                top.set_application_id(&crate::webapp::app_id(&profile, &id));
+            }
+        });
+    }
     shell.purge_stale_session_cookies();
     shell.rebuild_bookmarks();
 
