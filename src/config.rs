@@ -62,6 +62,27 @@ pub struct Config {
 pub struct WindowConfig {
     pub width: i32,
     pub height: i32,
+    /// The colour border around the page (see `FrameConfig`).
+    pub frame: FrameConfig,
+}
+
+/// The border of the window's colour around the page (`window.frame`): a window with a colour (its workspace's, else its
+/// profile's) shows it on the sides and bottom of the page, with rounded page corners.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct FrameConfig {
+    pub enabled: bool,
+    /// Thickness in logical pixels (0 is the same as off).
+    pub thickness: i32,
+    /// Radius of the page's corners, in logical pixels.
+    pub radius: i32,
+}
+
+impl Default for FrameConfig {
+    fn default() -> Self {
+        Self { enabled: true, thickness: 6, radius: 8 }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,7 +165,7 @@ impl Default for Config {
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { width: 1280, height: 800 }
+        Self { width: 1280, height: 800, frame: FrameConfig::default() }
     }
 }
 
@@ -189,6 +210,8 @@ impl Config {
     fn sanitize(&mut self) {
         self.window.width = self.window.width.clamp(400, 16384);
         self.window.height = self.window.height.clamp(300, 16384);
+        self.window.frame.thickness = self.window.frame.thickness.clamp(0, 40);
+        self.window.frame.radius = self.window.frame.radius.clamp(0, 40);
         self.rendering.frame_rate = self.rendering.frame_rate.clamp(1, 120);
         self.input.wheel_notch = self.input.wheel_notch.clamp(10.0, 1000.0);
         self.input.touchpad_speed = self.input.touchpad_speed.clamp(0.1, 20.0);
@@ -479,7 +502,7 @@ pub struct Changes {
 }
 
 /// Options that are fixed when the process or a window starts.
-const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "rendering.mode", "rendering.device_resolution", "window."];
+const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "rendering.mode", "rendering.device_resolution", "window.width", "window.height"];
 
 pub fn changes(old: &Config, new: &Config) -> Changes {
     let flat = |c: &Config| -> std::collections::BTreeMap<String, Value> {
@@ -534,6 +557,7 @@ mod tests {
         };
         add("", field_names::<Config>());
         add("window", field_names::<WindowConfig>());
+        add("window.frame", field_names::<FrameConfig>());
         add("rendering", field_names::<RenderingConfig>());
         add("chromium", field_names::<ChromiumConfig>());
         add("gpu", field_names::<GpuConfig>());
@@ -735,6 +759,20 @@ mod tests {
         // Without a workspace file the window is the profile's.
         assert_eq!(load_window(&app, &prof, None).unwrap().config.search_url, "https://b/?q={query}");
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn the_frame_options_default_and_clamp() {
+        let d = Config::default().window.frame;
+        assert!(d.enabled && d.thickness == 6 && d.radius == 8, "thin by default");
+        let mut c: Config = serde_yaml_ng::from_str("window: { frame: { thickness: 500, radius: -3, enabled: false } }").unwrap();
+        c.sanitize();
+        assert!(!c.window.frame.enabled && c.window.frame.thickness == 40 && c.window.frame.radius == 0);
+        // A reload that changes only the frame is applied live, not at the next start.
+        let mut new = Config::default();
+        new.window.frame.thickness = 12;
+        let ch = changes(&Config::default(), &new);
+        assert!(ch.live.iter().any(|k| k == "window.frame.thickness") && ch.restart.is_empty(), "{ch:?}");
     }
 
     #[test]

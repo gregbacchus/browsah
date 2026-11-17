@@ -54,6 +54,7 @@ impl Shell {
     /// Show the bar and put the cursor in it (searching again for what was there).
     pub(super) fn open_find(self: &Rc<Self>) {
         self.find.revealer.set_reveal_child(true);
+        self.window.add_css_class("has-footer"); // the colour frame has something in its footer: no extra border below
         self.find.entry.grab_focus();
         self.find.entry.select_region(0, -1);
         let text = self.find.entry.text().to_string();
@@ -90,6 +91,7 @@ impl Shell {
             return;
         }
         self.find.revealer.set_reveal_child(false);
+        self.window.remove_css_class("has-footer");
         self.find.label.set_label("");
         for t in self.tabs.borrow().iter() {
             t.view().stop_find();

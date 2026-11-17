@@ -35,6 +35,10 @@ default_profile: work
 |---|---|---|---|
 | `window.width` | integer (px) | `1280` | Initial window width, in logical pixels. Clamped to 400 to 16384. |
 | `window.height` | integer (px) | `800` | Initial window height, in logical pixels. Clamped to 300 to 16384. |
+| `window.frame` | section | see below | The colour border around the page: `enabled`, `thickness` and `radius`. |
+| `window.frame.enabled` | bool | `true` | A window that has a colour (its workspace's `color`, else its profile's) shows it as a border around the page: down both sides and along the bottom, with rounded page corners, maximized or not (not in fullscreen). `false` tints only the header and tab bar. A workspace can set its own. Applies immediately when the file is reloaded. |
+| `window.frame.thickness` | integer (px) | `6` | How thick the border is, in logical pixels, clamped to 0 to 40 (0 is the same as off). The bottom is as thick as the sides, except while the find bar is shown there. |
+| `window.frame.radius` | integer (px) | `8` | The radius of the page's corners inside the border, clamped to 0 to 40. |
 
 ```yaml
 window:

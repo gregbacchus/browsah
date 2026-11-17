@@ -23,6 +23,10 @@ new_tab_page: null         # what a new tab opens: null (blank, address bar read
 window:
   width: 1280   # initial size in logical pixels
   height: 800
+  frame:                # the window's colour as a border around the page (needs a profile or workspace colour)
+    enabled: true
+    thickness: 6        # logical pixels, 0 to 40
+    radius: 8           # the page's corner radius
 
 rendering:
   mode: accelerated        # accelerated (no copy) or readback (fallback, slower)

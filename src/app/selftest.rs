@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -392,6 +392,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("hidpi") {
         run_hidpi(shell, r).await;
+    }
+    if wants("frame") {
+        run_frame(shell, r).await;
     }
 }
 
@@ -2771,4 +2774,111 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     let dpr2 = num("String(window.devicePixelRatio)").await;
     let bar2 = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
     r.check("another site gets the same scale and scrollbar", (dpr2 - scale).abs() < 0.05 && (bar2 * dpr2 - 15.0 * scale).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
+}
+
+/// A coloured window shows its colour around the page (sides and bottom, with rounded page corners), maximized or not; in
+/// fullscreen the page fills the screen.
+async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.workspaces_dir().join("fr1");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fr1"));
+    std::fs::write(dir.join("workspace.yaml"), format!("name: Frame\ncolor: '#2a6f97 #61a5c2'\nhome_page: 'http://localhost:{port}/white.html'\n")).expect("ws");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "fr1"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"fr1".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "White" && !t.state.borrow().loading))).await;
+    let Some(w) = find() else { return };
+    let dark = adw::StyleManager::default().is_dark();
+    let tint = {
+        let c = crate::profile::ColorPair::parse("#2a6f97 #61a5c2").expect("colour");
+        let h = if dark { c.dark } else { c.light };
+        let n = u32::from_str_radix(h.trim_start_matches('#'), 16).unwrap_or(0);
+        (((n >> 16) & 255) as u8, ((n >> 8) & 255) as u8, (n & 255) as u8)
+    };
+    let near = |a: (u8, u8, u8), b: (u8, u8, u8)| (a.0 as i32 - b.0 as i32).abs() < 10 && (a.1 as i32 - b.1 as i32).abs() < 10 && (a.2 as i32 - b.2 as i32).abs() < 10;
+    let white = (255u8, 255u8, 255u8);
+
+    // Not maximized: the colour frames the page.
+    // Start from a maximized window (the compositor may have remembered either state), then un-maximize it.
+    w.window.maximize();
+    let _ = wait_until(10_000, || w.window.has_css_class("maximized")).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let full = w.window.width();
+    w.window.unmaximize();
+    let ok = wait_until(10_000, || !w.window.has_css_class("maximized") && w.window.width() < full - 20).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    println!("frame: classes {:?}, window {}x{}, maximized {} fullscreen {}", w.window.css_classes(), w.window.width(), w.window.height(), w.window.is_maximized(), w.window.is_fullscreen());
+    shot(&w.window, "frame-unmaximized");
+    let (ww, wh) = (w.window.width(), w.window.height());
+    let tv = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0));
+    let tvw = w.tab_view.width();
+    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0 + 1, tv.1 + 1), (tv.0 + 12, tv.1 + 12)]);
+    r.check("the window can be un-maximized for the test", ok, || "still maximized".into());
+    r.check("the page is inset from the left and right edges (the colour shows at the sides)", px.len() == 6 && near(px[0], tint) && near(px[1], tint) && tv.0 > 0 && tvw < ww, || format!("{px:?} tint {tint:?} tabview x {} width {tvw} of {ww}", tv.0));
+    r.check("the colour shows below the page too, and the page itself is not tinted", px.len() == 6 && near(px[2], tint) && near(px[3], white), || format!("{px:?} tint {tint:?}"));
+    r.check("the page's corners are rounded (the colour shows in the corner, the page just inside it)", px.len() == 6 && near(px[4], tint) && near(px[5], white), || format!("{px:?} tint {tint:?}"));
+    // Something in the footer (the find bar): no extra border below it.
+    let _ = WidgetExt::activate_action(&w.window, "win.find", None);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    r.check("with the find bar open the window is marked as having a footer", w.window.has_css_class("has-footer"), || String::new());
+    let _ = WidgetExt::activate_action(&w.window, "win.find-close", None);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("closing it removes the mark", !w.window.has_css_class("has-footer"), || String::new());
+
+    // The options: the thickness is the border's width, and a window can turn it off.
+    let th = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.x() as i32).unwrap_or(-1);
+    r.check("the border is 6 px thick by default", th == 6, || format!("page starts at x={th}"));
+    let mut cfg = w.settings.borrow().clone();
+    cfg.window.frame.thickness = 14;
+    cfg.window.frame.radius = 0;
+    w.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let th = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.x() as i32).unwrap_or(-1);
+    r.check("a changed thickness applies at once (14 px, square corners)", th == 14, || format!("page starts at x={th}"));
+    cfg.window.frame.enabled = false;
+    w.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let th = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| p.x() as i32).unwrap_or(-1);
+    let wh = w.window.height();
+    let px = pixels(&w.window, &[(3, wh / 2)]);
+    r.check("with the border off the page fills the width and the header keeps its colour", th == 0 && px.len() == 1 && near(px[0], white), || format!("x={th} {px:?}"));
+    let head = pixels(&w.window, &[(200, 20)]);
+    r.check("(and the header is still tinted)", head.len() == 1 && near(head[0], tint), || format!("{head:?} tint {tint:?}"));
+    cfg.window.frame.enabled = true;
+    cfg.window.frame.thickness = 6;
+    cfg.window.frame.radius = 8;
+    w.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(600)).await;
+
+    // Maximized: the same frame.
+    w.window.maximize();
+    let ok = wait_until(10_000, || w.window.has_css_class("maximized") && w.window.width() >= full - 20).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    shot(&w.window, "frame-maximized");
+    let (ww, wh) = (w.window.width(), w.window.height());
+    let tv = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0));
+    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0 + 1, tv.1 + 1), (tv.0 + 12, tv.1 + 12)]);
+    r.check("maximized, the colour still frames the page (sides, bottom, rounded corners)", ok && px.len() == 6 && near(px[0], tint) && near(px[1], tint) && near(px[2], tint) && near(px[3], white) && near(px[4], tint) && near(px[5], white), || format!("{px:?} tint {tint:?}"));
+    // Fullscreen: the page fills the screen (the bars are hidden too).
+    let _ = WidgetExt::activate_action(&w.window, "win.fullscreen", None);
+    let ok = wait_until(10_000, || w.window.has_css_class("fullscreen")).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let (ww, wh) = (w.window.width(), w.window.height());
+    let px = pixels(&w.window, &[(3, wh / 2), (ww / 2, wh - 3), (ww / 2, 3)]);
+    r.check("in fullscreen the page fills the screen with no colour around it", ok && px.len() == 3 && px.iter().all(|p| near(*p, white)), || format!("{px:?}"));
+    let _ = WidgetExt::activate_action(&w.window, "win.fullscreen", None);
+    let _ = wait_until(10_000, || !w.window.has_css_class("fullscreen")).await;
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fr1"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

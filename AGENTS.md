@@ -115,6 +115,9 @@ take minutes.
   (`cef_rt::forget_saved_zoom`) because hosts browsah never sets a zoom for (DevTools, error pages) would otherwise keep a stale one.
   Test aids: `BROWSAH_FORCE_SCALE=2` pretends a display scale; `BROWSAH_NO_SCALE_FIX=1` leaves the Wayland feature on (the `hidpi` section
   then fails, which is the point); `scripts/devtools-probe.py` asks the DevTools frontend its own scale (see the note).
+- **Window colour:** `workspace_css` writes the style sheet; the page is inside a `.browsah-frame` box so the colour can frame it
+  (`window.frame.*`, live). Tests that need an un-maximized window must wait for the real resize, not only the `maximized` class
+  change (the compositor resizes later), and start by maximizing (it may remember either state).
 - **Check pictures, not just numbers.** A DevTools emulation attempt passed every numeric check (`devicePixelRatio`, `innerWidth`) while
   the page was painted at half size; the `hidpi` section now checks the frame size and layout width too, and a picture was looked at.
 - **Licence:** browsah is MIT. Do not add a dependency whose licence is not permissive

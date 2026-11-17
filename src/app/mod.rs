@@ -224,6 +224,8 @@ pub struct Shell {
     star: gtk::Button,
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
+    /// The colour the window is tinted with (its workspace's, else its profile's), and the name it is styled under.
+    color: RefCell<Option<(String, crate::profile::ColorPair)>>,
     /// Where this window's tabs are remembered (workspace windows only).
     persist: Option<Persist>,
     save_pending: Cell<bool>,
@@ -259,19 +261,28 @@ impl Shell {
     /// appearance, which can change while running).
     fn install_color(self: &Rc<Self>, color: Option<&(String, crate::profile::ColorPair)>) {
         let Some((id, pair)) = color else { return };
-        let class = format!("ws-{id}");
-        self.window.add_css_class(&class);
+        self.window.add_css_class(&format!("ws-{id}"));
+        *self.color.borrow_mut() = Some((id.clone(), pair.clone()));
         let provider = gtk::CssProvider::new();
-        let apply = {
-            let (provider, class, pair) = (provider.clone(), class.clone(), pair.clone());
-            move || provider.load_from_string(&workspace_css(&class, &pair, adw::StyleManager::default().is_dark()))
-        };
-        apply();
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
-        adw::StyleManager::default().connect_dark_notify(move |_| apply());
         *self.color_css.borrow_mut() = Some(provider);
+        self.refresh_color_css();
+        let window = self.window.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(shell) = window.upgrade().and_then(|w| shell_of(&w)) {
+                shell.refresh_color_css();
+            }
+        });
+    }
+
+    /// (Re)write the window's colour style sheet from its colour and `window.frame` (at start, when the appearance changes
+    /// between light and dark, and when the configuration is reloaded).
+    pub(crate) fn refresh_color_css(&self) {
+        let (Some(provider), Some((id, pair))) = (self.color_css.borrow().clone(), self.color.borrow().clone()) else { return };
+        let frame = self.settings.borrow().window.frame.clone();
+        provider.load_from_string(&workspace_css(&format!("ws-{id}"), &pair, adw::StyleManager::default().is_dark(), &frame));
     }
 
     // ---- history ----------------------------------------------------------------------------------
@@ -783,6 +794,7 @@ impl Shell {
     /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
     pub fn apply_config(&self, cfg: &Config) {
         *self.settings.borrow_mut() = cfg.clone();
+        self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
             self.apply_view_settings(&t.view());
         }
@@ -1318,7 +1330,13 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     toolbar.add_top_bar(&bookmark_revealer);
     let find_bar = find::Bar::new();
     toolbar.add_bottom_bar(&find_bar.revealer);
-    toolbar.set_content(Some(&tab_view));
+    // The page sits in a frame: in a coloured window the colour shows around it (see `workspace_css`).
+    tab_view.set_hexpand(true);
+    tab_view.set_vexpand(true);
+    tab_view.set_overflow(gtk::Overflow::Hidden); // clip the page to the rounded corners the style gives it
+    let frame = gtk::Box::builder().orientation(gtk::Orientation::Vertical).css_classes(["browsah-frame"]).build();
+    frame.append(&tab_view);
+    toolbar.set_content(Some(&frame));
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&toolbar));
     window.set_content(Some(&toasts));
@@ -1396,6 +1414,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         bookmark_revealer: bookmark_revealer.clone(),
         star: star.clone(),
         color_css: RefCell::new(None),
+        color: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
         save_pending: Cell::new(false),
         restoring: Cell::new(false),
@@ -2258,17 +2277,28 @@ fn luminance(hex: &str) -> f64 {
     0.2126 * c(1) + 0.7152 * c(3) + 0.0722 * c(5)
 }
 
-/// The style sheet that gives a workspace window its colour: libadwaita's header colours, set for
-/// just this window.
-fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool) -> String {
+/// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
+/// on, the colour around the page (not in fullscreen, where the bars are hidden and the page fills the screen).
+fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool, frame: &crate::config::FrameConfig) -> String {
     let bg = if dark { &pair.dark } else { &pair.light };
     let fg = if luminance(bg) > 0.55 { "rgba(0, 0, 0, 0.8)" } else { "#ffffff" };
-    format!(
+    let mut css = format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
          window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
+         window.{class} toolbarview > revealer.bottom-bar, window.{class} toolbarview > revealer.bottom-bar > windowhandle {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}"
-    )
+    );
+    let t = frame.thickness.clamp(0, 40);
+    if frame.enabled && t > 0 {
+        let r = frame.radius.clamp(0, 40);
+        css.push_str(&format!(
+            "\nwindow.{class}:not(.fullscreen) .browsah-frame {{ background-color: {bg}; padding: 0 {t}px {t}px {t}px; }}\n\
+             window.{class}:not(.fullscreen).has-footer .browsah-frame {{ padding-bottom: 0; }}\n\
+             window.{class}:not(.fullscreen) .browsah-frame > tabview {{ border-radius: {r}px; }}"
+        ));
+    }
+    css
 }
 
 /// Carry out the router's decision for a link. `origin` is the window the link came from (for
@@ -2383,6 +2413,31 @@ fn window_color(workspace: Option<&crate::workspace::Workspace>, profile: Option
     workspace
         .and_then(|w| w.config.color.clone().map(|c| (w.id.clone(), c)))
         .or_else(|| profile.and_then(|p| p.config.color.clone().map(|c| (format!("profile-{}", p.id), c))))
+}
+
+#[cfg(test)]
+mod frame_css_tests {
+    use super::*;
+    use crate::config::FrameConfig;
+
+    fn pair() -> crate::profile::ColorPair {
+        crate::profile::ColorPair::parse("#2a6f97 #61a5c2").unwrap()
+    }
+
+    #[test]
+    fn the_frame_follows_its_options() {
+        let on = workspace_css("ws-a", &pair(), true, &FrameConfig { enabled: true, thickness: 9, radius: 11 });
+        assert!(on.contains("padding: 0 9px 9px 9px") && on.contains("border-radius: 11px") && on.contains("#61a5c2"), "{on}");
+        assert!(on.contains(":not(.fullscreen) .browsah-frame"), "no frame in fullscreen");
+        assert!(on.contains("headerbar"), "the header is tinted either way");
+        for off in [FrameConfig { enabled: false, thickness: 9, radius: 9 }, FrameConfig { enabled: true, thickness: 0, radius: 9 }] {
+            let css = workspace_css("ws-a", &pair(), true, &off);
+            assert!(!css.contains("browsah-frame") && css.contains("headerbar"), "{css}");
+        }
+        // Silly values are held to a sensible range.
+        let big = workspace_css("ws-a", &pair(), false, &FrameConfig { enabled: true, thickness: 900, radius: -5 });
+        assert!(big.contains("padding: 0 40px 40px 40px") && big.contains("border-radius: 0px") && big.contains("#2a6f97"), "{big}");
+    }
 }
 
 #[cfg(test)]

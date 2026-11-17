@@ -66,7 +66,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | text | the workspace id | Display name, shown in the window title. |
-| `color` | colour pair | none | The workspace's accent colour: one colour, two in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. It tints the window's header and tab bar. Without one, the window takes the profile's `color` (if it has one). |
+| `color` | colour pair | none | The workspace's accent colour: one colour, two in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. It tints the window's header and tab bar. Without one, the window takes the profile's `color` (if it has one). The colour also frames the page: a border of the same colour down its sides and along its bottom, with rounded page corners, maximized or not (fullscreen shows the page alone). The bottom is as thick as the sides, except while the find bar is shown there. Its presence, thickness and radius are the `window.frame` options, which a workspace can set for itself (`window:` in its `workspace.yaml`). |
 | `nav` | map | all shown | Which navigation controls the window shows (below). |
 | `nav.back` | bool | `true` | Show the back button (and allow `Alt+Left`). |
 | `nav.forward` | bool | `true` | Show the forward button (and allow `Alt+Right`). |
