@@ -50,18 +50,20 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           name="browsah-${version}-linux-${{ matrix.arch }}"
-          rel=target/release
+          # cef-dll-sys unpacks CEF under target/release/build/; it is not copied next to the binary here.
+          cef="$(dirname "$(find target/release/build -path '*/out/cef_linux_*/libcef.so' | head -n1)")"
+          test -f "$cef/libcef.so" || { echo "libcef.so not found under target/release/build" >&2; exit 1; }
           mkdir -p "dist" "stage/${name}"
-          for f in browsah libcef.so libvk_swiftshader.so libvulkan.so.1 vk_swiftshader_icd.json \
+          cp target/release/browsah "stage/${name}/"
+          for f in libcef.so libvk_swiftshader.so libvulkan.so.1 vk_swiftshader_icd.json \
                    icudtl.dat v8_context_snapshot.bin resources.pak chrome_100_percent.pak \
-                   chrome_200_percent.pak; do
-            cp "$rel/$f" "stage/${name}/"
+                   chrome_200_percent.pak CREDITS.html; do
+            cp "$cef/$f" "stage/${name}/"
           done
-          cp -r "$rel/locales" "stage/${name}/locales"
+          cp -r "$cef/locales" "stage/${name}/locales"
           # libcef.so is 1.4 GB with debug info and about 470 MB without (gzipped: 140 MB).
           strip --strip-debug "stage/${name}/libcef.so"
           cp LICENSE "stage/${name}/"
-          cp "$rel/CREDITS.html" "stage/${name}/" 2>/dev/null || true
           tar -C stage -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
           ls -lh dist
