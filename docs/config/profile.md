@@ -46,7 +46,7 @@ chromium:
 |---|---|---|---|
 | `name` | text | the profile id | Display name, used in the `.desktop` entry (`Browsah (Work)`) and the icon's initial. |
 | `default_workspace` | text | none | The [workspace](workspace.md) opened when the profile starts with no workspace named and none remembered from the last run. Must be the id of an existing workspace. |
-| `color` | colour pair | derived from the id | The profile's icon colour. Either one colour, two colours in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. Colours are `#rgb` or `#rrggbb`. |
+| `color` | colour pair | derived from the id | The profile's icon colour, which also tints the windows that have no colour of their own (windows with no workspace, and workspaces that set none); a workspace's own colour wins in its window. Either one colour, two colours in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. Colours are `#rgb` or `#rrggbb`. |
 
 ```yaml
 name: Work

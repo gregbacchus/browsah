@@ -1252,7 +1252,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
 
     // A workspace window's navigation controls and tab rules; ephemeral windows have everything.
     let ws_config = workspace.as_ref().map(|w| w.config.clone()).unwrap_or_default();
-    let workspace_color = workspace.as_ref().and_then(|w| w.config.color.clone().map(|c| (w.id.clone(), c)));
+    let workspace_color = window_color(workspace.as_ref(), PROFILE.with(|p| p.borrow().clone()).as_ref());
     let nav = ws_config.nav.clone();
     let back = icon_button("go-previous-symbolic", "Back (Alt+Left)", "win.back");
     let forward = icon_button("go-next-symbolic", "Forward (Alt+Right)", "win.forward");
@@ -2324,6 +2324,38 @@ fn shell_of(window: &adw::ApplicationWindow) -> Option<Rc<Shell>> {
 /// The workspace id of the window, if it shows one.
 fn windows_workspace_id(window: &adw::ApplicationWindow) -> Option<String> {
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).and_then(|s| s.workspace.as_ref().map(|w| w.id.clone())))
+}
+
+/// The colour a window is tinted with: its workspace's, else its profile's (an ephemeral window, or a workspace with
+/// no colour of its own), else none. The string names the style class.
+fn window_color(workspace: Option<&crate::workspace::Workspace>, profile: Option<&crate::profile::Profile>) -> Option<(String, crate::profile::ColorPair)> {
+    workspace
+        .and_then(|w| w.config.color.clone().map(|c| (w.id.clone(), c)))
+        .or_else(|| profile.and_then(|p| p.config.color.clone().map(|c| (format!("profile-{}", p.id), c))))
+}
+
+#[cfg(test)]
+mod colour_tests {
+    use super::*;
+
+    fn profile(color: Option<&str>) -> crate::profile::Profile {
+        crate::profile::Profile { id: "work".into(), config: crate::profile::ProfileConfig { color: color.map(|c| crate::profile::ColorPair::parse(c).unwrap()), ..Default::default() }, dir: "/tmp/p".into() }
+    }
+
+    fn ws(color: Option<&str>) -> crate::workspace::Workspace {
+        let text = color.map(|c| format!("color: \"{c}\"\n")).unwrap_or_default();
+        crate::workspace::Workspace { id: "mail".into(), config: crate::workspace::parse_config(&text).unwrap(), dir: "/tmp/p/workspaces/mail".into() }
+    }
+
+    #[test]
+    fn a_window_takes_its_workspaces_colour_then_its_profiles() {
+        let p = profile(Some("#4a2f80"));
+        assert_eq!(window_color(Some(&ws(Some("#2a6f97"))), Some(&p)).map(|c| c.0), Some("mail".to_owned()), "the workspace's own");
+        assert_eq!(window_color(Some(&ws(None)), Some(&p)).map(|c| c.0), Some("profile-work".to_owned()), "a workspace without one: the profile's");
+        assert_eq!(window_color(None, Some(&p)).map(|c| c.0), Some("profile-work".to_owned()), "an ephemeral window: the profile's");
+        assert!(window_color(None, Some(&profile(None))).is_none(), "no colour anywhere: none");
+        assert!(window_color(Some(&ws(None)), None).is_none());
+    }
 }
 
 /// Which workspaces a plain start opens: those open at last exit that still exist, else the
