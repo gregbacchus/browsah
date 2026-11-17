@@ -4,6 +4,7 @@ mod input;
 mod history;
 mod downloads;
 mod find;
+mod fullscreen;
 mod install;
 mod zoom;
 mod jsdialog;
@@ -177,6 +178,11 @@ pub struct Shell {
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
     find: find::Bar,
+    /// The window's bars (hidden in fullscreen), and whether a page asked for the fullscreen.
+    toolbar: adw::ToolbarView,
+    page_fullscreen: Cell<bool>,
+    /// Whether the window has been asked to fill the screen (the compositor's answer arrives later).
+    fullscreen: Cell<bool>,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -1086,6 +1092,7 @@ impl Shell {
             ViewEvent::Download { id, name, url, state, cancel } => self.download_event(id, &name, &url, state, cancel),
             ViewEvent::DownloadAsk(q) => self.ask_download(q),
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
+            ViewEvent::Fullscreen(on) => self.set_fullscreen(on, true),
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
             ViewEvent::JsDialogDismissed(view) => self.dismiss_js_dialog(view),
@@ -1297,6 +1304,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),
         find: find_bar,
+        toolbar: toolbar.clone(),
+        page_fullscreen: Cell::new(false),
+        fullscreen: Cell::new(false),
         session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),
@@ -1392,6 +1402,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
     }
+    add_action(&window, "fullscreen", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.toggle_fullscreen();
+            }
+        }
+    });
     add_action(&window, "find", {
         let weak = weak.clone();
         move || {
@@ -1584,6 +1602,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.fullscreen", &["F11"]);
     app.set_accels_for_action("win.find", &["<Ctrl>F"]);
     app.set_accels_for_action("win.find-next", &["<Ctrl>G", "F3"]);
     app.set_accels_for_action("win.find-prev", &["<Ctrl><Shift>G", "<Shift>F3"]);

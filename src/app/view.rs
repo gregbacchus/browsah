@@ -112,6 +112,8 @@ pub enum ViewEvent {
     JsDialogDismissed(u64),
     /// Ctrl and the wheel: zoom in (1) or out (-1).
     Zoom(i32),
+    /// A page entered (true) or left (false) element fullscreen.
+    Fullscreen(bool),
     /// Find in page: how many matches and which one is active (1-based; 0 for none).
     FindResult { count: i32, active: i32 },
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
@@ -674,6 +676,11 @@ wrap_display_handler! {
     struct ViewDisplay { shared: Arc<Shared> }
 
     impl DisplayHandler {
+        // A page asks to fill the screen (a video's fullscreen button, `requestFullscreen`) or is leaving it.
+        fn on_fullscreen_mode_change(&self, _b: Option<&mut Browser>, fullscreen: ::std::os::raw::c_int) {
+            send(self.shared.id, ViewEvent::Fullscreen(fullscreen != 0));
+        }
+
         fn on_address_change(&self, _b: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
             // Only the main frame's address is the page's address.
             if frame.is_some_and(|f| f.is_main() != 0) {
@@ -1778,9 +1785,19 @@ impl BrowserView {
         self.input_events.get()
     }
 
+    /// Ask the page to leave fullscreen (it was the browser's key, not the page's, that was pressed).
+    pub fn exit_page_fullscreen(&self) {
+        self.cdp_eval("document.fullscreenElement ? document.exitFullscreen() : 0");
+    }
+
     /// Run a JavaScript expression in the page (DevTools `Runtime.evaluate`, by value); returns the id to
     /// read the result with `cdp_result`. Posted to CEF's UI thread.
     pub fn cdp_eval(&self, expression: &str) -> i32 {
+        self.cdp_eval_as(expression, false)
+    }
+
+    /// As `cdp_eval`; `gesture` runs it as if the person had just clicked (for what needs a user gesture).
+    pub fn cdp_eval_as(&self, expression: &str, gesture: bool) -> i32 {
         let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
             let h = HostHandle(h.0.clone());
@@ -1791,6 +1808,9 @@ impl BrowserView {
                 params.set_string(Some(&CefString::from("expression")), Some(&CefString::from(expression.as_str())));
                 params.set_bool(Some(&CefString::from("returnByValue")), 1);
                 params.set_bool(Some(&CefString::from("awaitPromise")), 1);
+                if gesture {
+                    params.set_bool(Some(&CefString::from("userGesture")), 1);
+                }
                 h.0.execute_dev_tools_method(id, Some(&CefString::from("Runtime.evaluate")), Some(&mut params));
             });
         }

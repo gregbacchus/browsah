@@ -90,7 +90,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -351,6 +351,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("find") {
         run_find(shell, r).await;
+    }
+    if wants("fullscreen") {
+        run_fullscreen(shell, r).await;
     }
 }
 
@@ -2447,4 +2450,42 @@ async fn run_find(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.find-close", None);
     glib::timeout_future(Duration::from_millis(300)).await;
     r.check("closing hides the bar and clears the label", !shell.find.is_open() && shell.find_label().is_empty() && shell.view().find_result() == (0, 0), || shell.find_label());
+}
+
+/// Fullscreen: F11 fills the screen and hides the bars; a page's own request (an element's fullscreen) does too
+/// and ends when the page leaves it.
+async fn run_fullscreen(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    shell.view().navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "Page B" }).await;
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("a window starts out not fullscreen, with its bars", !shell.is_fullscreen() && shell.bars_shown(), || String::new());
+    let _ = WidgetExt::activate_action(&shell.window, "win.fullscreen", None);
+    r.check("F11 fills the screen and hides the bars", shell.is_fullscreen() && !shell.bars_shown(), || format!("{} {}", shell.is_fullscreen(), shell.bars_shown()));
+    let _ = WidgetExt::activate_action(&shell.window, "win.fullscreen", None);
+    r.check("F11 again restores them", !shell.is_fullscreen() && shell.bars_shown(), || String::new());
+
+    shell.view().cdp_eval_as("document.documentElement.requestFullscreen()", true);
+    let ok = wait_until(10_000, || shell.is_fullscreen()).await;
+    r.check("a page's fullscreen request fills the screen and hides the bars", ok && !shell.bars_shown(), || format!("{} {}", shell.is_fullscreen(), shell.bars_shown()));
+    shell.view().cdp_eval("document.exitFullscreen()");
+    let ok = wait_until(10_000, || !shell.is_fullscreen()).await;
+    r.check("when the page leaves fullscreen the window does too", ok && shell.bars_shown(), || format!("{} {}", shell.is_fullscreen(), shell.bars_shown()));
+
+    shell.view().cdp_eval_as("document.documentElement.requestFullscreen()", true);
+    let _ = wait_until(10_000, || shell.is_fullscreen()).await;
+    let _ = WidgetExt::activate_action(&shell.window, "win.fullscreen", None);
+    let mut page_left = false;
+    for _ in 0..30 {
+        glib::timeout_future(Duration::from_millis(200)).await;
+        let id = shell.view().cdp_eval("String(!!document.fullscreenElement)");
+        let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
+        if shell.view().cdp_result(id).is_some_and(|(_, j)| j.contains("false")) {
+            page_left = true;
+            break;
+        }
+    }
+    r.check("leaving with F11 also makes the page leave its fullscreen", !shell.is_fullscreen() && page_left, || format!("{} {page_left}", shell.is_fullscreen()));
 }

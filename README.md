@@ -25,7 +25,8 @@ a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar
 reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close tab,
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site. `Ctrl+F` finds in the page (`Enter`/`Shift+Enter` or
-`Ctrl+G`/`Ctrl+Shift+G` move between matches, `Esc` closes).
+`Ctrl+G`/`Ctrl+Shift+G` move between matches, `Esc` closes). `F11` fills the screen; so does a video's own
+fullscreen button (the window's bars hide; `Esc` or `F11` leaves).
 
 Page dialogs: `alert`, `confirm` and `prompt` from a page, and the "Leave this page?" question for a page with
 unsaved changes, are shown as a dialog over the window (headed with the page's address); the page waits for the answer.

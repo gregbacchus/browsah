@@ -631,6 +631,18 @@ match-case and whole-word options (none offered), searching a page that is still
 across a tab switch back, the text selection afterwards, and the key bindings on real keys (the test uses the window
 actions).
 
+## Status: fullscreen (2026-11-17)
+
+`DisplayHandler::on_fullscreen_mode_change` becomes a `Fullscreen(bool)` event; `app/fullscreen.rs` sets the window
+fullscreen and hides the top and bottom bars (`ToolbarView::set_reveal_*_bars`). `F11` toggles the window (and, if a page
+had asked for fullscreen, makes the page leave it with `document.exitFullscreen()`). The intent is kept in a `Cell`
+because `gtk::Window::is_fullscreen` only follows the compositor's answer later (a first test read it too early).
+Measured (`--selftest` section `fullscreen`, 6 checks): F11 on and off; a page's `requestFullscreen()` (run with a user
+gesture through DevTools, `cdp_eval_as`) fills the window and hides the bars; the page leaving restores them; F11
+while the page is fullscreen makes the page leave. **Not measured:** a real video's fullscreen button, `Esc` from the
+keyboard (Chromium's own handling), the compositor's behaviour on a second monitor, hover-to-reveal bars, a page
+requesting fullscreen from a background tab or a modal, keeping the screen awake during video.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and
