@@ -9,21 +9,27 @@ use gtk::gdk;
 pub struct View {
     pub size: (i32, i32),
     pub scale: f32,
-    /// Render at device resolution (see `k`).
+    /// Render at device resolution (see `dsf`).
     pub backing: bool,
 }
 
 impl View {
-    /// Factor between logical size and the pixel size CEF renders at. With "backing scale" CEF is
-    /// told the view is device-sized at 1x, so frames match the screen's physical pixels.
+    /// Factor between logical pixels and the units of input coordinates, popup rectangles and menu positions: 1.
+    /// CEF is given the real device scale factor (`dsf`) and a logical view size, paints at device resolution and
+    /// works in logical (DIP) coordinates, so nothing needs converting.
     pub fn k(&self) -> f32 {
-        if self.backing && self.scale > 1.0 { self.scale } else { 1.0 }
+        1.0
     }
 
-    /// Size CEF renders at: logical size times `k`.
+    /// The view's size as CEF is told it (logical pixels; the frames are this times `dsf`).
     pub fn device_size(&self) -> (i32, i32) {
-        let k = self.k();
-        (((self.size.0 as f32 * k).round() as i32).max(1), ((self.size.1 as f32 * k).round() as i32).max(1))
+        (self.size.0.max(1), self.size.1.max(1))
+    }
+
+    /// The device scale factor CEF is told: the screen's, when rendering at device resolution (sharp), else 1
+    /// (CEF renders at 1x and the picture is stretched, which looks blurry).
+    pub fn dsf(&self) -> f32 {
+        if self.backing && self.scale > 1.0 { self.scale } else { 1.0 }
     }
 }
 

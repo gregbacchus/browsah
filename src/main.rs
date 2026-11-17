@@ -149,9 +149,10 @@ fn main() {
     // `--ozone-platform=wayland` unless the user chose a platform themselves.
     let mut flags: Vec<String> = cfg.chromium.flags.clone();
     flags.extend(opts.flags.iter().cloned());
-    if !flags.iter().any(|f| f.starts_with("--ozone-platform")) {
-        flags.insert(0, "--ozone-platform=wayland".into());
-    }
+    // BROWSAH_NO_SCALE_FIX=1 leaves Chromium's Wayland fractional-scale feature on (to reproduce the HiDPI problem).
+    let flags = cef_rt::with_default_flags(flags, std::env::var_os("BROWSAH_NO_SCALE_FIX").is_none());
+
+    cef_rt::forget_saved_zoom(&profile.cef_dir());
 
     // Chromium names the launcher entry in the desktop notifications it sends (the `desktop-entry` hint) from
     // this variable, so a page's notifications are shown under the profile's own name and icon, and a click

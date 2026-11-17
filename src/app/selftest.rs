@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -389,6 +389,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("menu") {
         run_menu(shell, r).await;
+    }
+    if wants("hidpi") {
+        run_hidpi(shell, r).await;
     }
 }
 
@@ -1023,6 +1026,7 @@ fn start_test_server() -> u16 {
                 "/icon.svg" => ("200 OK", "Content-Type: image/svg+xml\r\n".to_owned(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"#336699\"/></svg>".to_owned()),
                 "/find.html" => ("200 OK", String::new(), "<!doctype html><title>Find test</title><p>one needle here</p><p>another Needle there</p><p>and a third needle</p>".to_owned()),
                 "/white.html" => ("200 OK", String::new(), "<!doctype html><title>White</title><body style=\"background:#fff;color:#000\">white page".to_owned()),
+                "/tall.html" => ("200 OK", String::new(), "<!doctype html><title>Tall</title><body style=\"background:#fff;color:#000;margin:0\"><div style=\"height:3000px\">tall page <button>button</button> <input value=text></div>".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -2554,7 +2558,9 @@ async fn run_devtools(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
     let ok = wait_until(10_000, || view.has_dev_tools()).await;
     r.check("F12 opens the developer tools", ok, || "not open".into());
-    glib::timeout_future(Duration::from_millis(1500)).await;
+    // (BROWSAH_DEVTOOLS_HOLD_MS keeps the tools open longer, to inspect them from outside.)
+    let hold = std::env::var("BROWSAH_DEVTOOLS_HOLD_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
+    glib::timeout_future(Duration::from_millis(hold)).await;
     let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
     let ok = wait_until(10_000, || !view.has_dev_tools()).await;
     r.check("F12 again closes them", ok, || "still open".into());
@@ -2703,4 +2709,66 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     });
     r.check("it lists the profile's workspaces to open", sub_has_workspace, || format!("{labels:?}"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// HiDPI: a page's device pixel ratio, frame size and scrollbar thickness follow the display's scale. Run with
+/// `BROWSAH_FORCE_SCALE=2` to test a scale-2 display on a 1x screen.
+async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    shell.view().navigate(&format!("http://localhost:{port}/tall.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "Tall" }).await;
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let tab = shell.current().expect("tab");
+    let num = |js: &'static str| {
+        let tab = tab.clone();
+        async move { eval_string(&tab, js).await.and_then(|v| v.parse::<f64>().ok()).unwrap_or(-1.0) }
+    };
+    let dpr = num("String(window.devicePixelRatio)").await;
+    let bar_css = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
+    let scale = std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or_else(|| shell.window.native().and_then(|n| n.surface()).map(|s| s.scale()).unwrap_or(1.0));
+    println!("hidpi: scale {scale}, devicePixelRatio {dpr}, scrollbar {bar_css} CSS px, so {} device px (a logical 15 px bar is {} device px)", bar_css * dpr, 15.0 * scale);
+    let sw = num("String(screen.width)").await;
+    let sh = num("String(screen.height)").await;
+    println!("hidpi: page sees screen {sw}x{sh}, depth {}", num("String(screen.colorDepth)").await);
+    let iw = num("String(window.innerWidth)").await;
+    let ih = num("String(window.innerHeight)").await;
+    let fs = num("String(parseFloat(getComputedStyle(document.body).fontSize))").await;
+    let (pw, ph) = shell.view().widget_size();
+    let frame = shell.view().frame_size();
+    println!("hidpi: view {pw}x{ph} logical; page innerWidth x innerHeight {iw}x{ih} CSS px; body font {fs} CSS px; frame {frame:?} px (expected about {}x{} px)", (pw as f64 * scale).round(), (ph as f64 * scale).round());
+    r.check("the page's layout width is the window's logical width", (iw - pw as f64).abs() < 20.0, || format!("innerWidth {iw}, view {pw}"));
+    r.check("frames are rendered at device resolution (not blurry)", frame.is_some_and(|(w, h)| (w as f64 - pw as f64 * scale).abs() < 4.0 && (h as f64 - ph as f64 * scale).abs() < 4.0), || format!("{frame:?} vs {}x{}", pw as f64 * scale, ph as f64 * scale));
+    r.check("the page's devicePixelRatio is the display scale", (dpr - scale).abs() < 0.05, || format!("{dpr} vs {scale}"));
+    r.check("the scrollbar is as thick in device pixels as on a 1x screen scaled up (15 logical px)", (bar_css * dpr - 15.0 * scale).abs() < 1.5, || format!("{} device px, expected {}", bar_css * dpr, 15.0 * scale));
+    shot(&shell.window, "hidpi-tall-page");
+    // The page frame exactly as CEF delivered it (device pixels), to look at the sharpness of text.
+    if let (Some(dir), Some(tex)) = (std::env::var_os("BROWSAH_SHOTS"), shell.view().picture_texture()) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = tex.save_to_png(std::path::Path::new(&dir).join("hidpi-frame.png"));
+        // A magnified (4x, nearest neighbour) crop of the top-left corner, where the text is.
+        let mut dl = gtk::gdk::TextureDownloader::new(&tex);
+        dl.set_format(gtk::gdk::MemoryFormat::R8g8b8a8);
+        let (bytes, stride) = dl.download_bytes();
+        let (cw, ch, z) = (220usize, 50usize, 4usize);
+        let mut out = vec![0u8; cw * z * ch * z * 4];
+        for y in 0..ch * z {
+            for x in 0..cw * z {
+                let src = (y / z) * stride + (x / z) * 4;
+                let dst = (y * cw * z + x) * 4;
+                out[dst..dst + 4].copy_from_slice(&bytes[src..src + 4]);
+            }
+        }
+        let crop = gtk::gdk::MemoryTexture::new((cw * z) as i32, (ch * z) as i32, gtk::gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(out), cw * z * 4);
+        let _ = crop.save_to_png(std::path::Path::new(&dir).join("hidpi-crop.png"));
+    }
+    // Another site (another process): the scale is still right.
+    let before = st.borrow().load_cycles;
+    shell.view().navigate(&format!("http://127.0.0.1:{port}/tall.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let dpr2 = num("String(window.devicePixelRatio)").await;
+    let bar2 = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
+    r.check("another site gets the same scale and scrollbar", (dpr2 - scale).abs() < 0.05 && (bar2 * dpr2 - 15.0 * scale).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
 }

@@ -107,7 +107,16 @@ take minutes.
   types inside closures (edition 2021 captures disjoint fields otherwise).
 - `Browser`/`BrowserHost` methods used from the GTK thread must be thread-safe; the frame-rate
   setter and DevTools calls were posted to CEF's UI thread (`post_task`).
-- Render at device resolution on HiDPI (`View::k`) and re-apply zoom after navigation.
+- **HiDPI:** CEF is given a *logical* view size and the *real* device scale factor (`View::dsf`), paints at device resolution and
+  works in logical (DIP) coordinates (`View::k()` is 1). This needs Chromium's `WaylandFractionalScaleV1` feature off
+  (`cef_rt::with_default_flags`); with it on, Chromium ignores the scale CEF reports (docs/research/hidpi-scale.md). Do not zoom the page
+  to fake a scale: scrollbars would stay 1x. Only the person's own zoom is applied (`apply_zoom`, re-applied after navigation, since CEF
+  resets zoom when the host changes). Chromium saves per-host zoom in the profile's `Preferences`; start-up clears it
+  (`cef_rt::forget_saved_zoom`) because hosts browsah never sets a zoom for (DevTools, error pages) would otherwise keep a stale one.
+  Test aids: `BROWSAH_FORCE_SCALE=2` pretends a display scale; `BROWSAH_NO_SCALE_FIX=1` leaves the Wayland feature on (the `hidpi` section
+  then fails, which is the point); `scripts/devtools-probe.py` asks the DevTools frontend its own scale (see the note).
+- **Check pictures, not just numbers.** A DevTools emulation attempt passed every numeric check (`devicePixelRatio`, `innerWidth`) while
+  the page was painted at half size; the `hidpi` section now checks the frame size and layout width too, and a picture was looked at.
 - **Licence:** browsah is MIT. Do not add a dependency whose licence is not permissive
   (MIT, Apache-2.0, BSD, ISC, Unicode, Zlib) without asking.
 - **One process per profile.** Chromium locks its cache directory, so a profile (`src/profile.rs`)

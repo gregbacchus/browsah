@@ -112,7 +112,7 @@ wrap_render_handler! {
             let v = sh(|s| s.view);
             let (w, h) = v.device_size();
             let r = Rect { x: 0, y: 0, width: w, height: h };
-            info.device_scale_factor = if v.k() > 1.0 { 1.0 } else { v.scale };
+            info.device_scale_factor = v.dsf();
             info.rect = r.clone();
             info.available_rect = r;
             1

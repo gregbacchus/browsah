@@ -22,7 +22,7 @@ Wayland is a hard requirement and is met.
 | **Use `OnAcceleratedPaint` (dmabuf into `GdkDmabufTexture`) as the main path**, keep `OnPaint` (readback) as a fallback | Zero copy; at 2880x1568 readback copies 1.1 GB/s and uses ~7x the main-process CPU and ~21 % more package power | [spike](cef-osr-wayland-spike.md), [multi-tab](cef-multi-tab-cost.md) |
 | **Run CEF on its own UI thread** (`multi_threaded_message_loop`); never pump it from the GTK loop | Pumping from GTK pins the main thread at 100 % CPU (~10 W at idle) | [multi-tab](cef-multi-tab-cost.md#resolved-the-100--main-thread-spin-its-cause-and-fix) |
 | **Marshal frames to the GTK thread** with `MainContext::invoke`; keep shared view state behind a mutex | CEF callbacks arrive on CEF's thread in the above mode | [multi-tab](cef-multi-tab-cost.md) |
-| **Render at device resolution** (view = logical x scale at 1x, zoom by the scale) | CEF otherwise renders 1x on HiDPI and GTK upscales it, which looks blurry | [spike](cef-osr-wayland-spike.md#hidpi-blurry-frames-and-the-backing-scale-fix) |
+| **Render at device resolution** (logical view + the real device scale factor, with `--disable-features=WaylandFractionalScaleV1`) | CEF paints at the scale itself: sharp, `devicePixelRatio` right, scrollbars right. (The first workaround, zoom by the scale at a 1x view, left scrollbars half size and saved zoom levels.) | [hidpi-scale.md](hidpi-scale.md) |
 | **Bridge the clipboard through GTK** (copy/cut from `on_text_selection_changed`, paste via `ime_commit_text`) | Windowless Chromium's own clipboard never reaches the Wayland clipboard | [input](cef-input.md) |
 | **One CEF browser per tab; hide background tabs (`was_hidden`)** | Hidden tabs cost ~0 W and ~0 CPU; only memory (~45 MB each here) | [multi-tab](cef-multi-tab-cost.md) ; built in the app ([tabs](browser-tabs.md)) |
 | **Cap the frame rate of visible, unfocused tabs** (about 15 fps, 5 for tiny panes), raise on input | 10 busy tabs: 28 W at 60 fps vs 22 W (focused 60 + 9 at 15) vs 15 W (+9 at 5); ramp back to 60 fps in 3-110 ms | [frame rate](cef-variable-frame-rate.md) |
@@ -32,7 +32,7 @@ Wayland is a hard requirement and is met.
 | Problem | Workaround | Status |
 |---|---|---|
 | Native Wayland delivers **no accelerated frames** on AMD/Mesa (`Unable to allocate frame for first frame capture: OOM?`) | `AMD_DEBUG=nodcc` in the environment of the CEF processes (set by the app at start-up) | Measured fix on this GPU; cause suspected (DCC-compressed buffer) not confirmed; Intel analogue `INTEL_DEBUG=noccs` reported by others, untested here; NVIDIA reported to work without one |
-| HiDPI blur | Device-resolution view plus zoom compensation | Verified at scale 2 only |
+| HiDPI blur | Real device scale factor to CEF; Wayland fractional-scale feature off | Verified at native scale 2; 1.5 and 1 only by forcing the scale on the same screen; mixed-DPI monitors untried |
 | Frames never arrive (rare driver cases) | Fall back to `OnPaint` | Built: no accelerated frame within 3 s replaces the view with a readback one ([tabs note](browser-tabs.md#dmabuf-watchdog)); tested only by removing the AMD workaround |
 
 Things that were tried and did **not** matter on Wayland: ANGLE backend choice (GL, EGL, Vulkan),

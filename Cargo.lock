@@ -102,6 +102,7 @@ dependencies = [
  "libc",
  "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
 ]
 

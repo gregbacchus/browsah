@@ -51,7 +51,7 @@ measured costs.
 |---|---|---|---|
 | `rendering.mode` | `accelerated` or `readback` | `accelerated` | `accelerated` imports Chromium's GPU frames directly (no copy). `readback` copies each frame through CPU memory: slower (about 7x the main-process CPU at 2880x1568 in our test) but a fallback if accelerated frames never arrive on your GPU. |
 | `rendering.frame_rate` | integer (fps) | `60` | Maximum frames per second for the page. Clamped to 1 to 120. Lower values save power on animated pages. |
-| `rendering.device_resolution` | bool | `true` | Render at the screen's physical resolution on HiDPI displays. With `false`, pages render at 1x and are stretched, which looks blurry. |
+| `rendering.device_resolution` | bool | `true` | Render at the screen's physical resolution on HiDPI displays (CEF is told the screen's scale factor, so text, images and scrollbars are sharp and the right size). With `false`, CEF is told the scale is 1: pages render at 1x and are stretched, which looks blurry but costs less. |
 
 ```yaml
 rendering:

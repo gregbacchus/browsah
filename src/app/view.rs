@@ -307,7 +307,7 @@ impl Shared {
     fn new(id: u64, device_resolution: bool, accel: bool, frame_rate: i32) -> Arc<Shared> {
         Arc::new(Shared {
             id,
-            view: Mutex::new(View { size: (1280, 800), scale: 1.0, backing: device_resolution }),
+            view: Mutex::new(View { size: (1280, 800), scale: std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0), backing: device_resolution }),
             browser: Mutex::new(None),
             host: Mutex::new(None),
             frames: AtomicU64::new(0),
@@ -450,10 +450,13 @@ wrap_render_handler! {
             let v = *self.shared.view.lock().unwrap();
             let (w, h) = v.device_size();
             let r = Rect { x: 0, y: 0, width: w, height: h };
-            // With device resolution the view is already device-sized, so CEF sees a 1x screen.
-            info.device_scale_factor = if v.k() > 1.0 { 1.0 } else { v.scale };
+            // The real device scale factor (1 when rendering at 1x): CEF paints the view, which is logical, at it.
+            info.device_scale_factor = v.dsf();
             info.rect = r.clone();
             info.available_rect = r;
+            info.depth = 24;
+            info.depth_per_component = 8;
+            info.is_monochrome = 0;
             1
         }
 
@@ -571,6 +574,9 @@ wrap_life_span_handler! {
             let Some(browser) = browser else { return };
             let Some(host) = browser.host() else { return };
             host.was_hidden(self.shared.hidden.load(Ordering::Relaxed) as _);
+            // The browser's view first asks for the screen info before this browser exists (and so gets scale 1):
+            // ask again now, on CEF's UI thread, so the scale we report takes effect.
+            host.notify_screen_info_changed();
             host.was_resized();
             let mut observer = ViewDevTools::new(self.shared.clone());
             if let Some(reg) = host.add_dev_tools_message_observer(Some(&mut observer)) {
@@ -1715,7 +1721,8 @@ impl BrowserView {
             let view = view.clone();
             picture.add_tick_callback(move |w, _| {
                 let (pw, ph) = (w.width(), w.height());
-                let scale = w.native().and_then(|n| n.surface()).map(|s| s.scale() as f32).unwrap_or(1.0);
+                // BROWSAH_FORCE_SCALE=2 pretends the display is scale 2 (to test HiDPI on a 1x screen).
+                let scale = std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).or_else(|| w.native().and_then(|n| n.surface()).map(|s| s.scale() as f32)).unwrap_or(1.0);
                 let changed = {
                     let mut v = view.shared.view.lock().unwrap();
                     let changed = pw > 0 && ph > 0 && (v.size != (pw, ph) || v.scale != scale);
@@ -1731,6 +1738,11 @@ impl BrowserView {
                         eprintln!("browsah: view {pw}x{ph} logical, surface scale {scale}, render scale {k}, page zoom level {:.3}", if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 });
                     }
                     if let Some(h) = view.shared.host.lock().unwrap().as_ref() {
+                        let h2 = HostHandle(h.0.clone());
+                        on_ui(move || {
+                            let h2 = h2;
+                            h2.0.notify_screen_info_changed(); // the scale may have changed: ask for the screen info again
+                        });
                         h.0.was_resized();
                     }
                     view.apply_zoom();
@@ -1987,14 +1999,12 @@ impl BrowserView {
         with_side(self.shared.id, |s| s.frame_hook = hook);
     }
 
-    /// With device resolution the page believes the display is 1x, so zoom by the scale to keep
-    /// CSS pixels the same logical size (CEF zoom factor is 1.2^level). Navigating to another
-    /// host resets the zoom, so call this again after address changes and when loading ends.
+    /// Apply the person's zoom for this page (CEF resets zoom when the host changes, so call this again after
+    /// address changes and when loading ends). The display's scale is not part of it: CEF paints at the device
+    /// scale factor itself.
     pub fn apply_zoom(&self) {
-        let k = self.shared.view.lock().unwrap().k();
-        let device = if k > 1.0 { (k as f64).ln() / 1.2f64.ln() } else { 0.0 };
         let user = self.user_zoom().ln() / 1.2f64.ln();
-        self.with_host(|h| h.set_zoom_level(device + user));
+        self.with_host(|h| h.set_zoom_level(user));
     }
 
     /// Write the page to a PDF file. The result arrives as a `PdfSaved` event. Posted to CEF's UI thread.
@@ -2040,6 +2050,21 @@ impl BrowserView {
     /// The last find-in-page result: (matches, active match).
     pub fn find_result(&self) -> (i32, i32) {
         *self.shared.find_result.lock().unwrap()
+    }
+
+    /// The view's logical size.
+    pub fn widget_size(&self) -> (i32, i32) {
+        self.shared.view.lock().unwrap().size
+    }
+
+    /// The frame being shown, as a texture (for the self-test's pictures).
+    pub fn picture_texture(&self) -> Option<gdk::Texture> {
+        self.picture.paintable().and_then(|p| p.downcast::<gdk::Texture>().ok())
+    }
+
+    /// The pixel size of the frame being shown, if there is one.
+    pub fn frame_size(&self) -> Option<(i32, i32)> {
+        self.picture.paintable().map(|p| (p.intrinsic_width(), p.intrinsic_height())).filter(|(w, _)| *w > 0)
     }
 
     /// The person's zoom for this page (1.0 = 100 %).

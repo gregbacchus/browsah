@@ -40,14 +40,6 @@ struct Ui {
     last_texture: Option<gdk::Texture>,
 }
 
-impl Ui {
-    /// Factor between logical size and the pixel size CEF renders at. With "backing scale" CEF
-    /// is told the view is device-sized at 1x, so frames match the screen's physical pixels.
-    fn k(&self) -> f32 {
-        if self.backing && self.scale > 1.0 { self.scale } else { 1.0 }
-    }
-}
-
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
 }
@@ -101,8 +93,7 @@ wrap_render_handler! {
             let v = *VIEW.lock().unwrap();
             let (w, h) = v.device_size();
             let r = Rect { x: 0, y: 0, width: w, height: h };
-            // With backing scale the view is already device-sized, so CEF sees a 1x screen.
-            info.device_scale_factor = if v.k() > 1.0 { 1.0 } else { v.scale };
+            info.device_scale_factor = v.dsf();
             info.rect = r.clone();
             info.available_rect = r;
             1
@@ -295,14 +286,6 @@ fn on_tick(widget: &gtk::Picture, clock: &gdk::FrameClock, seconds: u64, app: &g
         if w > 0 && h > 0 {
             with_host(|host| host.was_resized());
         }
-    }
-    // Backing scale makes the page think the display is 1x, so zoom by the scale to keep CSS
-    // pixels the same logical size (zoom factor = 1.2^level). Re-applied periodically because
-    // navigation resets it; crude, but fine for a spike.
-    let zoom_k = with_ui(|u| (u.k(), u.stats.gtk_frames)).filter(|(k, f)| *k > 1.0 && (resized || f % 30 == 0));
-    if let Some((k, _)) = zoom_k {
-        let level = (k as f64).ln() / 1.2f64.ln();
-        with_host(|host| host.set_zoom_level(level));
     }
     if let Some(r) = report {
         println!("{r}");

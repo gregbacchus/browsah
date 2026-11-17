@@ -128,6 +128,10 @@ failure on its own.
 
 ## HiDPI: blurry frames and the backing-scale fix
 
+> **Superseded 2026-11-17** by [hidpi-scale.md](hidpi-scale.md). The conclusion below that CEF ignores `device_scale_factor` on
+> Linux was caused by Chromium's Wayland fractional-scale feature; with it off the real scale factor works and the zoom
+> compensation described here was removed (it left scrollbars at half size and saved per-host zoom levels).
+
 **Symptom.** On the scale-2 display the output looked low-resolution. The static page reported
 `devicePixelRatio 1` and the frame was 1440x784 px for a 1440x784 *logical* view: CEF rendered
 at 1x and GTK stretched it 2x. This is independent of the paint path.
