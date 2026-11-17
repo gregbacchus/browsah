@@ -683,7 +683,7 @@ locked, bookmark, send-to-workspace, sweep and history sections: 124 checks): gr
 rename and recolour; collapse leaves one stand-in and a real tab selected; the saved records still hold all tabs; expand
 restores order; a collapsed group comes back collapsed after a restart; removing the last tab forgets the group; closing a
 group closes its tabs. **Not measured:** the dialogs (name, rename), the menus themselves, dragging a grouped tab within the bar
-(it can leave its group's run; the dot stays), a new tab from a grouped tab does not join the group, middle-click close of a
+(it can leave its group's run; the dot stays), a page popup (`target=_blank`, `window.open`) from a grouped tab joins its group (built, not driven by a test; other new tabs, such as Ctrl+T, do not), middle-click close of a
 stand-in, many groups, light theme, and no group name chip in the bar (only the dot and, collapsed, the title).
 
 ## Build order after the spikes

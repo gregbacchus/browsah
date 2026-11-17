@@ -122,6 +122,8 @@ has a name and a colour (change them with *Rename group…* and *Group colour*);
 the colour as a dot in front of the title, with the group's name as their tooltip. *Remove from group* takes a tab out
 (a group with no tabs left disappears), *Ungroup* takes them all out, and *Close group* closes its tabs.
 
+A link a page opens in a new tab (`target=_blank`, `window.open`) from a grouped tab joins that group.
+
 *Collapse group* folds the group into a single tab, `▸ Name (3)`, in the group's place; the tabs are kept alive but
 out of sight (they do not count in the bar, are not swept and make no frames). Select the stand-in tab (or close it, or
 choose *Expand group*) to bring them back. A window must keep at least one other tab to show, so the only tabs of a window

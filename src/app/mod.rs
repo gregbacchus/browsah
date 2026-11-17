@@ -1128,7 +1128,11 @@ impl Shell {
                 if self.popup_policy == crate::workspace::PopupPolicy::Modal {
                     self.open_modal_popup(spec);
                 } else if self.allow_new_tabs {
-                    self.adopt_tab(spec);
+                    let opener_group = tab.group.get();
+                    let new = self.adopt_tab(spec);
+                    if opener_group != 0 {
+                        self.assign_group(&new, opener_group); // a link opened from a grouped tab joins its group
+                    }
                 } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
                     // Tabs cannot be opened here: the popup goes to a window of its own, still attached to its opener.
                     factory("").adopt_tab(spec);
