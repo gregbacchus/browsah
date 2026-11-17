@@ -685,13 +685,27 @@ impl Shell {
     /// Show a short message over the page.
     /// Tell the next view this window creates where to keep its site data: its own folder for an isolated
     /// workspace, otherwise the profile's.
-    pub(crate) fn prepare_storage(&self) {
-        let dir = match &self.workspace {
+    /// The folder of this window's own site data, if it has one.
+    fn storage_dir(&self) -> Option<std::path::PathBuf> {
+        match &self.workspace {
             Some(w) if self.settings.borrow().storage == config::Storage::Isolated => {
                 PROFILE.with(|p| p.borrow().as_ref().map(|p| p.cef_dir().join("workspaces").join(&w.id)))
             }
             _ => None,
-        };
+        }
+    }
+
+    /// Forget the cookies `cookies:` marks `session`, when this window is the last to use its store.
+    pub(crate) fn end_session_cookies(self: &Rc<Self>) {
+        let dir = self.storage_dir();
+        if dir.is_none() && windows().iter().any(|w| !Rc::ptr_eq(w, self) && w.storage_dir().is_none()) {
+            return; // other windows still use the profile's cookies
+        }
+        view::end_session_cookies(dir.as_deref(), self.settings.borrow().cookies.clone());
+    }
+
+    pub(crate) fn prepare_storage(&self) {
+        let dir = self.storage_dir();
         view::set_next_storage(dir);
     }
 
@@ -1501,6 +1515,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move |_| {
             if let Some(s) = shell.upgrade() {
                 s.record_window_closed();
+                s.end_session_cookies();
                 s.save_on_close(); // before the browsers close
                 s.close_all();
             }

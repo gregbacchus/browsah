@@ -158,10 +158,10 @@ Which sites' cookies are used. A denied site's cookies are neither sent with its
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `cookies.default` | `allow` or `deny` | `allow` | For sites no rule covers. `deny` makes the rules an allow list. |
+| `cookies.default` | `allow`, `session` or `deny` | `allow` | For sites no rule covers. `deny` makes the rules an allow list; `session` makes every site's cookies forgotten at the end of the session. |
 | `cookies.rules` | list | none | Rules, tried in order; the first whose `match` fits decides. |
 | `cookies.rules[].match` | list of text | none | Address patterns as for a pinned tab's scope (`tracker.example.com`, `*.ads.example`, `shop.example.org/cart/*`); any may match. |
-| `cookies.rules[].action` | `allow` or `deny` | none (required) | What to do with cookies of matching sites. |
+| `cookies.rules[].action` | `allow`, `session` or `deny` | none (required) | What to do with cookies of matching sites. `session`: they work normally while you browse, and are deleted when the window closes (or, for the profile's shared storage, when the last window using it closes), so nothing is kept for next time. Cookies a crash left behind are removed at the next close. |
 
 ```yaml
 cookies:
@@ -169,6 +169,8 @@ cookies:
   rules:
     - match: ["tracker.example.com", "*.ads.example"]
       action: deny
+    - match: ["news.example.com"]
+      action: session       # works while open, forgotten on close
 ```
 
 ## `gpu`

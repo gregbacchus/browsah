@@ -204,6 +204,43 @@ pub fn set_next_storage(dir: Option<std::path::PathBuf>) {
     NEXT_STORAGE.with(|s| *s.borrow_mut() = dir);
 }
 
+wrap_cookie_visitor! {
+    struct SessionCookies { rules: crate::cookies::CookiesConfig }
+
+    impl CookieVisitor {
+        fn visit(&self, cookie: Option<&Cookie>, _count: ::std::os::raw::c_int, _total: ::std::os::raw::c_int, delete_cookie: Option<&mut ::std::os::raw::c_int>) -> ::std::os::raw::c_int {
+            if let (Some(c), Some(del)) = (cookie, delete_cookie) {
+                let domain = c.domain.to_string();
+                let url = format!("https://{}/", domain.trim_start_matches('.'));
+                if self.rules.decide(&url) == crate::cookies::Action::Session {
+                    *del = 1;
+                }
+            }
+            1
+        }
+    }
+}
+
+/// Delete the cookies the rules say to forget at the end of a session, from the folder's store (`None`:
+/// the profile's own), then write the store to disk.
+pub fn end_session_cookies(storage: Option<&std::path::Path>, rules: crate::cookies::CookiesConfig) {
+    if !rules.has_session_rules() {
+        return;
+    }
+    let rc = match storage {
+        Some(dir) => CONTEXTS.with(|c| c.borrow().get(dir).cloned()),
+        None => request_context_get_global_context(),
+    };
+    let Some(rc) = rc else { return };
+    on_ui(move || {
+        if let Some(manager) = rc.cookie_manager(None) {
+            let mut visitor = SessionCookies::new(rules);
+            manager.visit_all_cookies(Some(&mut visitor));
+            manager.flush_store(None);
+        }
+    });
+}
+
 /// The CEF request context for a folder, made on first use. Its folder must lie inside the profile's CEF folder.
 fn context_for(dir: &std::path::Path) -> Option<RequestContext> {
     CONTEXTS.with(|c| {
@@ -696,12 +733,12 @@ wrap_cookie_access_filter! {
         // address (`cookies:` in the configuration).
         fn can_send_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (self.shared.cookies.lock().unwrap().decide(&url) == crate::cookies::Action::Allow) as _
+            (self.shared.cookies.lock().unwrap().decide(&url) != crate::cookies::Action::Deny) as _
         }
 
         fn can_save_cookie(&self, _b: Option<&mut Browser>, _f: Option<&mut Frame>, request: Option<&mut Request>, _resp: Option<&mut Response>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
             let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
-            (self.shared.cookies.lock().unwrap().decide(&url) == crate::cookies::Action::Allow) as _
+            (self.shared.cookies.lock().unwrap().decide(&url) != crate::cookies::Action::Deny) as _
         }
     }
 }

@@ -3,6 +3,7 @@
 //! `cookies:` in the configuration (any layer, so also per workspace) allows or denies cookies by the
 //! address they travel with: a denied site's cookies are neither sent with requests nor saved from
 //! responses. The rules are applied by a cookie filter on CEF's network thread (`app/view.rs`).
+//! `session` is a middle way: cookies work normally but are deleted when the window closes.
 //! (Other site data, such as local storage, cannot be filtered this way; a workspace can instead keep
 //! all of it apart with `storage: isolated`.)
 
@@ -13,6 +14,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Allow,
+    /// Used while the browser is open, then forgotten when the window closes (and not kept from an earlier run).
+    Session,
     Deny,
 }
 
@@ -49,6 +52,11 @@ impl CookiesConfig {
     }
 
     /// True when nothing is filtered (the filter can be skipped).
+    /// True when some rule wants cookies forgotten at the end of the session.
+    pub fn has_session_rules(&self) -> bool {
+        self.default == Action::Session || self.rules.iter().any(|r| r.action == Action::Session)
+    }
+
     pub fn is_open(&self) -> bool {
         self.default == Action::Allow && self.rules.is_empty()
     }
@@ -88,6 +96,16 @@ mod tests {
         assert_eq!(c.decide("https://bank.example/login"), Action::Allow);
         assert_eq!(c.decide("https://news.example/"), Action::Deny);
         assert!(!c.is_open());
+    }
+
+    #[test]
+    fn session_rules_are_found_and_decided() {
+        let c = cfg("rules:\n  - match: ['news.example']\n    action: session\n");
+        assert!(c.has_session_rules() && !c.is_open());
+        assert_eq!(c.decide("https://news.example/"), Action::Session);
+        assert_eq!(c.decide("https://other.example/"), Action::Allow);
+        assert!(!CookiesConfig::default().has_session_rules());
+        assert!(cfg("default: session\n").has_session_rules());
     }
 
     #[test]

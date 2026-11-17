@@ -504,7 +504,15 @@ JavaScript-set `document.cookie` for a denied site (the filter sees network cook
 CEF `RequestContext` whose `cache_path` is `<profile>/cef/workspaces/<id>` (must lie under CEF's root cache
 folder), made on first use and cached per folder. Measured (`--selftest`, 4 checks): shared workspaces see each
 other's cookie, an isolated one does not see the profile's, keeps its own, and two isolated ones do not see
-each other's. Applies to tabs created after the setting changes. Not measured: persistence of an isolated
+each other's. Applies to tabs created after the setting changes. **Session cookies** (`action: session`): the filter allows them; when a window closes, `end_session_cookies`
+visits the window's cookie store (the profile's, if no other window shares it; an isolated workspace's own)
+and deletes cookies whose domain a `session` rule matches, then flushes the store. CEF cannot rewrite a cookie's
+expiry in the filter, hence delete-on-close. Measured (`--selftest`, 3 checks, isolated workspaces): the cookie
+works while open, is gone after close and reopen; an `allow` one stays. Not measured: the profile's shared store
+(same code, `None` storage), quitting the whole browser (the delete runs on CEF's thread as the window closes and
+may race shutdown), and cookies a crash leaves (removed at the next close, not at start-up).
+
+Not measured: persistence of an isolated
 workspace's cookies across a restart, and the disk space of many contexts. Caveat: permission answers Chromium
 remembers and the per-site content settings are per context, and browsah clears them per load anyway.
 

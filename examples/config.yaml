@@ -50,10 +50,12 @@ downloads:
   ask: false                # ask where to save each file
 
 cookies:
-  default: allow            # allow | deny for sites no rule covers
+  default: allow            # allow | session | deny for sites no rule covers
   rules:                    # first matching rule decides
     - match: ["tracker.example.com", "*.ads.example"]
       action: deny
+    - match: ["news.example.com"]
+      action: session       # cookies work, but are forgotten when the window closes
 
 input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000

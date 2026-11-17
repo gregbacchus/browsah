@@ -244,6 +244,7 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     run_downloads(shell, r).await;
     run_cookies(shell, r).await;
     run_storage(shell, r).await;
+    run_session_cookies(shell, r).await;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1865,6 +1866,59 @@ async fn run_storage(shell: &Rc<Shell>, r: &mut Report) {
     r.check("an isolated workspace keeps its own cookies", c.as_deref() == Some("Cookies [ck=1]"), || format!("{c:?}"));
     let d = show("is2").await;
     r.check("two isolated workspaces do not see each other's cookies", d.as_deref() == Some("Cookies []"), || format!("{d:?}"));
+    for w in super::windows() {
+        if !Rc::ptr_eq(&w, shell) {
+            w.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ids {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// `session` cookies work while the window is open and are gone when it has been closed and reopened.
+async fn run_session_cookies(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let ids = ["se1", "ke1"];
+    for id in ids {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let action = if id == "se1" { "session" } else { "allow" };
+        std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\nstorage: isolated\ncookies:\n  rules:\n    - match: ['localhost']\n      action: {action}\n")).expect("ws");
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    for (id, kept) in [("se1", false), ("ke1", true)] {
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let ok = wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+        let Some(ws) = find(id) else { r.check("a session-cookie workspace opens", ok, || "not open".into()); continue };
+        let tab = ws.current().expect("tab");
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-set"));
+        wait_until(15_000, || tab.state.borrow().title == "Cookie set" && !tab.state.borrow().loading).await;
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-show"));
+        wait_until(15_000, || tab.state.borrow().title.starts_with("Cookies [") && !tab.state.borrow().loading).await;
+        let during = tab.state.borrow().title.clone();
+        r.check("a session cookie works while the window is open", during == "Cookies [ck=1]", || during.clone());
+        ws.window.close();
+        let _ = wait_until(5_000, || find(id).is_none()).await;
+        glib::timeout_future(Duration::from_millis(1000)).await;
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
+        let Some(ws) = find(id) else { continue };
+        let tab = ws.current().expect("tab");
+        tab.view().navigate(&format!("http://localhost:{port}/cookie-show"));
+        wait_until(15_000, || tab.state.borrow().title.starts_with("Cookies [") && !tab.state.borrow().loading).await;
+        let after = tab.state.borrow().title.clone();
+        let want = if kept { "Cookies [ck=1]" } else { "Cookies []" };
+        r.check(if kept { "an allowed cookie is still there after the window is reopened" } else { "a session cookie is gone after the window is closed and reopened" }, after == want, || after.clone());
+    }
     for w in super::windows() {
         if !Rc::ptr_eq(&w, shell) {
             w.window.close();
