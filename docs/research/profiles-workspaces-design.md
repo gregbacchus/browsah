@@ -516,6 +516,26 @@ Not measured: persistence of an isolated
 workspace's cookies across a restart, and the disk space of many contexts. Caveat: permission answers Chromium
 remembers and the per-site content settings are per context, and browsah clears them per load anyway.
 
+## Status: web apps (2026-11-17)
+
+**Built as a kind of workspace**, not a fourth schema: a `workspace.yaml` with an `app:` section (`url`, `scope`,
+`display`, `icon`, `id`) is a web app. `apply_app` fills in the pinned start tab limited to the scope, no new
+tabs, modal popups and the controls for `display`; the app lives in `workspaces/<id>/`, so storage, cookies,
+permissions, routing and tab restore all work unchanged. `browsah app add|list|remove|install` creates one and writes
+`be.geee.browsah.<profile>.<id>.desktop` and an icon (given, downloaded from the manifest, or generated). The
+window calls `WaylandToplevel::set_application_id` when mapped. *Install as web app…* in the tab menu reads
+`Page.getAppManifest`, asks for the name, downloads the icon and does the same as `app add`.
+
+Measured (`--selftest`, 30 checks in sections `webapp` and `install`): the app opens on its start page with one
+pinned tab, no address bar, no new tabs, modal popups; a link off the app's site opens in its own window; the
+manifest is read, the icon arrives as PNG (needs `as_png`'s size outputs), the saved configuration matches and the
+installed app opens. With `WAYLAND_DEBUG=client` the window sent `set_app_id("be.geee.browsah.work")` and then
+`set_app_id("be.geee.browsah.work.mail")` (a temporary data directory, the real binary).
+**Not verified:** that GNOME Shell groups the window under the app's own launcher entry and icon (needs a look at
+the dash), the confirmation dialog in real use (the self-test calls the functions behind it), icon quality from a
+real site (only an SVG on a local server was tried), manifest shortcuts, `launch_handler`, protocol handlers
+(not used), a later import that compares the saved `id`, a profile badge on the icon.
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

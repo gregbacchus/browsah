@@ -19,6 +19,13 @@ browsah app remove mail --profile=work --yes
 and the icon (the file given with `--icon`, or a generated one from the colour and the first letter of the name).
 Start it from the launcher, or with `browsah --profile=<profile> --workspace=<id>`.
 
+**Installing from a page.** Right-click a tab and choose *Install as web app…*. The page's web manifest is read
+(through DevTools, as Chromium sees it): its name, start page, scope, display mode, theme colour and the best icon.
+You are shown the name and start page and can change the name before anything is saved; a site without a
+manifest can be installed too, as its own page. The result is exactly what `browsah app add` makes. The manifest
+is the site's own claim, so it is read once, at install time: the saved configuration is yours to edit, and
+the site cannot change the app later. Icons marked only `maskable` or `monochrome` are not used (GNOME does not mask).
+
 What the window does:
 
 - The start page is the one **pinned tab**, limited to the app's scope (by default the start page's site).

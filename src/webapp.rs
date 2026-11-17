@@ -38,6 +38,9 @@ pub fn desktop_entry(profile: &Profile, w: &Workspace, exe: &Path, libs: &Path) 
 
 /// Write the app's `.desktop` entry and icon (its own icon file if it names one, else a generated one).
 pub fn install(profile: &Profile, w: &Workspace, exe: &Path, libs: &Path) -> std::io::Result<()> {
+    if profile.id == profile::TEST_ID {
+        return Ok(()); // the self-test's throwaway profile never touches the user's launcher
+    }
     let id = app_id(profile, &w.id);
     std::fs::create_dir_all(profile::applications_dir())?;
     std::fs::create_dir_all(profile::icons_dir())?;

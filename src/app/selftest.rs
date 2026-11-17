@@ -188,8 +188,12 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     let _ = wait_until(15_000, title_is("Page B")).await;
     r.check("text being typed survives a page navigation", shell.entry.text() == "half-typed", || shell.entry.text().to_string());
 
-    run_input(shell, r).await;
-    run_scroll(shell, r).await;
+    if wants("input") {
+        run_input(shell, r).await;
+    }
+    if wants("scroll") {
+        run_scroll(shell, r).await;
+    }
     if let Ok(url) = std::env::var("BROWSAH_MANIFEST_TEST") {
         // Spike: load a page and read its web manifest through the DevTools protocol.
         let st = shell.state();
@@ -227,31 +231,83 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
             println!("net test: {:?} -> address {:?} title {:?}", text, st.borrow().address, st.borrow().title);
         }
     }
-    run_tabs(shell, r).await;
-    run_opener(shell, r).await;
-    run_windows(shell, r).await;
-    run_restore(shell, r).await;
-    run_locked(shell, r).await;
-    run_bookmarks(shell, r).await;
-    run_send_to_workspace(shell, r).await;
-    run_routing(shell, r).await;
-    run_modals(shell, r).await;
-    run_history(shell, r).await;
-    run_sweep(shell, r).await;
-    run_closed_workspace_sweep(shell, r).await;
-    run_new_tab_page(shell, r).await;
-    run_permissions(shell, r).await;
-    run_downloads(shell, r).await;
-    run_cookies(shell, r).await;
-    run_storage(shell, r).await;
-    run_session_cookies(shell, r).await;
-    run_session_scope(shell, r).await;
-    run_webapp(shell, r).await;
+    if wants("tabs") {
+        run_tabs(shell, r).await;
+    }
+    if wants("opener") {
+        run_opener(shell, r).await;
+    }
+    if wants("windows") {
+        run_windows(shell, r).await;
+    }
+    if wants("restore") {
+        run_restore(shell, r).await;
+    }
+    if wants("locked") {
+        run_locked(shell, r).await;
+    }
+    if wants("bookmarks") {
+        run_bookmarks(shell, r).await;
+    }
+    if wants("send_to_workspace") {
+        run_send_to_workspace(shell, r).await;
+    }
+    if wants("routing") {
+        run_routing(shell, r).await;
+    }
+    if wants("modals") {
+        run_modals(shell, r).await;
+    }
+    if wants("history") {
+        run_history(shell, r).await;
+    }
+    if wants("sweep") {
+        run_sweep(shell, r).await;
+    }
+    if wants("closed_workspace_sweep") {
+        run_closed_workspace_sweep(shell, r).await;
+    }
+    if wants("new_tab_page") {
+        run_new_tab_page(shell, r).await;
+    }
+    if wants("permissions") {
+        run_permissions(shell, r).await;
+    }
+    if wants("downloads") {
+        run_downloads(shell, r).await;
+    }
+    if wants("cookies") {
+        run_cookies(shell, r).await;
+    }
+    if wants("storage") {
+        run_storage(shell, r).await;
+    }
+    if wants("session_cookies") {
+        run_session_cookies(shell, r).await;
+    }
+    if wants("session_scope") {
+        run_session_scope(shell, r).await;
+    }
+    if wants("webapp") {
+        run_webapp(shell, r).await;
+    }
+    if wants("install") {
+        run_install(shell, r).await;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Input: drive the real GTK controllers by emitting their signals, as GTK does for a user.
 // ---------------------------------------------------------------------------------------------
+
+/// Whether a section of the self-test should run. `BROWSAH_SELFTEST_ONLY=install,cookies` runs only those
+/// (the name is the function's, without `run_`); without it everything runs (about four minutes).
+fn wants(section: &str) -> bool {
+    match std::env::var("BROWSAH_SELFTEST_ONLY") {
+        Ok(list) => list.split(',').any(|s| s.trim() == section),
+        Err(_) => true,
+    }
+}
 
 /// A field of the test page's title (`name:value | name:value`...).
 fn field(title: &str, name: &str) -> String {
@@ -855,6 +911,9 @@ fn start_test_server() -> u16 {
                 ),
                 "/form.html" => ("200 OK", String::new(), "<!doctype html><title>Form</title><input id=i value=\"\"><textarea id=t></textarea>".to_owned()),
                 "/file.txt" => ("200 OK", "Content-Disposition: attachment; filename=\"note.txt\"\r\n".to_owned(), "hello".to_owned()),
+                "/pwa.html" => ("200 OK", String::new(), "<!doctype html><title>PWA page</title><link rel=manifest href=/manifest.json>".to_owned()),
+                "/manifest.json" => ("200 OK", "Content-Type: application/manifest+json\r\n".to_owned(), "{\"name\":\"Test Manifest App\",\"start_url\":\"/pwa.html\",\"scope\":\"/\",\"display\":\"minimal-ui\",\"theme_color\":\"#336699\",\"icons\":[{\"src\":\"/icon.svg\",\"sizes\":\"any\",\"type\":\"image/svg+xml\",\"purpose\":\"any\"}]}".to_owned()),
+                "/icon.svg" => ("200 OK", "Content-Type: image/svg+xml\r\n".to_owned(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"#336699\"/></svg>".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -864,7 +923,8 @@ fn start_test_server() -> u16 {
                 "/redir" => ("302 Found", format!("Location: http://127.0.0.1:{port}/b.html\r\n"), String::new()),
                 _ => ("404 Not Found", String::new(), "<title>Not found</title>".to_owned()),
             };
-            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let content_type = if extra.contains("Content-Type") { "" } else { "Content-Type: text/html\r\n" };
+            let _ = write!(stream, "HTTP/1.1 {status}\r\n{content_type}{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
           });
         }
     });
@@ -2051,5 +2111,44 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     }
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Installing a page as a web app: its manifest is read, and the app, with its icon, is created.
+async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    let view = shell.view();
+    view.navigate(&format!("http://localhost:{port}/pwa.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "PWA page" }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let info = super::install::read_manifest(&view).await;
+    let ok = info.as_ref().is_some_and(|i| i.name == "Test Manifest App" && i.start_url.ends_with("/pwa.html") && i.display == crate::workspace::AppDisplay::Minimal && i.color.as_deref() == Some("#336699") && i.scope == ["localhost"] && i.icons.len() == 1);
+    r.check("the page's web manifest is read through DevTools", ok, || format!("{info:?}"));
+    let Some(info) = info else { return };
+    let id = super::install::save_app(&view, &info, "Test Manifest App").await;
+    r.check("installing creates the web app's workspace", id.as_deref() == Ok("test-manifest-app"), || format!("{id:?}"));
+    let Ok(id) = id else { return };
+    let dir = profile.workspaces_dir().join(&id);
+    let icon = std::fs::read(dir.join("icon.png")).unwrap_or_default();
+    r.check("its icon was downloaded as a PNG", icon.starts_with(&[0x89, b'P', b'N', b'G']), || format!("{} bytes", icon.len()));
+    let ws = crate::workspace::Workspace::resolve(&profile, &id);
+    r.check("the saved configuration is the manifest's, with the icon", ws.as_ref().is_ok_and(|w| w.config.app.as_ref().is_some_and(|a| a.icon.as_deref() == Some("icon.png") && a.scope == ["localhost"]) && w.config.name.as_deref() == Some("Test Manifest App")), || format!("{ws:?}"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "test-manifest-app"));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "PWA page" && !t.state.borrow().loading))).await;
+    r.check("the installed app opens on its start page", ok, || "not open".into());
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(&id));
     let _ = std::fs::remove_dir_all(&dir);
 }

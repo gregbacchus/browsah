@@ -93,6 +93,7 @@ pub struct AppConfig {
     pub icon: Option<String>,
     /// The web manifest's `id`, kept so a later import can tell it is the same app.
     #[serde(default)]
+    #[allow(dead_code)] // kept in the file for a later import to compare against
     pub id: Option<String>,
 }
 

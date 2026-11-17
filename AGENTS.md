@@ -33,10 +33,28 @@ README. State which results were measured on which machine and which were not.
 ```bash
 cargo build --release                         # first build downloads CEF (~300 MB) via cef-dll-sys
 export LD_LIBRARY_PATH=$PWD/target/release    # libcef.so is copied next to the binary
-cargo test --release                          # unit tests
-./target/release/browsah --selftest           # scripted check of the real window (needs a display)
+cargo test --release cookies                  # unit tests whose name contains "cookies" (see below: be targeted)
+BROWSAH_SELFTEST_ONLY=install ./target/release/browsah --selftest   # one self-test section, seconds
+./target/release/browsah --selftest           # the whole scripted check of the real window (~4 minutes)
 ./target/release/browsah --bench=single       # benchmarks: single | tabs | fps
 ```
+
+### Be targeted when testing
+
+Do **not** run everything after every change. Run what the change can affect:
+
+- **Unit tests:** `cargo test --release <name>` for the module you touched (`cookies`, `workspace`, `config::`,
+  `webapp`...). The whole unit suite is fast (about a second once built), so run it all before committing, but
+  not after each edit.
+- **Self-test:** `BROWSAH_SELFTEST_ONLY=a,b` runs only the sections named (a section is a `run_<name>` function
+  listed in `selftest.rs`'s main sequence: `input`, `scroll`, `tabs`, `locked`, `routing`, `permissions`,
+  `downloads`, `cookies`, `storage`, `session_cookies`, `session_scope`, `webapp`, `install`, ...). It takes
+  seconds. Add a section's check next to the feature, and run that section while developing. Run the **whole**
+  self-test (about four minutes; run it in the background and wait for it, `timeout 298`) once, before a commit
+  that touches shared code (view.rs handlers, the shell, config layering), not for an isolated feature.
+- Never start the user's real profile in a test: the self-test uses the throwaway profile `selftest`, and a CLI
+  experiment should set `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` to a temporary directory.
+- Do not run two self-tests at once (they share the profile and collide on CEF's lock).
 
 System packages: `build-essential pkg-config libgtk-4-dev libadwaita-1-dev` (Ubuntu 24.04+).
 Changing dependencies or `RUSTFLAGS` makes `cef-dll-sys` re-verify its CEF archive, which can
@@ -47,12 +65,14 @@ take minutes.
 | Path | What lives there |
 |---|---|
 | `src/main.rs` | Entry: CEF subprocess handling, config, GPU workarounds, then the app or a benchmark |
-| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`) |
+| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest) |
 | `src/cef_rt.rs` | CEF start-up and settings, `HostHandle`/`BrowserHandle` |
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
-| `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs), scope patterns, the `browsah workspace` command line |
+| `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs, `app`), scope patterns, the `browsah workspace` command line |
+| `src/webapp.rs` | Web apps (a workspace with an `app:` section): application id, `.desktop` entry and icon, the `browsah app` command line |
+| `src/cookies.rs` | Cookie rules (`cookies:`): `allow`/`session`/`deny` per site, session-cookie keys, allow-rule YAML for blocked sites |
 | `src/history.rs` | History helpers and the `browsah history` command line |
 | `src/sweep.rs` | Tab sweeping model: durations, `Usage` (decaying score), rules and the `Sweeper` (pure, tested); applying it is `app/sweep.rs` |
 | `src/permissions.rs` | Permission model (`Choice`, `Kind`, `PermissionsConfig::decide`) and `browsah permissions` |
@@ -155,3 +175,25 @@ take minutes.
   clipboard in `view.rs`.
 - Verify behaviour changes with `--selftest` and, for rendering or power claims, the benchmarks;
   tests passing is not proof that the docs are accurate.
+- **Cookies** (`src/cookies.rs`, filter in `view.rs`): a `CookieAccessFilter` returned from the per-request
+  `ResourceRequestHandler` (only when the rules are not open) judges each cookie sent or saved by the request's
+  URL against the view's copy of `cookies:` (`BrowserView::set_cookies`, pushed by `apply_view_settings`).
+  `session` cookies are recorded per owner (the workspace id, or `window-N`) in `SESSION_COOKIES` and sent only to
+  the owner that saved them; `end_session_cookies` deletes them through a `CookieVisitor` when the window closes
+  (`ending`), and at window open deletes session cookies nobody owns (left by an earlier run). `deny` records the
+  blocked host per view (cleared in `on_before_browse` of a main-frame navigation, not at load start: Chromium saves
+  response cookies before that); the tab menu's *Copy allow rules* turns them into YAML.
+- **Storage:** `storage: isolated` gives a workspace its own CEF `RequestContext` (`cache_path`
+  `<profile>/cef/workspaces/<id>`, cached per folder in `view.rs`); `Shell::prepare_storage` sets the folder for the
+  next view just before it is created (thread-local, read in `Shared::new`).
+- **Web apps:** a workspace whose `workspace.yaml` has `app:` (`WorkspaceConfig::apply_app` fills in the pinned
+  start tab, no new tabs, modal popups and the controls for `app.display`; whatever the file sets itself wins).
+  Its window sets its own Wayland application id (`be.geee.browsah.<profile>.<id>`, the `.desktop` file's name) when
+  mapped, through `gdk4-wayland` (`set_application_id` must run at `map`; GTK overwrites it earlier). Apps are left
+  out of the *Send to workspace* lists. `install.rs` reads the manifest with `Page.getAppManifest` (`parse_manifest`
+  is pure and tested; the answer's `manifest` object has resolved URLs, `data` the raw text with icon purposes),
+  asks the user to confirm the name, downloads the icon with `download_image` and writes the same files as
+  `browsah app add`. The self-test profile never writes launcher entries (`webapp::install` returns early for it).
+- **CEF API gotchas:** `Image::as_png` returns nothing unless the pixel width/height out parameters are passed;
+  `BinaryValue::data` needs a pre-sized buffer; setting the screen-capture content setting crashes Chromium;
+  a cookie's `domain` field is read with `.to_string()`.

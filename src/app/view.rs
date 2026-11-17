@@ -146,7 +146,16 @@ wrap_download_image_callback! {
     impl DownloadImageCallback {
         fn on_download_image_finished(&self, url: Option<&CefString>, status: ::std::os::raw::c_int, image: Option<&mut Image>) {
             let url = url.map(|u| u.to_string()).unwrap_or_default();
+            let image = image.map(|i| &*i);
             let (w, h) = image.map(|i| (i.width(), i.height())).unwrap_or((0, 0));
+            // `as_png` needs the pixel size outputs, or it gives nothing.
+            let (mut pw, mut ph) = (0, 0);
+            if let Some(png) = image.and_then(|i| i.as_png(1.0, 1, Some(&mut pw), Some(&mut ph))) {
+                let mut buf = vec![0u8; png.size()];
+                let n = png.data(Some(&mut buf), 0);
+                buf.truncate(n);
+                self.shared.image_data.lock().unwrap().insert(url.clone(), buf);
+            }
             self.shared.images.lock().unwrap().insert(url, (status, w, h));
         }
     }
@@ -170,6 +179,8 @@ struct Shared {
     cdp_registration: Mutex<Option<RegHandle>>,
     /// Downloaded images by URL: (HTTP status, width, height).
     images: Mutex<HashMap<String, (i32, usize, usize)>>,
+    /// The same images as PNG bytes (for an app's icon).
+    image_data: Mutex<HashMap<String, Vec<u8>>>,
     next_cdp_id: std::sync::atomic::AtomicI32,
     /// Set while the browser has not been created yet (a restored tab): its address.
     deferred_url: Mutex<Option<String>>,
@@ -287,6 +298,7 @@ impl Shared {
             cdp_results: Mutex::new(HashMap::new()),
             cdp_registration: Mutex::new(None),
             images: Mutex::new(HashMap::new()),
+            image_data: Mutex::new(HashMap::new()),
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
             deferred_url: Mutex::new(None),
             scope: Mutex::new(Vec::new()),
@@ -1650,6 +1662,11 @@ impl BrowserView {
                 h.0.download_image(Some(&CefString::from(url.as_str())), 0, 512, 0, Some(&mut cb));
             });
         }
+    }
+
+    /// A downloaded image as PNG bytes.
+    pub fn image_png(&self, url: &str) -> Option<Vec<u8>> {
+        self.shared.image_data.lock().unwrap().get(url).cloned().filter(|b| !b.is_empty())
     }
 
     pub fn image_result(&self, url: &str) -> Option<(i32, usize, usize)> {

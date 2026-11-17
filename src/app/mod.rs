@@ -2,6 +2,7 @@
 
 mod input;
 mod history;
+mod install;
 mod latency;
 mod modal;
 mod prompts;
@@ -329,6 +330,7 @@ impl Shell {
         let cookies = gio::Menu::new();
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
         cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
+        cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
         self.tab_menu.append_section(None, &cookies);
         if page.is_pinned() {
             return; // a workspace's pinned tabs stay where they are
@@ -1350,6 +1352,17 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     });
     window.add_action(&send_tab);
+    add_action(&window, "install-app", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                let page = s.menu_page.borrow().clone().or_else(|| s.tab_view.selected_page());
+                if let Some(tab) = page.and_then(|p| s.tab_for_page(&p)) {
+                    s.offer_install_app(tab);
+                }
+            }
+        }
+    });
     add_action(&window, "copy-cookie-rules", {
         let weak = weak.clone();
         move || {
