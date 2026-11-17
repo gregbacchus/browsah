@@ -113,8 +113,8 @@ optional. Documented in [docs/config/](docs/config/README.md); a full example is
 ```bash
 export LD_LIBRARY_PATH=$PWD/target/release
 cargo test --release                 # unit tests, incl. config docs coverage and URL handling
-./target/release/browsah --selftest  # scripted check of the real window (needs a display)
-./target/release/browsah --selftest --mode=paint   # the same on the readback rendering path
+BROWSAH_SELFTEST_ONLY=cookies ./target/release/browsah --selftest   # scripted check of the real window, one section (needs a display)
+scripts/test selftest list                                          # the sections; running all of them needs BROWSAH_SELFTEST_ALL=<reason>
 ./target/release/browsah --latency   # input latency: event to the next frame at GTK
 ```
 

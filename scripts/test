@@ -1,27 +1,39 @@
 #!/usr/bin/env bash
-# Run targeted tests while developing (see AGENTS.md: be targeted).
-#   scripts/test unit [NAME]        unit tests whose name contains NAME (all of them, about a second, without NAME)
-#   scripts/test selftest SECTION   one self-test section, or several: install,cookies   (seconds)
-#   scripts/test selftest list      show the section names
-#   scripts/test selftest all       the whole self-test (about four minutes; before commits that touch shared code)
+# Run targeted tests while developing. Wide runs are NOT the default: see AGENTS.md ("Rule: test narrowly").
+#   scripts/test unit NAME                  unit tests whose name contains NAME (a name is required)
+#   scripts/test selftest SECTION[,SECTION] one or more self-test sections (seconds)
+#   scripts/test selftest list              show the section names
+#   scripts/test selftest all "REASON"      every section (about four minutes): only when the user asked for it or a narrow run
+#                                           cannot cover the change; REASON is required and is printed
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LD_LIBRARY_PATH="$PWD/target/release"
 case "${1:-}" in
   unit)
     shift
+    if [ "$#" -eq 0 ]; then
+      echo "scripts/test unit needs a test or module name (the whole unit suite is not run by default; see AGENTS.md)." >&2
+      exit 2
+    fi
     cargo test --release "$@"
     ;;
   selftest)
     cargo build --release 2>&1 | grep -E '^(error|warning: unused)' -A8 || true
     case "${2:-}" in
-      "") echo "usage: scripts/test selftest SECTION[,SECTION...] | list | all" >&2; exit 2 ;;
-      all) timeout 298 ./target/release/browsah --selftest 2>&1 | grep -E 'FAIL|checks passed' ;;
-      *)   BROWSAH_SELFTEST_ONLY="$2" timeout 120 ./target/release/browsah --selftest 2>&1 | grep -E 'FAIL|checks passed|SELFTEST_ONLY|^  [a-z_]+$|sections' ;;
+      "") echo "usage: scripts/test selftest SECTION[,SECTION...] | list | all \"REASON\"" >&2; exit 2 ;;
+      all)
+        if [ -z "${3:-}" ]; then
+          echo "scripts/test selftest all needs a stated reason: scripts/test selftest all \"why a narrow run cannot cover this\" (see AGENTS.md)." >&2
+          exit 2
+        fi
+        echo "WIDE RUN, reason: $3" >&2
+        BROWSAH_SELFTEST_ALL="$3" timeout 298 ./target/release/browsah --selftest 2>&1 | grep -E 'FAIL|checks passed'
+        ;;
+      *) BROWSAH_SELFTEST_ONLY="$2" timeout 120 ./target/release/browsah --selftest 2>&1 | grep -E 'FAIL|checks passed|SELFTEST_ONLY|^  [a-z_]+$|sections' ;;
     esac
     ;;
   *)
-    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

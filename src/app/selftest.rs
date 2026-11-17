@@ -128,6 +128,16 @@ pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel
             std::process::exit(2);
         }
     }
+    // The whole self-test is slow and is not to be run after every change: it must be asked for with a stated reason.
+    if std::env::var_os("BROWSAH_SELFTEST_ONLY").is_none() && std::env::var("BROWSAH_SELFTEST_ALL").map(|v| v.trim().is_empty()).unwrap_or(true) {
+        eprintln!(
+            "selftest: refusing to run every section (about four minutes). Name the sections your change affects:\n  \
+             BROWSAH_SELFTEST_ONLY=cookies,storage ./target/release/browsah --selftest      (scripts/test selftest list shows them)\n\
+             Running all of them is only for when the user asked for it or a narrow run cannot cover the change; then set\n  \
+             BROWSAH_SELFTEST_ALL=\"<the reason>\"  (scripts/test selftest all \"<the reason>\")."
+        );
+        std::process::exit(2);
+    }
     super::prompts::set_ui_test(true); // questions are held for the test to answer, not shown
     super::view::set_synthetic_pointer_only(true);
     glib::MainContext::default().spawn_local(async move {

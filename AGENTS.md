@@ -4,6 +4,34 @@ browsah is a **Rust GTK4 + libadwaita web browser** around CEF (Chromium) render
 Native Wayland is a hard requirement. MIT licensed. Read `docs/research/summary.md` for why it is
 built this way and `docs/roadmap.md` for what comes next.
 
+## Rule: test narrowly. Never run a wide test set unless told to (read before running ANY test)
+
+**Wide test runs are forbidden by default.** That means: the whole self-test (`--selftest` with no sections named,
+`scripts/test selftest all`), and the whole unit suite (`cargo test` with no filter, `scripts/test unit` with no name). Do not run
+them after a change, before a commit, at the end of a task, "to be safe", "to check nothing else broke", after fixing a flaky
+failure, or because a change touched shared code. There is no "run everything once before committing" rule. The user has asked for
+this repeatedly; running wide sets anyway wastes minutes per run and is the single thing that most frustrates them.
+
+What to run instead, always the smallest thing that exercises the code you changed:
+
+- unit tests: `scripts/test unit <name>` (a module or test name, e.g. `cookies`, `workspace`, `config::`);
+- self-test: `scripts/test selftest <section>[,<section>]` (see `scripts/test selftest list`); add or extend a section next to
+  the feature and run only that. If your change affects other features, name those few sections too, not all of them.
+
+A wide run is allowed in exactly two cases:
+
+1. **The user asks for it** in their own words in this conversation ("run all the tests", "run the full suite"). A past request does
+   not carry over to later changes.
+2. **There is a specific reason a narrow test cannot suffice**, which you write down in your message *before* running it: which
+   shared mechanism changed and why no named section or test covers it. "It touches shared code" or "to be thorough" is not a
+   reason. Even then, run the few sections that cover it, not everything.
+
+Also: if a narrow test fails, investigate and re-run *that* test; do not widen the run to look for other damage. If a failure looks
+flaky, re-run that one section, never the whole set. When you report, say exactly which narrow tests you ran and do not imply wider
+coverage you did not run. The tools enforce this: the self-test binary refuses to run all sections unless `BROWSAH_SELFTEST_ALL`
+holds a reason (`scripts/test selftest all "<reason>"` sets it), and `scripts/test unit` refuses to run without a name. Do not set
+these to get around the refusal; setting them is only for the two cases above.
+
 ## Rule: keep the configuration documentation up to date
 
 Whenever you add, rename, remove or change the meaning, type or default of ANY option in
@@ -33,29 +61,22 @@ README. State which results were measured on which machine and which were not.
 ```bash
 cargo build --release                         # first build downloads CEF (~300 MB) via cef-dll-sys
 export LD_LIBRARY_PATH=$PWD/target/release    # libcef.so is copied next to the binary
-cargo test --release cookies                  # unit tests whose name contains "cookies" (see below: be targeted)
-BROWSAH_SELFTEST_ONLY=install ./target/release/browsah --selftest   # one self-test section, seconds
-./target/release/browsah --selftest           # the whole scripted check of the real window (~4 minutes)
+cargo test --release cookies                  # unit tests whose name contains "cookies" (always filter; see the testing rule above)
+BROWSAH_SELFTEST_ONLY=install ./target/release/browsah --selftest   # one self-test section, seconds (never run it without naming sections)
 ./target/release/browsah --bench=single       # benchmarks: single | tabs | fps
 ```
 
-### Be targeted when testing
+### Running tests (narrowly: see the rule at the top)
 
 `scripts/test` is the way in: `scripts/test unit cookies` (unit tests by name), `scripts/test selftest install,cookies`
 (self-test sections, seconds), `scripts/test selftest list` (the section names; a misspelt name is an error, not a
-silent no-op), `scripts/test selftest all` (the whole thing). A test keeps the section list in step with `run`.
+silent no-op). A test keeps the section list in step with `run`.
 
-Do **not** run everything after every change. Run what the change can affect:
-
-- **Unit tests:** `cargo test --release <name>` for the module you touched (`cookies`, `workspace`, `config::`,
-  `webapp`...). The whole unit suite is fast (about a second once built), so run it all before committing, but
-  not after each edit.
+- **Unit tests:** a name filter every time (`scripts/test unit workspace`).
 - **Self-test:** `BROWSAH_SELFTEST_ONLY=a,b` runs only the sections named (a section is a `run_<name>` function
   listed in `selftest.rs`'s main sequence: `basic` (typing an address, back, forward, reload), `input`, `scroll`, `tabs`, `locked`, `routing`, `permissions`,
   `downloads`, `cookies`, `storage`, `session_cookies`, `session_scope`, `webapp`, `install`, `suggest`, ...). It takes
-  seconds. Add a section's check next to the feature, and run that section while developing. Run the **whole**
-  self-test (about four minutes; run it in the background and wait for it, `timeout 298`) once, before a commit
-  that touches shared code (view.rs handlers, the shell, config layering), not for an isolated feature.
+  seconds. Add a section's check next to the feature and run that section while developing.
 - **Look at new UI.** `BROWSAH_SHOTS=/some/dir` makes the self-test save pictures of the widgets it calls `shot(...)` on
   (popovers, dialogs, windows; `downloads-finished`, `downloads-running`, `suggestions`, `install-dialog`,
   `web-app-window`...) as PNGs you can open with the Read tool. Add a `shot` next to a new piece of UI and look at it:
@@ -205,7 +226,7 @@ take minutes.
   its methods on CEF's UI thread (`cef_rt::on_ui`).
 - Windowless Chromium cannot reach the Wayland clipboard: copy, cut and paste go through GTK's
   clipboard in `view.rs`.
-- Verify behaviour changes with `--selftest` and, for rendering or power claims, the benchmarks;
+- Verify behaviour changes with the relevant `--selftest` section(s) (never the whole self-test: see the testing rule at the top) and, for rendering or power claims, the benchmarks;
   tests passing is not proof that the docs are accurate.
 - **Cookies** (`src/cookies.rs`, filter in `view.rs`): a `CookieAccessFilter` returned from the per-request
   `ResourceRequestHandler` (only when the rules are not open) judges each cookie sent or saved by the request's
