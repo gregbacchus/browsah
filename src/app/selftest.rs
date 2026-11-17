@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -398,6 +398,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("redirects") {
         run_redirects(shell, r).await;
+    }
+    if wants("theme") {
+        run_theme(shell, r).await;
     }
 }
 
@@ -1043,6 +1046,7 @@ fn start_test_server() -> u16 {
                     String::new(),
                     format!("<!doctype html><title>Redirect links</title><a href=\"http://127.0.0.1:{port}/go?to=http%3A%2F%2Flocalhost%3A{port}%2Fb.html\" style=\"position:absolute;left:20px;top:20px;font-size:28px\">via a redirect</a><a href=\"https://www.google.com/url?q=http%3A%2F%2Flocalhost%3A{port}%2Fb.html&sa=D\" style=\"position:absolute;left:20px;top:90px;font-size:28px\">via google</a>"),
                 ),
+                "/scheme.html" => ("200 OK", String::new(), "<!doctype html><title>Scheme</title><style>body{margin:0;background:#fff;color:#000} @media (prefers-color-scheme: dark){body{background:#111;color:#eee}}</style><p>scheme test</p><input value=field>".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
@@ -2961,6 +2965,135 @@ async fn run_redirects(shell: &Rc<Shell>, r: &mut Report) {
     }
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     for id in ["xa", "xb"] {
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
+    }
+}
+
+/// What the page sees as its colour scheme: (prefers-color-scheme is dark, body background).
+async fn page_scheme(tab: &Rc<super::Tab>) -> (bool, String) {
+    let dark = eval_string(tab, "String(matchMedia('(prefers-color-scheme: dark)').matches)").await.is_some_and(|v| v == "true");
+    let bg = eval_string(tab, "getComputedStyle(document.body).backgroundColor").await.unwrap_or_default();
+    (dark, bg)
+}
+
+/// The colour scheme of the page content (`theme`): `system` follows the desktop (as libadwaita sees it, live), `light` and
+/// `dark` fix it, it survives navigation, new tabs get it, and a workspace can set its own.
+async fn run_theme(shell: &Rc<Shell>, r: &mut Report) {
+    let port = start_test_server();
+    let st = shell.state();
+    let go = |url: String| {
+        let st = st.clone();
+        let view = shell.view();
+        async move {
+            let before = st.borrow().load_cycles;
+            view.navigate(&url);
+            wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+            glib::timeout_future(Duration::from_millis(400)).await;
+        }
+    };
+    let tab = shell.current().expect("tab");
+    let style = adw::StyleManager::default();
+    let set_theme = |t: crate::config::Theme| {
+        let mut cfg = shell.settings.borrow().clone();
+        cfg.theme = t;
+        shell.apply_config(&cfg);
+    };
+    go(format!("http://localhost:{port}/scheme.html")).await;
+    // system: whatever libadwaita says the desktop prefers (the test machine's own setting, either way).
+    set_theme(crate::config::Theme::System);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let (dark, _) = page_scheme(&tab).await;
+    println!("theme: the desktop prefers dark={}, the page sees dark={dark}", style.is_dark());
+    r.check("by default pages see the scheme the desktop prefers", dark == style.is_dark(), || format!("page dark={dark}, desktop dark={}", style.is_dark()));
+
+    set_theme(crate::config::Theme::Dark);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    shot(&shell.window, "theme-dark");
+    let (dark, bg) = page_scheme(&tab).await;
+    r.check("theme dark: the page sees dark and its dark style applies", dark && bg == "rgb(17, 17, 17)", || format!("dark={dark} bg={bg}"));
+    go(format!("http://localhost:{port}/scheme.html?again")).await;
+    let (dark, _) = page_scheme(&tab).await;
+    go(format!("http://127.0.0.1:{port}/scheme.html")).await;
+    let (dark_other, bg_other) = page_scheme(&tab).await;
+    r.check("it survives navigation, to another page and to another site", dark && dark_other && bg_other == "rgb(17, 17, 17)", || format!("{dark} {dark_other} {bg_other}"));
+
+    set_theme(crate::config::Theme::Light);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let (dark, bg) = page_scheme(&tab).await;
+    r.check("theme light: the page sees light", !dark && bg == "rgb(255, 255, 255)", || format!("dark={dark} bg={bg}"));
+
+    // A new tab is given the window's theme from the start.
+    set_theme(crate::config::Theme::Dark);
+    let t2 = shell.open_tab(&format!("http://localhost:{port}/scheme.html"), true);
+    let _ = wait_until(15_000, || { let s = t2.state.borrow(); s.title == "Scheme" && !s.loading }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let (dark, _) = page_scheme(&t2).await;
+    r.check("a new tab gets the window's theme", dark, || format!("dark={dark}"));
+    shell.tab_view.close_page(&t2.page);
+
+    // system follows the desktop while running (the app-wide light/dark override stands in for the desktop changing).
+    set_theme(crate::config::Theme::System);
+    style.set_color_scheme(adw::ColorScheme::ForceLight);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let (light_dark, _) = page_scheme(&tab).await;
+    style.set_color_scheme(adw::ColorScheme::ForceDark);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let (dark_dark, _) = page_scheme(&tab).await;
+    style.set_color_scheme(adw::ColorScheme::Default);
+    r.check("with theme system the page follows the desktop switching between light and dark", !light_dark && dark_dark, || format!("light switch -> dark={light_dark}, dark switch -> dark={dark_dark}"));
+    // and an explicit theme ignores the desktop
+    set_theme(crate::config::Theme::Light);
+    style.set_color_scheme(adw::ColorScheme::ForceDark);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let (dark, _) = page_scheme(&tab).await;
+    style.set_color_scheme(adw::ColorScheme::Default);
+    r.check("an explicit theme ignores the desktop", !dark, || format!("dark={dark}"));
+    set_theme(crate::config::Theme::System);
+
+    // A workspace and a web app can set their own theme in their files; the others keep the default.
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let want_dark = !style.is_dark(); // the opposite of the desktop's, so it shows
+    let word = if want_dark { "dark" } else { "light" };
+    let url = format!("http://localhost:{port}/scheme.html");
+    for (id, text) in [
+        ("th1", format!("name: T1\ntheme: {word}\nhome_page: '{url}'\n")),
+        ("th2", format!("name: T2\ntheme: {word}\napp:\n  url: '{url}'\n")),
+        ("th3", format!("name: T3\nhome_page: '{url}'\n")),
+    ] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        std::fs::write(dir.join("workspace.yaml"), text).expect("ws");
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    for id in ["th1", "th2", "th3"] {
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let _ = wait_until(15_000, || find(id).is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scheme" && !t.state.borrow().loading))).await;
+    }
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let mut seen = Vec::new();
+    for id in ["th1", "th2", "th3"] {
+        let t = find(id).and_then(|s| s.current());
+        seen.push(match t {
+            Some(t) => page_scheme(&t).await.0,
+            None => !want_dark,
+        });
+    }
+    r.check("a workspace's own theme applies in its window", seen[0] == want_dark, || format!("{seen:?}, wanted dark={want_dark}"));
+    r.check("so does a web app's", seen[1] == want_dark, || format!("{seen:?}, wanted dark={want_dark}"));
+    r.check("a workspace without one follows the desktop", seen[2] == style.is_dark(), || format!("{seen:?}, desktop dark={}", style.is_dark()));
+    for x in super::windows() {
+        if !Rc::ptr_eq(&x, shell) {
+            x.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || super::windows().len() == 1).await;
+    for id in ["th1", "th2", "th3"] {
         let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
         let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(id));
     }

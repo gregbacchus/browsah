@@ -204,6 +204,11 @@ impl Shell {
         let s = self.settings.borrow();
         view.set_permissions(s.permissions.clone());
         view.set_cookies(s.cookies.clone(), &self.session_owner);
+        view.set_color_scheme(match s.theme {
+            crate::config::Theme::Light => false,
+            crate::config::Theme::Dark => true,
+            crate::config::Theme::System => adw::StyleManager::default().is_dark(),
+        });
         view.set_downloads(crate::downloads::resolve_directory(&s.downloads), s.downloads.ask);
     }
 }

@@ -35,5 +35,8 @@ What the window does:
 - Its window announces its own application id, `be.geee.browsah.<profile>.<id>`, which is also the name of its
   `.desktop` file; that is how GNOME groups the window under the app's own icon.
 
+A web app can have its own colour scheme for its pages: `theme: dark` (or `light`, or `system`, the default) in its `workspace.yaml`,
+like any workspace ([options.md](options.md): `theme`).
+
 The options are the `app.*` rows of [workspace.md](workspace.md#web-apps-app); an example is
 [`examples/webapp.yaml`](../../examples/webapp.yaml). Web apps do not appear in a tab's *Send to workspace* list.

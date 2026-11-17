@@ -17,6 +17,7 @@ routing:
       match: { scheme: [zoommtg] }
       open: system
 
+theme: system             # system | light | dark: the colour scheme web pages see (prefers-color-scheme); system follows the desktop
 storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)
 new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
 

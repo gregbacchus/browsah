@@ -813,6 +813,16 @@ impl Shell {
         }
     }
 
+    /// The desktop switched between light and dark: pages of a window whose theme is `system` follow.
+    pub(crate) fn refresh_scheme(&self) {
+        for t in self.tabs.borrow().iter() {
+            self.apply_view_settings(&t.view());
+        }
+        for m in self.modals.borrow().iter() {
+            self.apply_view_settings(&m.view);
+        }
+    }
+
     fn tab_for_page(&self, page: &adw::TabPage) -> Option<Rc<Tab>> {
         self.tabs.borrow().iter().find(|t| &t.page == page).cloned()
     }
@@ -1920,6 +1930,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
 
     shell.install_color(workspace_color.as_ref());
     shell.connect_suggestion_clicks();
+    {
+        let window = shell.window.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
+                s.refresh_scheme();
+            }
+        });
+    }
     // A web app's window is its own application to the desktop: its own launcher entry, icon and place in the dash.
     // (GTK sets the profile's id when the window is shown, so this runs after that, when the window is mapped.)
     if shell.workspace.as_ref().is_some_and(|w| w.is_app()) {

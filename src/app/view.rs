@@ -211,6 +211,8 @@ struct Shared {
     user_zoom: Mutex<f64>,
     /// The last find-in-page result: (matches, active one).
     find_result: Mutex<(i32, i32)>,
+    /// The colour scheme the page is to see: `Some(true)` dark, `Some(false)` light, `None` not set yet.
+    scheme: Mutex<Option<bool>>,
     /// The main-frame navigation under way began as a clicked link (so its redirects may be routed too).
     link_nav: AtomicBool,
     /// Whether developer tools were open after the last toggle (read on CEF's UI thread, kept here).
@@ -329,6 +331,7 @@ impl Shared {
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
             user_zoom: Mutex::new(1.0),
             find_result: Mutex::new((0, 0)),
+            scheme: Mutex::new(None),
             link_nav: AtomicBool::new(false),
             dev_tools: AtomicBool::new(false),
             session_owner: Mutex::new(String::new()),
@@ -586,6 +589,7 @@ wrap_life_span_handler! {
                 *self.shared.cdp_registration.lock().unwrap() = Some(RegHandle(reg));
             }
             *self.shared.host.lock().unwrap() = Some(HostHandle(host));
+            apply_scheme(&self.shared);
             *self.shared.browser.lock().unwrap() = Some(BrowserHandle(browser.clone()));
             if let Some(url) = self.shared.pending_url.lock().unwrap().take() {
                 if let Some(frame) = browser.main_frame() {
@@ -1189,6 +1193,22 @@ wrap_permission_handler! {
             send(self.shared.id, ViewEvent::PermissionDismissed(prompt_id));
         }
     }
+}
+
+// ---- colour scheme -------------------------------------------------------------------------------
+
+/// Tell the page's browser which colour scheme to report (`Emulation.setEmulatedMedia`, per browser). Chromium's own idea of
+/// the desktop's scheme does not follow the desktop here (it reports light whatever the portal says), so browsah always says.
+fn apply_scheme(shared: &Arc<Shared>) {
+    let Some(dark) = *shared.scheme.lock().unwrap() else { return };
+    let Some(h) = shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone())) else { return };
+    let id = shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
+    on_ui(move || {
+        let h = h;
+        let json = format!(r#"{{"features":[{{"name":"prefers-color-scheme","value":"{}"}}]}}"#, if dark { "dark" } else { "light" });
+        let Some(mut params) = parse_json(Some(&CefString::from(json.as_str())), JsonParserOptions::RFC).and_then(|v| v.dictionary()) else { return };
+        h.0.execute_dev_tools_method(id, Some(&CefString::from("Emulation.setEmulatedMedia")), Some(&mut params));
+    });
 }
 
 // ---- PDF -----------------------------------------------------------------------------------------
@@ -2025,6 +2045,15 @@ impl BrowserView {
     pub fn apply_zoom(&self) {
         let user = self.user_zoom().ln() / 1.2f64.ln();
         self.with_host(|h| h.set_zoom_level(user));
+    }
+
+    /// Set the colour scheme the page reports (`prefers-color-scheme`): dark or light. Applied now if the browser exists, else
+    /// when it is created.
+    pub fn set_color_scheme(&self, dark: bool) {
+        let changed = self.shared.scheme.lock().unwrap().replace(dark) != Some(dark);
+        if changed {
+            apply_scheme(&self.shared);
+        }
     }
 
     /// Write the page to a PDF file. The result arrives as a `PdfSaved` event. Posted to CEF's UI thread.

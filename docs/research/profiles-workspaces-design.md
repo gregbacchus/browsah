@@ -752,6 +752,26 @@ mostly link straight to the destination and report clicks with a `ping` attribut
 a shortener (not followed: the new tab's first load is never routed), client-side (script) redirects, `t.co` or `bit.ly`
 themselves (no network in the tests).
 
+## Theme for page content (2026-11-17)
+
+Requested: light, dark or system (default) for the browser/CEF content, settable per profile, workspace and web app. Measured
+first (`--selftest` section `theme` printed what a page sees): with no flag a page saw `prefers-color-scheme: light` although
+the desktop portal's `org.freedesktop.appearance color-scheme` was 1 (dark) and libadwaita followed it, so **Chromium's own default
+does not follow this desktop**; `--force-dark-mode` and `--force-light-mode` work but are process-wide (no per-workspace theme).
+So browsah decides: the `theme` option (`system` default, `light`, `dark`; a normal layered option, so profile, workspace and web
+app all work) is applied to each browser with the DevTools call `Emulation.setEmulatedMedia` (`prefers-color-scheme`), when the
+browser is created and whenever the configuration or the desktop's scheme changes; `system` means libadwaita's `is_dark()`, so the
+page content matches the window and follows it live. Measured (section `theme`, 20 checks): default follows the desktop; dark and light
+force the page's media query and its dark style; it survives navigation to another page and to another site (without being
+re-sent); a new tab has it from the start; `system` follows the desktop switching (the application-wide light/dark override stands in
+for the desktop); an explicit theme ignores the desktop; a workspace's and a web app's own `theme` apply in their windows and others
+keep the default; unit tests for the layering. A picture was looked at. **Not measured:** the real desktop switching live (not
+changed on the test machine: it is the user's setting), the portal's third value (no preference, treated as light by libadwaita),
+the flash before the first frame of a page (the emulation is set when the browser is created, before it loads, not measured with a
+slow page), DevTools' own panel with its own media emulation open. **Limits:** it changes what the page is told, as a browser's
+setting does: pages without a dark style stay light, and form controls and scrollbars only darken for pages that declare `color-scheme`
+(the picture shows a light text field on a dark page). It does not change the window's own appearance (that follows the desktop).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

@@ -179,6 +179,10 @@ take minutes.
   and open the destination. `routing.follow_redirects` (off by default) also routes the redirect hops of a clicked same-tab link:
   `on_before_browse` with `is_redirect` is judged while `Shared::link_nav` is set (a link click began the navigation; cleared when it
   commits). Redirects are otherwise never routed (sign-in flows).
+- **Theme:** the `theme` option (`system`|`light`|`dark`, any layer) is what pages see as `prefers-color-scheme`, set per browser with
+  `Emulation.setEmulatedMedia` (`BrowserView::set_color_scheme`, from `apply_view_settings`; applied again when the browser is created).
+  Chromium's own default does not follow the desktop here (reports light while the portal says dark), so `system` is resolved by us from
+  `adw::StyleManager::is_dark()` and re-applied on its `dark` notify (`Shell::refresh_scheme`). It does not change the window's chrome.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the

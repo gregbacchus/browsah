@@ -43,6 +43,8 @@ pub struct Config {
     pub new_tab_page: Option<String>,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
     pub storage: Storage,
+    /// The colour scheme pages see (`prefers-color-scheme`): `system` follows the desktop, like the rest of the window.
+    pub theme: Theme,
     pub search_url: String,
     pub window: WindowConfig,
     pub rendering: RenderingConfig,
@@ -148,6 +150,7 @@ impl Default for Config {
             home_page: DEFAULT_HOME_PAGE.into(),
             new_tab_page: None,
             storage: Storage::Shared,
+            theme: Theme::System,
             search_url: DEFAULT_SEARCH_URL.into(),
             window: WindowConfig::default(),
             rendering: RenderingConfig::default(),
@@ -314,6 +317,17 @@ impl Loaded {
 }
 
 /// Options that only the application file may set.
+/// The colour scheme web pages are shown in (what `prefers-color-scheme` says).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the desktop's light or dark setting, as the rest of the window does (also while running).
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Paper size for printing and saving as PDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -599,7 +613,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -773,6 +787,24 @@ mod tests {
         new.window.frame.thickness = 12;
         let ch = changes(&Config::default(), &new);
         assert!(ch.live.iter().any(|k| k == "window.frame.thickness") && ch.restart.is_empty(), "{ch:?}");
+    }
+
+    #[test]
+    fn the_theme_defaults_to_system_and_layers() {
+        assert_eq!(Config::default().theme, Theme::System);
+        assert_eq!(Config::parse("theme: dark\n").unwrap().theme, Theme::Dark);
+        assert!(Config::parse("theme: sepia\n").is_err());
+        // A workspace's file overrides the profile's, which overrides the application's.
+        let dir = std::env::temp_dir().join(format!("browsah-theme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (app, prof, ws) = (dir.join("config.yaml"), dir.join("profile.yaml"), dir.join("workspace.yaml"));
+        std::fs::write(&app, "theme: light\n").unwrap();
+        std::fs::write(&prof, "theme: dark\n").unwrap();
+        std::fs::write(&ws, "name: W\n").unwrap();
+        assert_eq!(load_window(&app, &prof, Some(&ws)).unwrap().config.theme, Theme::Dark, "the profile's");
+        std::fs::write(&ws, "theme: system\n").unwrap();
+        assert_eq!(load_window(&app, &prof, Some(&ws)).unwrap().config.theme, Theme::System, "the workspace's");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
