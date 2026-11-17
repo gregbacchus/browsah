@@ -550,6 +550,20 @@ Reproduce: serve a page that calls `Notification.requestPermission()` then `new 
 temporary `XDG_*` directory and `permissions: { notifications: allow }`, and `dbus-monitor --session
 "interface='org.freedesktop.Notifications'"`.
 
+## Status: address-bar suggestions (2026-11-17)
+
+`suggest::rank` (pure, 5 unit tests) scores bookmarks (the window's workspace), open tabs and history (all
+workspaces, 300 newest matches for the first typed word) by: bookmark 50, tab 35, history 10 plus frequency (to 10) and
+recency (to 10); plus 25 when what was typed starts the address (scheme and `www.` ignored), 20 when it starts the host,
+8 for a title word. A popover under the entry (`app/suggest.rs`; non-focusable so the entry keeps the keyboard; arrow
+keys forwarded from the entry's key controller) shows up to six; Enter opens the highlighted one, else what was typed.
+Measured (`--selftest` section `suggest`, 7 checks): matching history is offered and unrelated history not, no
+highlight until an arrow key, down then up returns to none, Enter opens the highlighted address, the list clears
+afterwards and for an empty bar. A first version of the test failed because the selftest profile's database held
+history from an earlier run (the section now clears it). **Not measured:** mouse clicks on rows, how the popover looks
+and is placed (width, scrolling, theme), IME, typing speed with a large history (a `LIKE` scan on each keystroke; no
+index; the history window does the same).
+
 ## Build order after the spikes
 
 1. Profile directories plus a unique per-profile instance with D-Bus URL handoff (the cache path and

@@ -35,6 +35,7 @@ chromium:
 history:
   enabled: true            # remember visited pages and closed tabs
   retention_days: 365      # delete older history at start-up (0 keeps everything)
+  suggest: true            # offer bookmarks, tabs and history while typing an address
   exclude: []              # addresses never remembered, e.g. ["*.bank.example"]
 
 permissions:                # what pages may do: allow, deny or ask (docs/config/permissions.md)

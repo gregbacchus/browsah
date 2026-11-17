@@ -16,6 +16,7 @@ mod profile;
 mod router;
 mod selector;
 mod store;
+mod suggest;
 mod sweep;
 mod webapp;
 mod workspace;

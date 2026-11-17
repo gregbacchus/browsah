@@ -92,6 +92,7 @@ input:
 |---|---|---|---|
 | `history.enabled` | bool | `true` | Remember the pages visited (per profile, with the workspace they were visited in) and the tabs that were closed, so they can be found in the history window (`Ctrl+H`) and reopened (`Ctrl+Shift+T`). `false` turns recording off (existing history stays until cleared). Can differ per workspace. |
 | `history.retention_days` | whole number | `365` | History older than this many days is deleted when the browser starts. `0` keeps everything. |
+| `history.suggest` | bool | `true` | While you type in the address bar, offer matching bookmarks, open tabs and history (best first: what you typed is the start of the address, bookmarks, how often and recently you visited). Arrow keys choose, Enter opens, Escape closes. Sign-in windows never show any. `false` turns it off. Applies immediately when the file is reloaded. |
 | `history.exclude` | list of text | none | Addresses that are never remembered: patterns as for a pinned tab's scope (`host` or `host/path`, `*.example.com`). Use `key+:` in a profile or workspace to add to the application's list. |
 
 Sign-in windows opened for another application are never recorded. See [History](history.md).

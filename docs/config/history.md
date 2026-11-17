@@ -28,3 +28,14 @@ browsah history clear [--profile ID] [--older-than-days N] --yes                
 
 Clearing history also clears the lists of closed tabs. It does not touch bookmarks, remembered tabs or
 cookies. Stop the profile first (like removing a workspace, it is refused while the profile runs).
+
+## Address-bar suggestions
+
+While you type in the address bar, a list under it offers up to six matching **bookmarks** (of the window's
+workspace), **open tabs** and **history** (all workspaces of the profile), best first: what you typed being the start of
+the address (without `https://` or `www.`) ranks highest, then bookmarks over tabs over history, then how often and how
+recently a page was visited. Every word typed must appear in the address or the title. The Down and Up arrows highlight a
+suggestion (one step past either end returns to what you typed), Enter opens the highlighted one (or what you typed),
+Escape closes the list, and a click opens a row. Nothing is offered in sign-in windows or when
+`history.suggest` is `false`; with `history.enabled: false` there is no new history to suggest from, though bookmarks and
+open tabs still match.

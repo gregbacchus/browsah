@@ -102,11 +102,13 @@ pub struct HistoryConfig {
     pub enabled: bool,
     pub retention_days: u32,
     pub exclude: Vec<String>,
+    /// Offer bookmarks, open tabs and history while an address is typed.
+    pub suggest: bool,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        Self { enabled: true, retention_days: 365, exclude: Vec::new() }
+        Self { enabled: true, retention_days: 365, exclude: Vec::new(), suggest: true }
     }
 }
 

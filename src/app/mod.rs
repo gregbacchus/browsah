@@ -3,6 +3,7 @@
 mod input;
 mod history;
 mod install;
+mod suggest;
 mod latency;
 mod modal;
 mod prompts;
@@ -162,6 +163,8 @@ pub struct Shell {
     pub private: Cell<bool>,
     /// Whose session cookies these are: the workspace's id, or a number for an ephemeral window.
     session_owner: String,
+    /// The address bar's suggestions.
+    suggest: suggest::Popup,
     /// The history window, while it is open.
     history: RefCell<Option<Rc<history::HistoryView>>>,
     /// Permission questions waiting, the one showing, and (in tests) the one held; downloads in progress,
@@ -1267,6 +1270,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         last_sweep: RefCell::new(Vec::new()),
         pending_close_reason: RefCell::new(None),
         private: Cell::new(false),
+        suggest: suggest::Popup::new(&entry),
         session_owner: workspace.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| format!("window-{}", NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
         history: RefCell::new(None),
         prompt_queue: RefCell::new(Default::default()),
@@ -1513,7 +1517,10 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let shell = Rc::downgrade(&shell);
         move |e| {
             if let Some(shell) = shell.upgrade() {
-                shell.go(e.text().as_str());
+                // A highlighted suggestion wins over what was typed.
+                let target = shell.chosen_suggestion().unwrap_or_else(|| e.text().to_string());
+                shell.hide_suggestions();
+                shell.go(&target);
             }
         }
     });
@@ -1523,6 +1530,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             if let Some(shell) = shell.upgrade() {
                 if !shell.programmatic.get() {
                     shell.editing.set(true);
+                    shell.update_suggestions();
                 }
             }
         }
@@ -1532,6 +1540,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move || {
             if let Some(shell) = shell.upgrade() {
                 shell.editing.set(false);
+                shell.hide_suggestions();
                 let a = shell.current().map(|t| t.state.borrow().address.clone()).unwrap_or_default();
                 shell.set_entry_text(address_text(&a));
             }
@@ -1540,7 +1549,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed({
         let restore = restore.clone();
+        let shell = Rc::downgrade(&shell);
         move |_, key, _, _| {
+            if key == gtk::gdk::Key::Down || key == gtk::gdk::Key::Up {
+                let step = if key == gtk::gdk::Key::Down { 1 } else { -1 };
+                if shell.upgrade().is_some_and(|s| s.move_suggestion(step)) {
+                    return glib::Propagation::Stop;
+                }
+            }
             if key == gtk::gdk::Key::Escape {
                 restore();
                 return glib::Propagation::Stop;
@@ -1582,6 +1598,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
+    shell.connect_suggestion_clicks();
     // A web app's window is its own application to the desktop: its own launcher entry, icon and place in the dash.
     // (GTK sets the profile's id when the window is shown, so this runs after that, when the window is mapped.)
     if shell.workspace.as_ref().is_some_and(|w| w.is_app()) {

@@ -69,7 +69,7 @@ fn screenshot(window: &adw::ApplicationWindow, path: &str) -> bool {
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp",
-    "install",
+    "install", "suggest",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -318,6 +318,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("install") {
         run_install(shell, r).await;
+    }
+    if wants("suggest") {
+        run_suggest(shell, r).await;
     }
 }
 
@@ -2191,4 +2194,39 @@ mod tests {
         listed.sort_unstable();
         assert_eq!(run, listed, "SECTIONS must name exactly the sections `run` checks with wants()");
     }
+}
+
+/// Address-bar suggestions: typing offers matching history, the arrow keys choose, Enter opens the choice.
+async fn run_suggest(shell: &Rc<Shell>, r: &mut Report) {
+    let Some(st) = super::store() else {
+        r.check("the profile database is open", false, || "no store".into());
+        return;
+    };
+    let port = start_test_server();
+    let url = format!("http://localhost:{port}/b.html");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let _ = st.clear_history(None); // the test profile's own database: start from nothing
+    let _ = st.record_visit(None, &url, "Page B suggestion", now);
+    let _ = st.record_visit(None, "http://other.invalid/", "Something else", now);
+    shell.entry.grab_focus();
+    shell.entry.set_text("page b sugg");
+    let ok = wait_until(5_000, || shell.suggestion_urls().contains(&url)).await;
+    let offered = shell.suggestion_urls();
+    r.check("typing offers a matching history entry", ok && !offered.iter().any(|u| u.contains("other.invalid")), || format!("{offered:?}"));
+    r.check("nothing is highlighted until an arrow key is used", shell.chosen_suggestion().is_none(), || format!("{:?}", shell.chosen_suggestion()));
+    let moved = shell.move_suggestion(1);
+    r.check("the down arrow highlights the first suggestion", moved && shell.chosen_suggestion().as_deref() == Some(url.as_str()), || format!("{:?}", shell.chosen_suggestion()));
+    let moved = shell.move_suggestion(-1);
+    r.check("the up arrow returns to what was typed", moved && shell.chosen_suggestion().is_none(), || format!("{:?}", shell.chosen_suggestion()));
+    let _ = shell.move_suggestion(1);
+    let before = shell.state().borrow().load_cycles;
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || { let s = shell.state(); let s = s.borrow(); !s.loading && s.load_cycles > before && s.address == url }).await;
+    r.check("Enter opens the highlighted suggestion", ok, || format!("{:?}", shell.state().borrow()));
+    r.check("the suggestions are gone afterwards", shell.suggestion_urls().is_empty(), || format!("{:?}", shell.suggestion_urls()));
+    // Nothing is offered when the address bar is not being edited by a person.
+    shell.entry.set_text("");
+    glib::timeout_future(Duration::from_millis(200)).await;
+    r.check("an empty address bar offers nothing", shell.suggestion_urls().is_empty(), || String::new());
+    let _ = st.clear_history(None);
 }

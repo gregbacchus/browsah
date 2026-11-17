@@ -52,7 +52,7 @@ Do **not** run everything after every change. Run what the change can affect:
   not after each edit.
 - **Self-test:** `BROWSAH_SELFTEST_ONLY=a,b` runs only the sections named (a section is a `run_<name>` function
   listed in `selftest.rs`'s main sequence: `basic` (typing an address, back, forward, reload), `input`, `scroll`, `tabs`, `locked`, `routing`, `permissions`,
-  `downloads`, `cookies`, `storage`, `session_cookies`, `session_scope`, `webapp`, `install`, ...). It takes
+  `downloads`, `cookies`, `storage`, `session_cookies`, `session_scope`, `webapp`, `install`, `suggest`, ...). It takes
   seconds. Add a section's check next to the feature, and run that section while developing. Run the **whole**
   self-test (about four minutes; run it in the background and wait for it, `timeout 298`) once, before a commit
   that touches shared code (view.rs handlers, the shell, config layering), not for an isolated feature.
@@ -76,6 +76,7 @@ take minutes.
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs, `app`), scope patterns, the `browsah workspace` command line |
 | `src/webapp.rs` | Web apps (a workspace with an `app:` section): application id, `.desktop` entry and icon, the `browsah app` command line |
+| `src/suggest.rs` | Address-bar suggestion ranking (pure, tested); the popover is `app/suggest.rs` |
 | `src/cookies.rs` | Cookie rules (`cookies:`): `allow`/`session`/`deny` per site, session-cookie keys, allow-rule YAML for blocked sites |
 | `src/history.rs` | History helpers and the `browsah history` command line |
 | `src/sweep.rs` | Tab sweeping model: durations, `Usage` (decaying score), rules and the `Sweeper` (pure, tested); applying it is `app/sweep.rs` |
