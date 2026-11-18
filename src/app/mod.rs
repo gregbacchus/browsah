@@ -99,6 +99,8 @@ pub struct Tab {
     created: std::cell::Cell<i64>,
     /// What the last probe found: unsaved form input, playing media, and the input count then.
     dirty: std::cell::Cell<bool>,
+    /// Why the page counts as having unsaved work (`typed`: the person typed in a form; `asks`: its beforeunload handler asks).
+    dirty_why: RefCell<String>,
     playing: std::cell::Cell<bool>,
     input_seen: std::cell::Cell<u64>,
 }
@@ -1168,7 +1170,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -2186,6 +2188,15 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             if let Some(s) = weak.upgrade() {
                 s.attach_page(page);
                 s.schedule_pin_order(page, position);
+            }
+        }
+    });
+    tab_view.connect_indicator_activated({
+        let weak = weak.clone();
+        move |_, page| {
+            // The pen or the speaker on a tab was clicked: say what it means.
+            if let Some(s) = weak.upgrade() {
+                s.toast(page.indicator_tooltip().as_str());
             }
         }
     });

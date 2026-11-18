@@ -57,9 +57,27 @@ pub(super) fn start_background_sweeping(profile: crate::profile::Profile, app_fi
     });
 }
 
-/// What the probe asks a page: is anything typed in a form or editor that has not been saved, and is
-/// media playing. Conservative on purpose: a box a script filled in looks unsaved.
-const PROBE: &str = r#"(() => {
+/// The page's own record of where the person typed: set up in every frame as it starts loading (`on_load_start`). Only real
+/// keyboard, paste and input-method input counts (`isTrusted`): a value a script put in a box is not the person's work. It keeps
+/// the elements typed into (not their text); submitting or resetting a form clears it, and a new page starts again empty.
+pub(super) const INPUT_HOOK: &str = r#"(() => {
+  if (window.__browsahInputHook) return;
+  window.__browsahInputHook = true;
+  window.__browsahTyped = [];
+  addEventListener('input', e => {
+    if (!e.isTrusted || !(e.target instanceof Element)) return;
+    if (!window.__browsahTyped.some(r => r.deref() === e.target)) window.__browsahTyped.push(new WeakRef(e.target));
+    if (window.__browsahTyped.length > 50) window.__browsahTyped.shift();
+  }, true);
+  for (const name of ['submit', 'reset']) addEventListener(name, () => { window.__browsahTyped = []; }, true);
+})()"#;
+
+/// What the probe asks a page: is there work that would be lost, and is media playing. Two signals count as work:
+/// text the person typed that is still in a field (`INPUT_HOOK` records where they typed; a field a script filled in, or an
+/// editor with text the person never touched, does not count), and the page's own answer to "leave this page?": its `beforeunload` handlers
+/// are run against a made-up event, without leaving, as when a tab is closed; a handler that asks for a prompt means unsaved
+/// changes. The second only counts for a page the person has used (browsers ignore the prompt of a page nobody touched).
+pub(super) const PROBE: &str = r#"(() => {
   const dirtyField = (e) => {
     if (e.tagName === 'TEXTAREA') return e.value !== e.defaultValue;
     if (e.tagName === 'SELECT') return [...e.options].some(o => o.selected !== o.defaultSelected);
@@ -71,27 +89,45 @@ const PROBE: &str = r#"(() => {
     }
     return e.isContentEditable && (e.textContent || '').trim().length > 0;
   };
-  const fields = document.querySelectorAll('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
-  const dirty = [...fields].some(dirtyField);
+  // Only what the person typed into counts, and only while it still holds something: not a box a script filled in, not an editor
+  // whose text was there to begin with.
+  const typed = (window.__browsahTyped || []).map(r => r.deref()).some(el => el && el.isConnected && dirtyField(el));
+  let asks = false;
+  try {
+    if (navigator.userActivation && navigator.userActivation.hasBeenActive) {
+      let answer = false;
+      const handler = window.onbeforeunload;
+      if (typeof handler === 'function') {
+        window.onbeforeunload = function (e) { const r = handler.call(this, e); if (r !== undefined && r !== null) answer = true; return r; };
+      }
+      const ev = new Event('beforeunload', { cancelable: true });
+      let value = '';
+      Object.defineProperty(ev, 'returnValue', { configurable: true, get() { return value; }, set(x) { value = x; answer = true; } });
+      window.dispatchEvent(ev);
+      window.onbeforeunload = typeof handler === 'function' ? handler : null;
+      asks = answer || ev.defaultPrevented;
+    }
+  } catch (e) {}
   const playing = [...document.querySelectorAll('video, audio')].some(m => !m.paused && !m.ended && !m.muted && m.readyState > 2);
-  return JSON.stringify({ dirty, playing });
+  return JSON.stringify({ dirty: typed || asks, why: typed ? 'typed' : asks ? 'asks' : '', playing });
 })()"#;
 
 /// How long a probe has to answer before the tab is treated as unknown (and so left alone).
 const PROBE_WAIT: Duration = Duration::from_millis(1500);
 
 /// Read a probe's answer out of the DevTools result.
-fn parse_probe(json: &str) -> Option<(bool, bool)> {
+pub(super) fn parse_probe(json: &str) -> Option<(bool, bool, String)> {
     let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(json).ok()?;
     let inner = v.get("result")?.get("value")?.as_str()?;
     let p: serde_yaml_ng::Value = serde_yaml_ng::from_str(inner).ok()?;
-    Some((p.get("dirty")?.as_bool()?, p.get("playing")?.as_bool()?))
+    Some((p.get("dirty")?.as_bool()?, p.get("playing")?.as_bool()?, p.get("why").and_then(|w| w.as_str()).unwrap_or("").to_owned()))
 }
 
 impl Shell {
     /// Start the periodic check. It ticks every 30 seconds and runs the rules when their interval has passed, so a change of
     /// rules, interval or `sleep_tabs_after` (a configuration reload) takes effect without reopening the window.
     pub(super) fn start_sweeping(self: &Rc<Self>) {
+        self.watch_style_for_status_icons();
         let window = self.window.downgrade();
         glib::timeout_add_seconds_local(30, move || match window.upgrade().and_then(|w| shell_of(&w)) {
             Some(s) => {
@@ -146,8 +182,9 @@ impl Shell {
         let mut unknown = std::collections::HashSet::new();
         for (tab, id) in &probes {
             match tab.view().cdp_result(*id).and_then(|(ok, json)| ok.then_some(json)).and_then(|j| parse_probe(&j)) {
-                Some((dirty, playing)) => {
+                Some((dirty, playing, why)) => {
                     tab.dirty.set(dirty);
+                    *tab.dirty_why.borrow_mut() = why;
                     tab.playing.set(playing);
                 }
                 None => {
@@ -176,7 +213,7 @@ impl Shell {
                     let why = if selected.as_ref().is_some_and(|s| Rc::ptr_eq(s, &tab)) {
                         "selected"
                     } else if tab.dirty.get() {
-                        "unsaved form input"
+                        if *tab.dirty_why.borrow() == "asks" { "the page asks before it is closed" } else { "unsaved typing in a form" }
                     } else if tab.playing.get() {
                         "playing media"
                     } else if tab.state.borrow().loading {
@@ -247,18 +284,35 @@ impl Shell {
         self.schedule_save();
     }
 
-    /// Show on the tab why it is safe from sweeping: unsaved input or playing media.
-    fn mark_tab(&self, tab: &Rc<Tab>) {
+    /// Show on the tab why it is safe from sweeping: unsaved input (a pen) or playing media (a speaker). The indicator is
+    /// activatable so that hovering it shows its own tooltip (an inert indicator gives the tab's) and clicking it says why.
+    pub(super) fn mark_tab(&self, tab: &Rc<Tab>) {
+        let lucide = |icon: &crate::icons::Icon| gio::ThemedIcon::new(&crate::icons::name(icon));
         if tab.dirty.get() {
-            tab.page.set_indicator_icon(Some(&gio::ThemedIcon::new("document-edit-symbolic")));
-            tab.page.set_indicator_tooltip("Unsaved changes in a form: this tab will not be swept");
+            tab.page.set_indicator_icon(Some(&lucide(&crate::icons::PEN_LINE)));
+            tab.page.set_indicator_tooltip(if *tab.dirty_why.borrow() == "asks" { "The page asks before it is closed (unsaved changes): this tab will not be swept" } else { "Unsaved typing in a form: this tab will not be swept" });
+            tab.page.set_indicator_activatable(true);
         } else if tab.playing.get() {
-            tab.page.set_indicator_icon(Some(&gio::ThemedIcon::new("audio-volume-high-symbolic")));
+            tab.page.set_indicator_icon(Some(&lucide(&crate::icons::VOLUME_2)));
             tab.page.set_indicator_tooltip("Playing: this tab will not be swept");
+            tab.page.set_indicator_activatable(true);
         } else {
             tab.page.set_indicator_icon(None::<&gio::Icon>);
             tab.page.set_indicator_tooltip("");
+            tab.page.set_indicator_activatable(false);
         }
+    }
+
+    /// Keep the status icons right when the style changes (they are named for the style).
+    pub(super) fn watch_style_for_status_icons(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        crate::icons::on_style_change(move || {
+            if let Some(s) = weak.upgrade() {
+                for t in s.tabs() {
+                    s.mark_tab(&t);
+                }
+            }
+        });
     }
 
     /// Free a tab's page but keep the tab: its last frame is saved as a screenshot, its browser is
@@ -320,10 +374,10 @@ mod tests {
 
     #[test]
     fn probe_answers_are_read_from_the_devtools_result() {
-        let ok = r#"{"result":{"type":"string","value":"{\"dirty\":true,\"playing\":false}"}}"#;
-        assert_eq!(parse_probe(ok), Some((true, false)));
+        let ok = r#"{"result":{"type":"string","value":"{\"dirty\":true,\"why\":\"asks\",\"playing\":false}"}}"#;
+        assert_eq!(parse_probe(ok), Some((true, false, "asks".into())));
         let playing = r#"{"result":{"type":"string","value":"{\"dirty\":false,\"playing\":true}"}}"#;
-        assert_eq!(parse_probe(playing), Some((false, true)));
+        assert_eq!(parse_probe(playing), Some((false, true, String::new())));
         // An exception in the page or anything unexpected: no answer, so the tab is left alone.
         assert_eq!(parse_probe(r#"{"result":{"type":"object","subtype":"error"},"exceptionDetails":{}}"#), None);
         assert_eq!(parse_probe("not json at all {"), None);

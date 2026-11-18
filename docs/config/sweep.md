@@ -173,10 +173,14 @@ sweep:
 - the tab you are looking at (in any window), a workspace's pinned tabs (from the rules; `sleep_tabs_after` may put them to sleep), and **the last tab of a workspace**: a sweep never
   leaves a workspace without a tab. (For a workspace whose window is closed, when every remembered tab would
   be swept and there is no pinned tab, the one used most recently is kept.);
-- a tab with **unsaved form input**: a typed value in a text box, a changed checkbox or choice, or text in
-  an editor (the tab is marked with an edit icon while that is so). Pages that fill a box in by script
-  can look unsaved when they are not; they are protected, never swept by mistake;
-- a tab that is **playing sound or video** (marked with a speaker icon) or is still loading.
+- a tab with **unsaved work**, marked with a pen icon (hover it to see why; click it for a message). Two things count:
+  text **you typed** that is still in the box (a box a script filled in, or an editor whose text was there to begin with, does not
+  count; typing is forgotten when the form is submitted or reset, and a reloaded page starts again), and a page whose
+  **`beforeunload` handler asks** "leave this page?": at each pass the handlers are run against a made-up event, without leaving
+  anything, as when you close a tab, and one that asks for a prompt means unsaved changes. The second only counts for a page you have
+  used, since browsers ignore the prompt of a page nobody touched. A page that always asks counts as always unsaved, as it would for
+  a browser's own close;
+- a tab that is **playing sound or video** (marked with a speaker icon, shown the same way) or is still loading.
 
 Pages that use the microphone or camera without playing media, and sound produced by a page without a
 media element, are not detected: write a rule that does not match such sites.

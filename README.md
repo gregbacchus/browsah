@@ -84,7 +84,7 @@ See [docs/config/history.md](docs/config/history.md).
 Tab sweeping: rules (in a workspace, or in `profile.yaml` or `config.yaml` for all of them to inherit) can tidy up tabs you no longer use (idle for how long, a decaying use
 score, which sites), closing them (recoverable with `Ctrl+Shift+T`, recorded as swept) or putting them to
 sleep. `sleep_tabs_after: 30m` (at any level, also for web apps) simply puts background tabs to sleep after that idle time, never the one
-you are looking at. Sleeping tabs are dimmed with a grey icon (`sleeping_tabs`), and a broom button next to reload lists tabs a sweep closed lately so you can restore them (`recently_swept`). Tabs with unsaved form input or playing media are never swept. See
+you are looking at. Sleeping tabs are dimmed with a grey icon (`sleeping_tabs`), and a broom button next to reload lists tabs a sweep closed lately so you can restore them (`recently_swept`). Tabs with unsaved work (text you typed, or a page whose leave-page prompt asks) or playing media are never swept. See
 [docs/config/sweep.md](docs/config/sweep.md).
 
 Permissions and downloads: pages that ask to use the camera, microphone, location, notifications and so on are

@@ -8,6 +8,7 @@
 use adw::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// The grid every icon is drawn on (its `viewBox`). It is shown at whatever size the widget asks for, 16 px for buttons.
 pub const SIZE: i32 = 24;
@@ -39,6 +40,7 @@ icon!(MENU, "menu", "open-menu-symbolic");
 icon!(SWATCH_BOOK, "swatch-book", "view-app-grid-symbolic");
 icon!(ROTATE_CCW_CLOCK, "rotate-ccw-clock", "document-open-recent-symbolic");
 icon!(TRASH, "trash", "user-trash-symbolic");
+icon!(PEN_LINE, "pen-line", "document-edit-symbolic");
 icon!(SWEPT_BROOM, "swept-broom", "edit-clear-all-symbolic");
 icon!(EXTERNAL_LINK, "external-link", "document-open-symbolic");
 icon!(APP_WINDOW, "app-window", "window-new-symbolic");
@@ -75,7 +77,7 @@ icon!(CHEVRON_LEFT, "chevron-left", "go-previous-symbolic");
 /// The bookmarked star: Lucide's star painted in.
 pub const STAR_FILLED: Icon = Icon { id: "star-filled", filled: true, ..STAR };
 
-pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, SWATCH_BOOK, ROTATE_CCW_CLOCK, TRASH, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
+pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, SWATCH_BOOK, ROTATE_CCW_CLOCK, TRASH, PEN_LINE, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
 
 /// The icon with this Lucide id.
 pub fn by_id(id: &str) -> Option<Icon> {
@@ -106,6 +108,8 @@ thread_local! {
     static INSTALLED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
     /// Widgets (or tab pages) with an `icon-name` that follows the style.
     static BOUND: RefCell<Vec<(glib::WeakRef<glib::Object>, Icon)>> = const { RefCell::new(Vec::new()) };
+    /// Called when the style changes, for icons that are not an `icon-name` of a widget (a tab's status icon).
+    static ON_STYLE: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Write the icon files (once) and let the icon theme find them. False if the files cannot be written.
@@ -134,7 +138,17 @@ pub fn name(icon: &Icon) -> String {
     }
 }
 
+/// Run `f` whenever the style (dark or light) changes, to set an icon that `bind` cannot (it only sets a widget's `icon-name`).
+pub fn on_style_change(f: impl Fn() + 'static) {
+    install();
+    ON_STYLE.with(|h| h.borrow_mut().push(Rc::new(f)));
+}
+
 fn refresh() {
+    let hooks: Vec<Rc<dyn Fn()>> = ON_STYLE.with(|h| h.borrow().clone());
+    for h in hooks {
+        h();
+    }
     BOUND.with(|b| {
         let mut b = b.borrow_mut();
         b.retain(|(w, _)| w.upgrade().is_some());

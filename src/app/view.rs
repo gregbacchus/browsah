@@ -829,6 +829,7 @@ wrap_load_handler! {
                 }
                 // Every frame, each time it starts loading: the page's copy buttons (see `COPY_HOOK`).
                 frame.execute_java_script(Some(&CefString::from(COPY_HOOK)), Some(&CefString::from("browsah://copy-hook")), 0);
+                frame.execute_java_script(Some(&CefString::from(super::sweep::INPUT_HOOK)), Some(&CefString::from("browsah://input-hook")), 0);
             }
         }
 

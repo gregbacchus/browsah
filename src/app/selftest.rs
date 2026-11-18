@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "newtab", "extensions",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -452,6 +452,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("ctxmenu") {
         run_ctxmenu(shell, r).await;
+    }
+    if wants("probe") {
+        run_probe(shell, r).await;
     }
     if wants("picker") {
         run_picker(shell, r).await;
@@ -1140,6 +1143,9 @@ fn start_test_server() -> u16 {
                 "/fav.html" => ("200 OK", String::new(), "<!doctype html><title>Fav</title><link rel=icon href=/icon.png>fav".to_owned()),
                 "/svgfav.html" => ("200 OK", String::new(), "<!doctype html><title>SvgFav</title><link rel=icon href=/icon.svg>svg".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
+                "/probe-a.html" => ("200 OK", String::new(), "<!doctype html><title>Probe A</title><input id=a><div id=c contenteditable=true>text that was there to begin with</div><script>document.getElementById('a').value = 'filled in by a script';</script>".to_owned()),
+                "/probe-b.html" => ("200 OK", String::new(), "<!doctype html><title>Probe B</title><input id=x><script>addEventListener('beforeunload', e => { if (document.getElementById('x').value) { e.preventDefault(); e.returnValue = ''; } });</script>".to_owned()),
+                "/probe-c.html" => ("200 OK", String::new(), "<!doctype html><title>Probe C</title><input id=x><script>window.onbeforeunload = () => document.getElementById('x').value ? 'unsaved' : undefined;</script>".to_owned()),
                 "/menus.html" => (
                     "200 OK",
                     String::new(),
@@ -1847,9 +1853,14 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let form = sw.open_tab(&format!("http://localhost:{port}/form.html"), true);
     let ok = wait_until(20_000, || [&stale, &sleepy, &form].iter().all(|t| !t.state.borrow().loading && !t.state.borrow().title.is_empty())).await;
     r.check("the tabs to sweep load", ok, || "not loaded".into());
-    // Type into the form (set by script, as a page would see it), then look at the home tab so nothing else is selected.
-    let id = form.view().cdp_eval("document.getElementById('i').value = 'half typed'; 'ok'");
-    let _ = wait_until(5_000, || form.view().cdp_result(id).is_some()).await;
+    // Type into the form for real (a value a script puts in a box is not counted), then look at the home tab so nothing else is selected.
+    sw.tab_view.set_selected_page(&form.page);
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let d = Driver { shell: &sw };
+    d.click(30.0, 40.0); // the input is the first thing on the page (it sits at y 30 to 51)
+    glib::timeout_future(Duration::from_millis(300)).await;
+    d.type_str("half typed");
+    glib::timeout_future(Duration::from_millis(400)).await;
     sw.tab_view.set_selected_page(&home.page);
     glib::timeout_future(Duration::from_millis(3500)).await; // idle for longer than the rules' 2 s
 
@@ -1862,6 +1873,10 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the closed tab is recorded as swept by its rule", closed.len() == 1 && closed[0].reason == "sweep:Stale" && closed[0].url.contains("stale=1"), || format!("{closed:?}"));
     r.check("an idle tab matching a discard rule stays but is put to sleep", sw.tabs().iter().any(|t| t.uid == sleepy.uid) && sleepy.view().is_dormant(), || format!("dormant={}", sleepy.view().is_dormant()));
     r.check("a tab with unsaved form input is left alone and marked", sw.tabs().iter().any(|t| t.uid == form.uid) && form.dirty.get() && form.page.indicator_icon().is_some(), || format!("dirty={}", form.dirty.get()));
+    // The pen's own tooltip shows (an inert indicator hands the hover to the tab's tooltip), and the icon is Lucide's pen-line.
+    let indicator = super::pinned_tabs::tab_widget(sw.tab_bar.upcast_ref(), &form.page).and_then(|t| super::pinned_tabs::child_with_class(&t, "tab-indicator"));
+    r.check("the marker on a tab with typed input can be hovered and says why", indicator.as_ref().is_some_and(|w| w.can_target()) && form.page.is_indicator_activatable() && form.page.indicator_tooltip().contains("Unsaved typing"), || format!("{:?} {:?}", indicator.as_ref().map(|w| w.can_target()), form.page.indicator_tooltip()));
+    r.check("and uses the pen-line icon", form.page.indicator_icon().is_some_and(|i| i.to_string().is_some_and(|n| n.contains("pen-line"))), || format!("{:?}", form.page.indicator_icon().map(|i| i.to_string())));
     r.check("the tab being looked at is never swept", sw.tabs().iter().any(|t| t.uid == home.uid), || "home swept".into());
     r.check("a pinned tab is never swept, however idle (a rule matches every tab)", pinned.as_ref().is_some_and(|p| sw.tabs().iter().any(|t| t.uid == p.uid)), || "pinned tab swept".into());
 
@@ -4692,4 +4707,68 @@ fn find_button_by_tooltip_prefix(root: &gtk::Widget, prefix: &str) -> Option<gtk
         child = w.next_sibling();
     }
     None
+}
+
+/// The sweep's probe: what counts as unsaved work. Typing the person did counts while it is still in the box; a box a script filled
+/// in, an editor's own text and a page nobody touched do not; a page whose `beforeunload` handler asks for a prompt counts once the
+/// page has been used (both the event-listener and the `onbeforeunload` forms).
+async fn run_probe(shell: &Rc<Shell>, r: &mut Report) {
+    let st = &shell.state();
+    let d = Driver { shell };
+    let v = &shell.view();
+    let port = start_test_server();
+    let probe = || async move {
+        let id = v.cdp_eval(super::sweep::PROBE);
+        let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
+        v.cdp_result(id).and_then(|(ok, json)| ok.then_some(json)).and_then(|j| super::sweep::parse_probe(&j))
+    };
+    let go = |name: &str, title: &str| {
+        let (name, title) = (name.to_owned(), title.to_owned());
+        async move {
+            shell.entry.set_text(&format!("http://localhost:{port}/{name}"));
+            shell.entry.emit_by_name::<()>("activate", &[]);
+            let ok = wait_until(15_000, || {
+                let s = st.borrow();
+                !s.loading && s.title == title
+            })
+            .await;
+            glib::timeout_future(Duration::from_millis(900)).await;
+            ok
+        }
+    };
+
+    let ok = go("probe-a.html", "Probe A").await;
+    r.check("the probe test page loads", ok, || st.borrow().title.clone());
+    let p = probe().await;
+    r.check("a box a script filled in and an editor's own text are not unsaved work", p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+    d.click(30.0, 20.0);
+    d.type_str("abc");
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let p = probe().await;
+    r.check("text the person typed is", p.as_ref().is_some_and(|p| p.0 && p.2 == "typed"), || format!("{p:?}"));
+    let id = v.cdp_eval("document.getElementById('a').value = ''; 'ok'");
+    let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
+    let p = probe().await;
+    r.check("until the box is empty again", p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+    // The same page again: the typing is forgotten with the page.
+    d.type_str("x");
+    let ok = go("probe-a.html", "Probe A").await;
+    let p = probe().await;
+    r.check("a reloaded page has no typing to protect", ok && p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+
+    for (page, title, what) in [("probe-b.html", "Probe B", "an event listener"), ("probe-c.html", "Probe C", "onbeforeunload")] {
+        let ok = go(page, title).await;
+        let id = v.cdp_eval("document.getElementById('x').value = 'draft'; 'ok'");
+        let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
+        let p = probe().await;
+        r.check(&format!("a page with {what} that asks, but nobody has used it, is not counted"), ok && p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+        d.click(300.0, 300.0); // use the page (the box holds a script's text, which is not typing)
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let p = probe().await;
+        r.check(&format!("once used, a page whose {what} handler asks counts"), p.as_ref().is_some_and(|p| p.0 && p.2 == "asks"), || format!("{p:?}"));
+        let id = v.cdp_eval("document.getElementById('x').value = ''; 'ok'");
+        let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
+        let p = probe().await;
+        r.check(&format!("and not once the handler stops asking ({what})"), p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+    }
 }

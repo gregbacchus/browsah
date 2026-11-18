@@ -21,6 +21,7 @@ derived from Feather are MIT; both texts are kept in `assets/icons/lucide/LICENS
 | Main menu | `menu` |
 | Workspace picker | `swatch-book` (`layout-grid` was the alternative: a grid says "apps"; a swatch book says colour-coded sets) |
 | History: Visited, Recently closed | `rotate-ccw-clock`, `trash` |
+| A tab's status marker: unsaved work, playing | `pen-line`, `volume-2` |
 | Recently swept button | the broom with sparkles supplied for it (`swept-broom.svg`; Lucide's own `brush-cleaning` and `broom-sparkles` are different drawings) |
 
 Not converted yet, so still the stock symbolic icons: stop, new tab, the downloads list's row buttons, find bar, tab group and
