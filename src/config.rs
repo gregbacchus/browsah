@@ -52,6 +52,8 @@ pub struct Config {
     pub sleep_tabs_after: Option<String>,
     /// How a sleeping tab looks in the tab strip (dimmed, icon without colour).
     pub sleeping_tabs: SleepingTabsConfig,
+    /// The "recently swept" button next to the reload button: tabs a sweep closed lately, to restore.
+    pub recently_swept: RecentlySweptConfig,
     /// The program's log in the system journal (see `browsah log`).
     pub logging: LoggingConfig,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
@@ -166,6 +168,7 @@ impl Default for Config {
             sweep: Default::default(),
             sleep_tabs_after: None,
             sleeping_tabs: Default::default(),
+            recently_swept: Default::default(),
             logging: Default::default(),
             storage: Storage::Shared,
             theme: Theme::System,
@@ -241,6 +244,11 @@ impl Config {
             self.search_url = DEFAULT_SEARCH_URL.into();
         }
         self.sleeping_tabs.opacity = if self.sleeping_tabs.opacity.is_finite() { self.sleeping_tabs.opacity.clamp(0.2, 1.0) } else { 0.6 };
+        self.recently_swept.max_tabs = self.recently_swept.max_tabs.clamp(1, 50);
+        if let Err(e) = crate::sweep::parse_duration(&self.recently_swept.within) {
+            eprintln!("config: recently_swept.within: {e}; using 1d");
+            self.recently_swept.within = "1d".into();
+        }
         if let Some(text) = self.sleep_tabs_after.as_deref() {
             if let Err(e) = crate::sweep::parse_duration(text) {
                 eprintln!("config: sleep_tabs_after: {e}; tabs are not put to sleep");
@@ -385,6 +393,32 @@ pub struct SleepingTabsConfig {
 impl Default for SleepingTabsConfig {
     fn default() -> Self {
         Self { opacity: 0.6, grayscale_icon: true }
+    }
+}
+
+/// The `recently_swept:` section: the header button listing tabs that sweeping closed, so they can be brought back.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct RecentlySweptConfig {
+    /// Show the button (only while there is something to list).
+    pub enabled: bool,
+    /// How far back a swept tab is still listed (`30m`, `6h`, `1d`).
+    pub within: String,
+    /// The most tabs listed (1 to 50).
+    pub max_tabs: usize,
+}
+
+impl Default for RecentlySweptConfig {
+    fn default() -> Self {
+        Self { enabled: true, within: "1d".into(), max_tabs: 10 }
+    }
+}
+
+impl RecentlySweptConfig {
+    /// `within` in seconds (a value that is not a duration was replaced by `1d` when the configuration loaded).
+    pub fn within_secs(&self) -> i64 {
+        crate::sweep::parse_duration(&self.within).unwrap_or(86_400)
     }
 }
 
@@ -640,6 +674,7 @@ mod tests {
         add("cookies", field_names::<crate::cookies::CookiesConfig>());
         add("print", field_names::<PrintConfig>());
         add("sleeping_tabs", field_names::<SleepingTabsConfig>());
+        add("recently_swept", field_names::<RecentlySweptConfig>());
         add("logging", field_names::<LoggingConfig>());
         add("sweep", field_names::<crate::sweep::SweepConfig>());
         add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
@@ -676,7 +711,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

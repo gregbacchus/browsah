@@ -240,6 +240,12 @@ impl Modal {
                 }
             }
             ViewEvent::Zoom(_) | ViewEvent::FindResult { .. } | ViewEvent::Fullscreen(_) | ViewEvent::PdfSaved { .. } | ViewEvent::Favicon(_) => {}
+            // A copy button in a modal's page, if the person has just used it (see `Shell::handle`).
+            ViewEvent::ClipboardWrite(text) => {
+                if self.view.used_within(std::time::Duration::from_secs(5)) {
+                    gtk::prelude::WidgetExt::display(&self.view.widget).clipboard().set_text(&text);
+                }
+            }
             ViewEvent::JsDialog(q) => {
                 if let Some(o) = self.owner.upgrade() {
                     o.show_js_dialog(q);

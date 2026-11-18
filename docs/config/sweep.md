@@ -82,6 +82,31 @@ sleeping_tabs:
 An ordinary layered option (`config.yaml`, `profile.yaml`, `workspace.yaml`, `app.yaml`, the lowest layer winning); a configuration
 reload applies it to the tabs already open, in every window. It only changes how the tab strip looks, not when tabs sleep.
 
+## Getting swept tabs back: the recently swept button
+
+When sweeping has closed tabs of a window's workspace lately, a broom button appears next to the reload button. Its list shows each
+swept tab (title, how long ago, which rule closed it); clicking one opens it again in this window, and *Restore all* opens them all.
+Restoring removes a tab from the history's *Recently closed* list, as `Ctrl+Shift+T` does. The button is hidden while the list is
+empty, and tabs a sweep closed while the workspace was not open are listed too. Only tabs closed by a `sweep:` rule are listed:
+tabs you closed yourself and tabs put to sleep (which are still there) are not.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `recently_swept.enabled` | bool | `true` | Show the button when there is something to list. `false` removes it (live, on reload). |
+| `recently_swept.within` | duration | `1d` | How far back a swept tab is still listed (`30m`, `6h`, `1d`; see [value types](value-types.md#durations)). A value that is not a duration is reported and `1d` is used. |
+| `recently_swept.max_tabs` | integer, 1 to 50 | `10` | The most tabs listed, newest first. |
+
+```yaml
+recently_swept:
+  enabled: true
+  within: 1d
+  max_tabs: 10
+```
+
+An ordinary layered option (`config.yaml`, `profile.yaml`, `workspace.yaml`, `app.yaml`, the lowest layer winning), applied live when
+the configuration reloads. The list is the profile's history of closed tabs (see [history.md](history.md)); with history switched off
+for an address (`history.exclude`) its swept tabs are not remembered and so cannot be listed.
+
 ## When the workspace is not open
 
 Sweeping does not need the workspace's window. While the profile is running, a workspace whose window is

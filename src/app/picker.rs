@@ -68,7 +68,8 @@ impl Ui {
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content.append(&switch);
         let popover = gtk::Popover::builder().child(&content).build();
-        let button = gtk::MenuButton::builder().icon_name("view-app-grid-symbolic").tooltip_text("Workspaces").popover(&popover).build();
+        let button = gtk::MenuButton::builder().tooltip_text("Workspaces").popover(&popover).build();
+        crate::icons::bind(&button, crate::icons::SWATCH_BOOK);
         let ui = Rc::new(Ui { button, popover, list, recent, alpha, current, syncing: std::cell::Cell::new(false) });
         // The list is built when it is opened, so it shows the workspaces and the last use as they are now.
         ui.popover.connect_show({

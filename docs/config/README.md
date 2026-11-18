@@ -46,6 +46,7 @@ as `<name>.bak`; comments you wrote in the old file are not carried over). The s
 | `history` | [Options](options.md#history), [History](history.md) |
 | `permissions`, `downloads` | [Options](options.md#permissions), [Permissions](permissions.md) |
 | `sleep_tabs_after`, `sleeping_tabs` | [Sweep](sweep.md#how-a-sleeping-tab-looks) |
+| `recently_swept` | [Sweep](sweep.md#getting-swept-tabs-back-the-recently-swept-button) |
 | `cookies`, `print` | [Options](options.md#cookies) |
 | `routing` | [Routing](routing.md) |
 | `nav`, `tabs` (workspace only) | [Workspace](workspace.md) |

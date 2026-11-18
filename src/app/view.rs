@@ -94,6 +94,8 @@ pub enum ViewEvent {
     ContextMenu(Arc<MenuRequest>),
     /// The browser exists; navigation calls now work.
     Ready,
+    /// A page's own copy button put this text on its clipboard (the shell puts it on the system clipboard, if the person has just used the page).
+    ClipboardWrite(String),
     /// The main frame's address changed.
     Address(String),
     Title(String),
@@ -143,6 +145,56 @@ pub enum ViewEvent {
 /// Keeps a DevTools observer registration alive (dropping it unregisters the observer).
 struct RegHandle(#[allow(dead_code)] Registration);
 unsafe impl Send for RegHandle {}
+
+/// The prefix of the console message a page's copy hook sends (`COPY_HOOK`); `on_console_message` takes it and the rest is the text.
+const COPY_PREFIX: &str = "\u{1}browsah-copy\u{1}";
+
+/// Pages copy with `navigator.clipboard.writeText`/`write`, `document.execCommand('copy')` or a `copy` event handler. Windowless
+/// Chromium cannot reach the Wayland clipboard, so these fail in the page (`NotAllowedError`, `false`), and a copy that did work
+/// would stay inside the browser. This script, run in every frame as it starts loading (`on_load_start`), makes them succeed and
+/// reports the text as a console message; the shell uses it only if the person has just used the page. Paste (`readText`) is left alone.
+const COPY_HOOK: &str = r#"(() => {
+  if (window.__browsahCopyHook) return;
+  window.__browsahCopyHook = true;
+  const send = t => { try { if (typeof t === 'string' && t.length <= 1000000) console.debug('\u0001browsah-copy\u0001' + t); } catch (e) {} };
+  const selected = () => {
+    const a = document.activeElement;
+    if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && typeof a.selectionStart === 'number' && a.selectionStart !== a.selectionEnd)
+      return a.value.substring(a.selectionStart, a.selectionEnd);
+    return String(getSelection());
+  };
+  let inCopy = false, inExec = false, got = null;
+  const setData = DataTransfer.prototype.setData;
+  DataTransfer.prototype.setData = function (type, data) {
+    if (inCopy && String(type).toLowerCase() === 'text/plain') got = String(data);
+    return setData.apply(this, arguments);
+  };
+  for (const name of ['copy', 'cut']) {
+    addEventListener(name, () => { inCopy = true; got = null; setTimeout(() => { inCopy = false; }, 0); }, true);
+    addEventListener(name, () => { if (!inExec && got !== null) send(got); });
+  }
+  const exec = Document.prototype.execCommand;
+  Document.prototype.execCommand = function (cmd) {
+    const c = String(cmd).toLowerCase();
+    if (c !== 'copy' && c !== 'cut') return exec.apply(this, arguments);
+    const before = selected();
+    inExec = true; got = null;
+    let ok = false;
+    try { ok = exec.apply(this, arguments); } finally { inExec = false; }
+    const text = got !== null ? got : before;
+    if (text) { send(text); return true; }
+    return ok;
+  };
+  const C = window.Clipboard && Clipboard.prototype;
+  if (C) {
+    C.writeText = function (t) { send(String(t)); return Promise.resolve(); };
+    C.write = async function (items) {
+      for (const item of items || []) {
+        if (item.types.includes('text/plain')) send(await (await item.getType('text/plain')).text());
+      }
+    };
+  }
+})()"#;
 
 wrap_dev_tools_message_observer! {
     struct ViewDevTools { shared: Arc<Shared> }
@@ -207,6 +259,8 @@ struct Shared {
     /// The same images as PNG bytes (for an app's icon).
     image_data: Mutex<HashMap<String, Vec<u8>>>,
     next_cdp_id: std::sync::atomic::AtomicI32,
+    /// Held while a DevTools message id is taken and the call posted, so ids run in order (see `Shared::post_cdp`).
+    cdp_order: Mutex<()>,
     /// Set while the browser has not been created yet (a restored tab): its address.
     deferred_url: Mutex<Option<String>>,
     /// Where the view may navigate (patterns of `workspace::scope_matches`); empty: anywhere.
@@ -321,6 +375,17 @@ fn context_for(dir: &std::path::Path) -> Option<RequestContext> {
 }
 
 impl Shared {
+    /// Take the next DevTools message id and post `run` (which makes the call) to CEF's UI thread. CEF numbers calls by their ids
+    /// and wants them to increase in the order they run, but calls are made from both threads (a sweep's probe from the GTK thread,
+    /// the page hooks from CEF's): taking the id and posting under one lock keeps the two orders the same. (An id that goes
+    /// backwards is renumbered by CEF, and the caller then reads another call's result.)
+    fn post_cdp(&self, run: impl FnOnce(i32) + Send + 'static) -> i32 {
+        let _order = self.cdp_order.lock().unwrap();
+        let id = self.next_cdp_id.fetch_add(1, Ordering::Relaxed);
+        on_ui(move || run(id));
+        id
+    }
+
     fn new(id: u64, device_resolution: bool, accel: bool, frame_rate: i32) -> Arc<Shared> {
         Arc::new(Shared {
             id,
@@ -336,6 +401,7 @@ impl Shared {
             images: Mutex::new(HashMap::new()),
             image_data: Mutex::new(HashMap::new()),
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
+            cdp_order: Mutex::new(()),
             deferred_url: Mutex::new(None),
             scope: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
@@ -716,6 +782,8 @@ wrap_load_handler! {
                     self.shared.link_nav.store(false, Ordering::Relaxed); // the navigation committed: its redirects are over
                     forget_in_chromium(b, &CefString::from(&frame.url()).to_string());
                 }
+                // Every frame, each time it starts loading: the page's copy buttons (see `COPY_HOOK`).
+                frame.execute_java_script(Some(&CefString::from(COPY_HOOK)), Some(&CefString::from("browsah://copy-hook")), 0);
             }
         }
 
@@ -738,6 +806,18 @@ wrap_display_handler! {
     struct ViewDisplay { shared: Arc<Shared> }
 
     impl DisplayHandler {
+        // The copy hook's report (`COPY_HOOK`): the page's copy button wrote this text. Taken here, not logged.
+        fn on_console_message(&self, _b: Option<&mut Browser>, _level: LogSeverity, message: Option<&CefString>, _source: Option<&CefString>, _line: ::std::os::raw::c_int) -> ::std::os::raw::c_int {
+            let Some(text) = message.map(|m| m.to_string()) else { return 0 };
+            match text.strip_prefix(COPY_PREFIX) {
+                Some(copied) => {
+                    send(self.shared.id, ViewEvent::ClipboardWrite(copied.to_owned()));
+                    1
+                }
+                None => 0,
+            }
+        }
+
         // The page's icon addresses changed: fetch the first that downloads.
         fn on_favicon_urlchange(&self, b: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
             let Some(host) = b.and_then(|b| b.host()) else { return };
@@ -1266,8 +1346,7 @@ wrap_permission_handler! {
 fn apply_scheme(shared: &Arc<Shared>) {
     let Some(dark) = *shared.scheme.lock().unwrap() else { return };
     let Some(h) = shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone())) else { return };
-    let id = shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
-    on_ui(move || {
+    shared.post_cdp(move |id| {
         let h = h;
         let json = format!(r#"{{"features":[{{"name":"prefers-color-scheme","value":"{}"}}]}}"#, if dark { "dark" } else { "light" });
         let Some(mut params) = parse_json(Some(&CefString::from(json.as_str())), JsonParserOptions::RFC).and_then(|v| v.dictionary()) else { return };
@@ -1807,6 +1886,8 @@ pub struct BrowserView {
     pointer: Cell<(f64, f64)>,
     /// Keys, clicks and scrolls sent to the page so far (tab sweeping reads this as activity).
     input_events: Cell<u64>,
+    /// When the person last used the page (a key, click or scroll): a copy button only counts then.
+    last_input: Cell<Option<std::time::Instant>>,
     /// Scroll distance not yet sent (sub-pixel remainders), and the kinetic-scroll generation.
     scroll_acc: Cell<(f64, f64)>,
     kinetic_gen: Cell<u64>,
@@ -2017,6 +2098,7 @@ impl BrowserView {
             im_state: RefCell::new(ImState::default()),
             pointer: Cell::new((0.0, 0.0)),
             input_events: Cell::new(0),
+            last_input: Cell::new(None),
             scroll_acc: Cell::new((0.0, 0.0)),
             kinetic_gen: Cell::new(0),
         });
@@ -2138,6 +2220,16 @@ impl BrowserView {
     /// Run a DevTools protocol method with no parameters; returns the id to read the result with
     /// `cdp_result`. Posted to CEF's UI thread.
     /// How many keys, clicks and scrolls the user has sent to this page.
+    fn note_input(&self) {
+        self.input_events.set(self.input_events.get() + 1);
+        self.last_input.set(Some(std::time::Instant::now()));
+    }
+
+    /// Whether the person used the page within `within` (like a browser's transient user activation).
+    pub fn used_within(&self, within: std::time::Duration) -> bool {
+        self.last_input.get().is_some_and(|t| t.elapsed() <= within)
+    }
+
     pub fn input_events(&self) -> u64 {
         self.input_events.get()
     }
@@ -2180,35 +2272,28 @@ impl BrowserView {
 
     /// As `cdp_eval`; `gesture` runs it as if the person had just clicked (for what needs a user gesture).
     pub fn cdp_eval_as(&self, expression: &str, gesture: bool) -> i32 {
-        let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
-        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
-            let h = HostHandle(h.0.clone());
-            let expression = expression.to_owned();
-            on_ui(move || {
-                let h = h;
-                let Some(mut params) = dictionary_value_create() else { return };
-                params.set_string(Some(&CefString::from("expression")), Some(&CefString::from(expression.as_str())));
-                params.set_bool(Some(&CefString::from("returnByValue")), 1);
-                params.set_bool(Some(&CefString::from("awaitPromise")), 1);
-                if gesture {
-                    params.set_bool(Some(&CefString::from("userGesture")), 1);
-                }
-                h.0.execute_dev_tools_method(id, Some(&CefString::from("Runtime.evaluate")), Some(&mut params));
-            });
-        }
-        id
+        let h = self.shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone()));
+        let expression = expression.to_owned();
+        self.shared.post_cdp(move |id| {
+            let Some(h) = h else { return };
+            let Some(mut params) = dictionary_value_create() else { return };
+            params.set_string(Some(&CefString::from("expression")), Some(&CefString::from(expression.as_str())));
+            params.set_bool(Some(&CefString::from("returnByValue")), 1);
+            params.set_bool(Some(&CefString::from("awaitPromise")), 1);
+            if gesture {
+                params.set_bool(Some(&CefString::from("userGesture")), 1);
+            }
+            h.0.execute_dev_tools_method(id, Some(&CefString::from("Runtime.evaluate")), Some(&mut params));
+        })
     }
 
     pub fn cdp(&self, method: &'static str) -> i32 {
-        let id = self.shared.next_cdp_id.fetch_add(1, Ordering::Relaxed);
-        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
-            let h = HostHandle(h.0.clone());
-            on_ui(move || {
-                let h = h;
+        let h = self.shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone()));
+        self.shared.post_cdp(move |id| {
+            if let Some(h) = h {
                 h.0.execute_dev_tools_method(id, Some(&CefString::from(method)), None);
-            });
-        }
-        id
+            }
+        })
     }
 
     /// Download an image (an app icon) through the page's network stack. Posted to CEF's UI thread.
@@ -2648,7 +2733,7 @@ impl BrowserView {
                     return glib::Propagation::Stop;
                 }
                 let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
-                v.input_events.set(v.input_events.get() + 1);
+                v.note_input();
                 v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
                 let k = v.k();
                 let unit = ctrl.unit();
@@ -2807,7 +2892,7 @@ impl BrowserView {
     }
 
     pub(super) fn click(&self, button: u32, n_press: i32, x: f64, y: f64, state: gdk::ModifierType, up: bool) {
-        self.input_events.set(self.input_events.get() + 1);
+        self.note_input();
         let kind = match button {
             1 => MouseButtonType::LEFT,
             2 => MouseButtonType::MIDDLE,
@@ -3014,7 +3099,7 @@ impl BrowserView {
     /// Handle a key press or release. Returns whether the event was consumed.
     fn key(self: &Rc<Self>, press: bool, key: gdk::Key, keycode: u32, state: gdk::ModifierType, event: Option<gdk::Event>) -> bool {
         if press {
-            self.input_events.set(self.input_events.get() + 1);
+            self.note_input();
         }
         if press && key == gdk::Key::Escape && self.page_dragging() {
             let (x, y) = self.pointer.get();

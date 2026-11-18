@@ -15,6 +15,7 @@ mod downloads;
 mod gpu;
 mod groups;
 mod history;
+mod icons;
 mod log;
 mod manifest;
 mod permissions;

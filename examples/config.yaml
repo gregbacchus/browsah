@@ -112,6 +112,11 @@ sleeping_tabs:
   opacity: 0.6              # 0.2 to 1: how opaque a sleeping tab is in the tab strip (1 leaves it undimmed)
   grayscale_icon: true      # show a sleeping tab's icon without colour
 
+recently_swept:
+  enabled: true             # a broom button next to reload lists tabs a sweep closed lately, to restore them
+  within: 1d                # how far back they are listed (30m, 6h, 1d)
+  max_tabs: 10              # 1 to 50
+
 logging:                    # the system journal (journalctl -t browsah, or browsah log); applies at the next start
   level: info               # error | warn | info | debug (debug adds why sweeping kept each tab)
 

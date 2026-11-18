@@ -30,7 +30,7 @@ journal (a system without systemd) nothing is stored; warnings and errors still 
 
 - `info` (the default): start-up, every tab a sweep closes or puts to sleep (rule, address, title, idle time, whether it was
   pinned or already asleep), the summary of each sweep pass, sweeps of closed workspaces, every tab that closes (and why: `user`,
-  `window`, `sweep:<rule>`), rendering fall-backs.
+  `window`, `sweep:<rule>`), rendering fall-backs
 - `debug` adds why a sweep **kept** each tab (the selected tab, unsaved form input, playing media, still loading, no answer from
   the page, the last tab of the window, or what each rule said: `Stale: idle 5m0s < 1h0m`).
 - `warn` and `error` are always also printed on the terminal.

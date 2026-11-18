@@ -3,6 +3,7 @@
 #   scripts/test unit NAME                  unit tests whose name contains NAME (a name is required)
 #   scripts/test selftest SECTION[,SECTION] one or more self-test sections (seconds)
 #   scripts/test selftest list              show the section names
+#   scripts/test signals                    SIGTERM, SIGINT and SIGHUP quit the browser cleanly (opens a window three times, ~30 s)
 #   scripts/test selftest all "REASON"      every section (about four minutes): only when the user asked for it or a narrow run
 #                                           cannot cover the change; REASON is required and is printed
 set -euo pipefail
@@ -16,6 +17,10 @@ case "${1:-}" in
       exit 2
     fi
     cargo test --release "$@"
+    ;;
+  signals)
+    cargo build --release 2>&1 | grep -E '^(error|warning: unused)' -A8 || true
+    exec scripts/signal-check
     ;;
   selftest)
     cargo build --release 2>&1 | grep -E '^(error|warning: unused)' -A8 || true

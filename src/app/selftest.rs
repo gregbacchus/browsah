@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "newtab",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "newtab",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -440,6 +440,12 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("sleep") {
         run_sleep(shell, r).await;
+    }
+    if wants("swept") {
+        run_swept(shell, r).await;
+    }
+    if wants("copybutton") {
+        run_copybutton(shell, r).await;
     }
     if wants("picker") {
         run_picker(shell, r).await;
@@ -1310,18 +1316,18 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
 
     let tab = w.current().expect("tab");
     tab.view().navigate(&page("b.html"));
-    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some("non-starred-symbolic")).await;
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_PLUS).as_str())).await;
     r.check("a page that is not bookmarked shows an empty star", ok, || format!("{:?}", w.star.icon_name()));
     let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
     let ok = wait_until(5_000, || marks().len() == 1).await;
     r.check("the star bookmarks the page with its title", ok && marks()[0].title == "Page B" && marks()[0].url.ends_with("/b.html"), || format!("{:?}", marks()));
-    r.check("the star fills and the bar appears with the bookmark", w.star.icon_name().as_deref() == Some("starred-symbolic") && w.bookmark_revealer.reveals_child() && w.bookmark_buttons().len() == 1, || {
+    r.check("the star fills and the bar appears with the bookmark", w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str()) && w.bookmark_revealer.reveals_child() && w.bookmark_buttons().len() == 1, || {
         format!("{:?} bar={} buttons={}", w.star.icon_name(), w.bookmark_revealer.reveals_child(), w.bookmark_buttons().len())
     });
 
     // Leave the page, then use the bookmark.
     tab.view().navigate(&page("a.html"));
-    let ok = wait_until(15_000, || tab.state.borrow().title == "Page A" && w.star.icon_name().as_deref() == Some("non-starred-symbolic")).await;
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page A" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_PLUS).as_str())).await;
     r.check("another page shows an empty star again", ok, || format!("{:?}", w.star.icon_name()));
     if let Some(b) = w.bookmark_buttons().first() {
         b.emit_clicked();
@@ -1339,7 +1345,7 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
 
     // Ctrl+D on a bookmarked page removes the bookmark and hides the empty bar.
     let tab = w.current().expect("tab");
-    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some("starred-symbolic")).await;
+    let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str())).await;
     r.check("the restored bookmarked page shows a filled star", ok, || format!("{:?} {:?}", tab.state.borrow().title, w.star.icon_name()));
     let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
     let ok = wait_until(5_000, || marks().is_empty() && !w.bookmark_revealer.reveals_child()).await;
@@ -4061,4 +4067,142 @@ async fn run_favicon(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fv1"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The "recently swept" button: a sweep closes a tab, the button next to reload appears with it listed, restoring it opens
+/// the tab again and hides the button, `recently_swept.enabled: false` keeps it away, and the history lists the reason on the
+/// first line of the row.
+async fn run_swept(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let store = || crate::store::Store::open(&db).expect("store");
+    let dir = profile.workspaces_dir().join("swp");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = store().delete_workspace("swp");
+    let _ = store().clear_history(None);
+    std::fs::write(
+        dir.join("workspace.yaml"),
+        format!("name: Swept\nhome_page: 'http://localhost:{port}/scope.html'\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Stale searches with a rather long rule name\n      match: {{ url: ['localhost/b.html*'] }}\n      idle_for: 2s\n"),
+    )
+    .expect("workspace.yaml");
+    crate::router::install(crate::router::Router::default());
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "swp"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"swp".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    r.check("a workspace with a sweep rule opens", ok, || "not open".into());
+    let Some(w) = find() else { return };
+    r.check("the recently-swept button is hidden while nothing was swept", !w.swept.button.is_visible(), || "visible".into());
+    let victim = w.open_tab(&format!("http://localhost:{port}/b.html?swept=1"), false);
+    let _ = wait_until(15_000, || !victim.state.borrow().loading && victim.state.borrow().title == "Page B").await;
+    glib::timeout_future(Duration::from_millis(3000)).await;
+    w.sweep_now();
+    let ok = wait_until(15_000, || w.sweeps_done() == 1 && !w.tabs().iter().any(|t| t.uid == victim.uid)).await;
+    r.check("the idle tab is swept", ok, || format!("{:?}", w.last_sweep_notes()));
+    let ok = wait_until(5_000, || w.swept.button.is_visible()).await;
+    r.check("the button appears once a tab was swept", ok, || "hidden".into());
+    let rows = || { let mut n = 0; let mut c = w.swept.list.first_child(); while let Some(x) = c { n += 1; c = x.next_sibling(); } n };
+    r.check("it lists the swept tab", rows() == 1, || format!("{} rows", rows()));
+    let (reload, button) = (w.reload.clone(), w.swept.button.clone());
+    let _ = wait_until(3_000, || button.width() > 0).await;
+    let (rb, bb) = (reload.compute_bounds(&w.window), button.compute_bounds(&w.window));
+    let entry_b = w.entry.compute_bounds(&w.window);
+    let ok = matches!((rb, bb, entry_b), (Some(a), Some(b), Some(e)) if a.x() < b.x() && b.x() + b.width() <= e.x() + 1.0);
+    r.check("the button sits right of the reload button and left of the address bar", ok, || format!("reload {rb:?}, button {bb:?}, entry {entry_b:?}"));
+    if let Some(p) = button.parent() {
+        shot(&p, "recently-swept-header");
+    }
+    shot(&w.window, "recently-swept-window");
+    w.swept.popover.popup();
+    glib::timeout_future(Duration::from_millis(500)).await;
+    shot(&w.swept.popover, "recently-swept");
+    w.swept.popover.popdown();
+
+    // The history row shows the reason on its first line.
+    let view = w.open_history();
+    glib::timeout_future(Duration::from_millis(500)).await;
+    if let Some(v) = &view {
+        v.stack.set_visible_child_name("closed");
+        glib::timeout_future(Duration::from_millis(500)).await;
+        shot(&v.dialog, "history-closed-reason");
+        let _ = v;
+    }
+    w.close_history();
+
+    // Restoring brings it back and removes it from the list.
+    let before = w.tab_count();
+    w.restore_swept(&w.recently_swept_tabs().iter().map(|t| t.id).collect::<Vec<_>>());
+    let ok = wait_until(15_000, || w.tab_count() == before + 1 && w.current().is_some_and(|t| t.state.borrow().address.contains("swept=1"))).await;
+    r.check("restoring opens the tab again", ok, || format!("{} tabs (was {before})", w.tab_count()));
+    let ok = wait_until(5_000, || !w.swept.button.is_visible()).await;
+    r.check("the button goes once nothing is left to restore", ok, || "still visible".into());
+
+    // Off in the configuration: nothing shows although a tab was swept.
+    let again = w.current().expect("tab");
+    *again.usage.borrow_mut() = crate::sweep::Usage::from_text("1000:1");
+    w.tab_view.set_selected_page(&w.tabs()[0].page);
+    w.sweep_now();
+    let ok = wait_until(15_000, || w.sweeps_done() == 2 && w.swept.button.is_visible()).await;
+    r.check("a second swept tab shows the button again", ok, || "hidden".into());
+    let mut cfg = w.settings.borrow().clone();
+    cfg.recently_swept.enabled = false;
+    w.apply_config(&cfg);
+    r.check("recently_swept.enabled: false hides it", !w.swept.button.is_visible(), || "visible".into());
+    cfg.recently_swept.enabled = true;
+    cfg.recently_swept.within = "1s".into();
+    glib::timeout_future(Duration::from_millis(2600)).await;
+    w.apply_config(&cfg);
+    r.check("a swept tab older than recently_swept.within is not listed", !w.swept.button.is_visible(), || "visible".into());
+
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = store().delete_workspace("swp");
+    let _ = store().clear_history(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sites' own "copy" buttons: `navigator.clipboard.writeText`, `execCommand('copy')` on a selected textarea, a `copy` event handler that
+/// sets the data, and `clipboard.write`. Windowless Chromium cannot reach the Wayland clipboard, so the page reports what it copied to
+/// the shell (`ViewEvent::ClipboardWrite`), which puts it on the system clipboard, but only after the person has used the page.
+async fn run_copybutton(shell: &Rc<Shell>, r: &mut Report) {
+    let st = &shell.state();
+    let d = Driver { shell };
+    let title = || st.borrow().title.clone();
+    shell.entry.set_text(&page("copy.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || {
+        let s = st.borrow();
+        !s.loading && s.title.starts_with("w:-")
+    })
+    .await;
+    r.check("the copy-button test page loads", ok, || title());
+    if !ok {
+        return;
+    }
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let id = shell.view().cdp_eval("String(!!window.__browsahCopyHook)");
+    let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
+    let hook = shell.view().cdp_result(id).map(|(_, j)| j).unwrap_or_default();
+    r.check("the copy hook is installed in the page", hook.contains("true"), || hook.clone());
+    let clipboard = gdk::Display::default().expect("display").clipboard();
+    let read = || async { clipboard.read_text_future().await.ok().flatten().map(|s| s.to_string()).unwrap_or_default() };
+    for (key, y, expect, name) in [("w", 40.0, "via writeText", "navigator.clipboard.writeText"), ("e", 100.0, "via execCommand", "execCommand('copy') on a selected textarea"), ("h", 160.0, "via copy event", "a copy event handler"), ("k", 220.0, "via clipboard.write", "navigator.clipboard.write")] {
+        clipboard.set_text("before");
+        d.click(100.0, y);
+        let done = wait_until(5_000, || field(&title(), key).starts_with("ok") || field(&title(), key).starts_with("err")).await;
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let got = read().await;
+        r.check(&format!("a copy button using {name} reaches the system clipboard"), done && got == expect, || format!("page says {:?}, clipboard {got:?}", field(&title(), key)));
+    }
+    // A page that copies without the person having used it must not be able to set the clipboard.
+    clipboard.set_text("untouched");
+    glib::timeout_future(Duration::from_millis(6000)).await;
+    let id = shell.view().cdp_eval("navigator.clipboard.writeText('sneaky').then(() => 'done', e => 'err:' + e.name)");
+    let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let got = read().await;
+    r.check("a page that was not just used cannot set the clipboard", got == "untouched", || format!("clipboard {got:?}"));
 }

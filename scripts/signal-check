@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Checks that the browser quits cleanly on SIGTERM, SIGINT and SIGHUP: it exits with status 0 within a few seconds, logs why,
+# and keeps the workspace's tabs and the list of open workspaces. Uses a throwaway profile in a temporary folder (opens a window
+# for a few seconds each time).
+set -uo pipefail
+cd "$(dirname "$0")/.."
+export LD_LIBRARY_PATH="$PWD/target/release"
+dir=$(mktemp -d)
+export XDG_DATA_HOME="$dir/data" XDG_CONFIG_HOME="$dir/config" XDG_CACHE_HOME="$dir/cache"
+bin=./target/release/browsah
+$bin profile add sigcheck >/dev/null && $bin workspace add sw --profile sigcheck >/dev/null || { echo "cannot set up the profile"; exit 2; }
+fails=0
+for sig in TERM INT HUP; do
+  BROWSAH_LOG=info $bin --profile=sigcheck --workspace=sw "file://$PWD/bench/pages/a.html" >"$dir/out-$sig.txt" 2>&1 &
+  pid=$!
+  sleep 7
+  start=$(date +%s.%N)
+  kill -"$sig" "$pid" 2>/dev/null
+  status=""
+  for _ in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid"; status=$?; break; }
+    sleep 0.1
+  done
+  if [ -z "$status" ]; then kill -KILL "$pid" 2>/dev/null; status="still running after 5 s"; fi
+  took=$(echo "$(date +%s.%N) - $start" | bc)
+  tabs=$(sqlite3 "$XDG_DATA_HOME/browsah/profiles/sigcheck/data.sqlite" "select count(*) from tabs where workspace='sw'" 2>/dev/null)
+  open=$(grep -c '^- sw$' "$XDG_DATA_HOME/browsah/profiles/sigcheck/state.yaml" 2>/dev/null)
+  logged=$(journalctl -t browsah BROWSAH_PROFILE=sigcheck --no-pager -g "SIG$sig: quitting" --since "-30s" 2>/dev/null | grep -c "SIG$sig")
+  if [ "$status" = "0" ] && [ "${tabs:-0}" -ge 1 ] && [ "${open:-0}" -ge 1 ] && [ "${logged:-0}" -ge 1 ]; then
+    printf 'PASS  SIG%s: exit 0 in %.2f s, %s tab(s) kept, workspace remembered, logged\n' "$sig" "$took" "$tabs"
+  else
+    printf 'FAIL  SIG%s: status %s after %.2f s, tabs %s, workspace remembered %s, logged %s\n' "$sig" "$status" "$took" "${tabs:-?}" "${open:-0}" "${logged:-0}"
+    fails=$((fails + 1))
+  fi
+done
+rm -rf "$dir"
+exit "$fails"

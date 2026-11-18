@@ -5,6 +5,18 @@ use crate::store::{Scope, Store};
 use gtk::glib;
 
 /// "5 min ago", "yesterday 14:03", or the date: how long ago `at` (unix seconds) was.
+/// How a closed tab's reason reads in a list: `user` is "Closed", `window` "Window closed", `sweep:Stale` "Swept: Stale".
+pub fn reason_text(reason: &str) -> String {
+    match reason {
+        "user" => "Closed".into(),
+        "window" => "Window closed".into(),
+        r => match r.strip_prefix("sweep:") {
+            Some(rule) => format!("Swept: {rule}"),
+            None => r.to_owned(),
+        },
+    }
+}
+
 pub fn when(at: i64, now: i64) -> String {
     let d = now - at;
     if d < 60 {
@@ -99,6 +111,14 @@ pub fn cli(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn close_reasons_read_well() {
+        assert_eq!(super::reason_text("user"), "Closed");
+        assert_eq!(super::reason_text("window"), "Window closed");
+        assert_eq!(super::reason_text("sweep:Stale searches"), "Swept: Stale searches");
+        assert_eq!(super::reason_text("other"), "other");
+    }
+
     use super::*;
 
     #[test]

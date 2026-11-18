@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>w:- | e:- | h:- | k:-</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; background: #f4f4f4; }
+  button { position: absolute; left: 20px; width: 200px; height: 40px; box-sizing: border-box; }
+  #w { top: 20px; } #e { top: 80px; } #h { top: 140px; } #k { top: 200px; }
+</style>
+<button id="w">writeText</button>
+<button id="e">execCommand textarea</button>
+<button id="h">copy event handler</button>
+<button id="k">clipboard.write</button>
+<script>
+  // Four ways a "copy" button copies, the result of each (ok, or the error name) goes in the title for the self-test.
+  const st = { w: '-', e: '-', h: '-', k: '-' };
+  const show = () => { document.title = Object.entries(st).map(([k, v]) => k + ':' + v).join(' | '); };
+  const f = id => document.getElementById(id);
+  f('w').onclick = async () => {
+    try { await navigator.clipboard.writeText('via writeText'); st.w = 'ok'; } catch (e) { st.w = 'err:' + e.name; }
+    show();
+  };
+  f('e').onclick = () => {
+    const t = document.createElement('textarea');
+    t.value = 'via execCommand';
+    document.body.appendChild(t);
+    t.select();
+    st.e = document.execCommand('copy') ? 'ok' : 'err:false';
+    t.remove();
+    show();
+  };
+  f('h').onclick = () => {
+    const on = e => { e.clipboardData.setData('text/plain', 'via copy event'); e.preventDefault(); };
+    document.addEventListener('copy', on, { once: true });
+    st.h = document.execCommand('copy') ? 'ok' : 'err:false';
+    show();
+  };
+  f('k').onclick = async () => {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob(['via clipboard.write'], { type: 'text/plain' }) })]);
+      st.k = 'ok';
+    } catch (e) { st.k = 'err:' + e.name; }
+    show();
+  };
+</script>

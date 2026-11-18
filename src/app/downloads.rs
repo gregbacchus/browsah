@@ -75,8 +75,9 @@ impl Ui {
         content.append(&scroller);
         content.append(&clear);
         let popover = gtk::Popover::builder().child(&content).build();
-        let button = gtk::MenuButton::builder().icon_name("folder-download-symbolic").tooltip_text("Downloads").popover(&popover).visible(false).build();
+        let button = gtk::MenuButton::builder().tooltip_text("Downloads").popover(&popover).visible(false).build();
         button.add_css_class("flat");
+        crate::icons::bind(&button, crate::icons::ARROW_DOWN_TO_LINE);
         let ui = Rc::new(Ui { button, list });
         clear.connect_clicked(|_| clear_all());
         UIS.with(|u| u.borrow_mut().push(Rc::downgrade(&ui)));

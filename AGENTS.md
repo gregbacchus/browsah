@@ -129,6 +129,7 @@ take minutes.
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
+| `src/icons.rs` | Lucide icons (`assets/icons/lucide/`, ISC): drawn from a 24 px grid with a 1.5 stroke (shown at the usual 16 px), installed as per-style ordinary icons and kept right when the style changes (`icons::bind`); use these for any new icon (docs/research/icons-lucide.md) |
 | `src/fullconfig.rs` | The "all options" copy of a config file (`browsah config full`, the menu): `examples/*.yaml` are the templates, so their comments are the explanations; set values are kept, the rest commented out (pure, tested; window: `app/fullconfig.rs`) |
 | `src/docsite.rs` | The docs rendered as a static site (`pulldown-cmark`); `build.rs` compiles `docs/**/*.md`, `README.md` and `examples/*.yaml` into the binary; the test fails on a broken link or anchor between pages (window: `app/docs.rs`, written to the cache folder) |
 | `src/config.rs` | Config types, loading, and the docs/example tests |
@@ -137,6 +138,8 @@ take minutes.
 | `bench/`, `docs/`, `examples/` | Test pages (`bench/pages/` for `--selftest` and `--latency`), documentation (`docs/README.md` indexes `docs/config/` for every option, `docs/research/`, `docs/roadmap.md`), the four example files (`config`, `profile`, `workspace`, `webapp`; see the config rule above) |
 
 ## Conventions and gotchas
+
+- **Icons are Lucide** (24 px grid, 1.5 stroke, shown at the usual 16 px; `src/icons.rs`, `assets/icons/lucide/`, docs/research/icons-lucide.md). Add the SVG unchanged to `assets/icons/lucide/`, list it in `src/icons.rs` and `icons::bind` it to the widget. Do not use a `-symbolic` name for an outline icon: GTK fills symbolic icons. Stock symbolic icons remain only where nothing is converted yet.
 
 - **CEF runs on its own UI thread** (`multi_threaded_message_loop`). Never pump it from the GTK
   loop: that pins the main thread at 100 % CPU (docs/research/cef-multi-tab-cost.md).
@@ -247,6 +250,7 @@ take minutes.
   directory is deleted on upgrade), else this binary's canonical path. `webapp::refresh_launchers` (start-up thread) rewrites the
   running profile's entries, icons and apps in full, and any other profile's or the selector's entry only when its program no longer
   exists (`profile::entry_program_missing`), so a source build never repoints another install's entries.
+- **Signals:** `SIGTERM`/`SIGINT`/`SIGHUP` quit the profile like the menu's *Quit profile* (`on_signal` in `run`: `finish_window_close` for every window, then `Application::quit`); a second signal exits at once. Check with `scripts/test signals` (docs/research/signals.md).
 - **Shutdown:** `Runtime::shutdown` waits for the counted browsers (`cef_rt::browser_created/closed`) to close, not a fixed sleep
   (docs/research/shutdown.md); the benchmarks, which do not count, keep 500 ms. The `sqlite_persistent_store… Failed to post task`
   warning at exit is Chromium's own teardown and harmless (data lands); do not try to "fix" it with flushes or delays.
@@ -271,7 +275,9 @@ take minutes.
 - Answer CEF's context-menu callback *before* closing the popover (closing cancels it), and run
   its methods on CEF's UI thread (`cef_rt::on_ui`).
 - Windowless Chromium cannot reach the Wayland clipboard: copy, cut and paste go through GTK's
-  clipboard in `view.rs`.
+  clipboard in `view.rs`. A page's own copy button (`writeText`, `execCommand('copy')`, a `copy` handler) is bridged by `COPY_HOOK`: run in every frame from `on_load_start`, it
+  reports the text as a console message that `on_console_message` takes (`ViewEvent::ClipboardWrite`); the shell uses it only within 5 s of the person using the page
+  (`BrowserView::used_within`). DevTools message ids must increase in the order calls run: use `Shared::post_cdp`, never take an id and post separately (docs/research/page-copy-buttons.md).
 - Verify behaviour changes with the relevant `--selftest` section(s) (never the whole self-test: see the testing rule at the top) and, for rendering or power claims, the benchmarks;
   tests passing is not proof that the docs are accurate.
 - **Drags that start in the page** (`draggable` elements: sortable lists, reorderable panels): `RenderHandler::start_dragging` (view.rs) takes the

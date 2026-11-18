@@ -99,6 +99,7 @@ impl Shell {
                 if interval.is_some_and(|i| now_secs() - s.last_pass.get() >= i) {
                     s.sweep_now();
                 }
+                s.refresh_swept(); // tabs age out of the list
                 glib::ControlFlow::Continue
             }
             None => glib::ControlFlow::Break,
@@ -239,6 +240,7 @@ impl Shell {
             }
             self.toast(&format!("Swept: {} (Ctrl+Shift+T brings closed tabs back)", parts.join(", ")));
         }
+        self.refresh_swept();
         crate::log_info!("sweep pass in {:?} done: {} closed, {} put to sleep, notes {notes:?}", self.workspace_id(), closed, discarded);
         *self.last_sweep.borrow_mut() = notes;
         self.sweeps_done.set(self.sweeps_done.get() + 1);

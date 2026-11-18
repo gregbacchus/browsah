@@ -5,7 +5,7 @@ things happened:
 
 - **Visits:** every page loaded in a tab, with its title, the time, and the workspace it was in (or
   none, for an ephemeral window). Reloads are not counted twice.
-- **Closed tabs:** a tab closed by you is kept so it can be reopened, with the reason it closed
+- **Closed tabs:** a tab closed by you is kept so it can be reopened, with the reason it closed (shown at the end of the row's first line)
   (`user` today; swept tabs will say which rule swept them). When an ephemeral window is closed with
   tabs open, those tabs are kept together as a group, so the whole window can come back.
 

@@ -13,6 +13,7 @@ pub struct HistoryView {
     pub all: gtk::CheckButton,
     pub visits: gtk::ListBox,
     pub closed: gtk::ListBox,
+    pub stack: adw::ViewStack,
 }
 
 fn row(title: &str, subtitle: &str, url: &str) -> adw::ActionRow {
@@ -23,6 +24,16 @@ fn row(title: &str, subtitle: &str, url: &str) -> adw::ActionRow {
         r.add_prefix(&icon);
     }
     r
+}
+
+/// The close reason at the end of a row's first line: it keeps its width, so a long title is shortened instead.
+pub(super) fn reason_label(reason: &str) -> gtk::Label {
+    let text = crate::history::reason_text(reason);
+    let label = gtk::Label::builder().label(text.as_str()).tooltip_text(text.as_str()).css_classes(["dim-label", "caption"]).valign(gtk::Align::Start).margin_top(10).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(26).build();
+    if reason.starts_with("sweep:") {
+        label.add_css_class("accent");
+    }
+    label
 }
 
 fn clear(list: &gtk::ListBox) {
@@ -41,8 +52,10 @@ impl Shell {
         let closed = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
         let stack = adw::ViewStack::new();
         let scroll = |l: &gtk::ListBox| gtk::ScrolledWindow::builder().child(l).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
-        stack.add_titled(&scroll(&visits), Some("visits"), "Visited");
-        stack.add_titled(&scroll(&closed), Some("closed"), "Recently closed");
+        let visited = stack.add_titled(&scroll(&visits), Some("visits"), "Visited");
+        crate::icons::bind(&visited, crate::icons::ROTATE_CCW_CLOCK);
+        let trash = stack.add_titled(&scroll(&closed), Some("closed"), "Recently closed");
+        crate::icons::bind(&trash, crate::icons::TRASH);
         let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
 
         let top = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(12).margin_start(12).margin_end(12).margin_top(8).margin_bottom(8).build();
@@ -60,7 +73,7 @@ impl Shell {
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&body));
         let dialog = adw::Dialog::builder().title("History").child(&toolbar).content_width(780).content_height(640).build();
-        let view = Rc::new(HistoryView { dialog: dialog.clone(), search: search.clone(), all: all.clone(), visits: visits.clone(), closed: closed.clone() });
+        let view = Rc::new(HistoryView { dialog: dialog.clone(), search: search.clone(), all: all.clone(), visits: visits.clone(), closed: closed.clone(), stack: stack.clone() });
 
         let window = self.window.downgrade();
         let ws = self.workspace_id().map(str::to_owned);
@@ -129,7 +142,8 @@ impl Shell {
                         view.closed.append(&r);
                     } else {
                         let id = t.id;
-                        let r = row(&t.title, &format!("{} \u{b7} {} \u{b7} closed by {}", t.url, crate::history::when(t.at, now), t.reason), &t.url);
+                        let r = row(&t.title, &format!("{} \u{b7} {}", t.url, crate::history::when(t.at, now)), &t.url);
+                        r.add_suffix(&reason_label(&t.reason));
                         let (window, store) = (window.clone(), store.clone());
                         r.connect_activated(move |_| {
                             if let (Some(t), Some(s)) = (store.take_closed(id), window.upgrade().and_then(|w| super::shell_of(&w))) {

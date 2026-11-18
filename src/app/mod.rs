@@ -18,6 +18,7 @@ mod suggest;
 mod latency;
 mod modal;
 mod picker;
+mod swept;
 mod pinned_tabs;
 mod prompts;
 mod sweep;
@@ -209,6 +210,9 @@ pub struct Shell {
     pub menu_button: gtk::MenuButton,
     /// The workspace picker's button and list (hidden in web apps and when `workspace_picker` is off).
     pub picker: Rc<picker::Ui>,
+    /// The "recently swept" button and list (shown while there are swept tabs and `recently_swept.enabled`).
+    pub swept: Rc<swept::Ui>,
+    swept_all_handler: Cell<Option<glib::SignalHandlerId>>,
     /// Dialogs pages opened with script: waiting, the one showing, and (in tests) the one held.
     js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
     /// The person has agreed to close the window (or there was nothing to ask): the close request goes through.
@@ -502,7 +506,7 @@ impl Shell {
     fn update_star(&self) {
         let (Some(ws), Some(store)) = (self.bookmark_workspace(), store()) else { return };
         let marked = self.bookmarkable().is_some_and(|(url, _)| store.has_bookmark(ws, &url));
-        self.star.set_icon_name(if marked { "starred-symbolic" } else { "non-starred-symbolic" });
+        crate::icons::bind(&self.star, if marked { crate::icons::STAR_FILLED } else { crate::icons::STAR_PLUS });
         self.star.set_tooltip_text(Some(if marked { "Remove bookmark (Ctrl+D)" } else { "Bookmark this page (Ctrl+D)" }));
     }
 
@@ -909,6 +913,7 @@ impl Shell {
         *self.settings.borrow_mut() = cfg.clone();
         *self.sweeper.borrow_mut() = window_sweeper(self.workspace.is_some(), cfg); // sweep rules and sleeping follow the configuration
         self.picker.button.set_visible(cfg.workspace_picker && !self.workspace.as_ref().is_some_and(|w| w.is_app()));
+        self.refresh_swept();
         self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
             self.apply_view_settings(&t.view());
@@ -1356,6 +1361,16 @@ impl Shell {
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
             ViewEvent::Favicon(png) => self.set_favicon(tab, png),
             ViewEvent::PdfSaved { path, ok } => self.pdf_done(&path, ok),
+            ViewEvent::ClipboardWrite(text) => {
+                // A page's own copy button. Only if the person has just used this page (as with a browser's user-activation rule):
+                // a page must not be able to rewrite the clipboard on its own.
+                if tab.view().used_within(std::time::Duration::from_secs(5)) {
+                    crate::log_debug!("clipboard: a page copied {} character(s)", text.chars().count());
+                    WidgetExt::display(&self.window).clipboard().set_text(&text);
+                } else {
+                    crate::log_info!("clipboard: ignored a copy by a page nobody was using ({})", tab.state.borrow().address);
+                }
+            }
             ViewEvent::Fullscreen(on) => self.set_fullscreen(on, true),
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),
@@ -1483,8 +1498,28 @@ fn add_action(window: &adw::ApplicationWindow, name: &str, f: impl Fn() + 'stati
     action
 }
 
-fn icon_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
-    let b = gtk::Button::from_icon_name(icon);
+/// A stock icon name or a Lucide icon, for `icon_button`.
+enum IconSpec {
+    Lucide(crate::icons::Icon),
+    Named(&'static str),
+}
+impl From<crate::icons::Icon> for IconSpec {
+    fn from(i: crate::icons::Icon) -> Self {
+        IconSpec::Lucide(i)
+    }
+}
+impl From<&'static str> for IconSpec {
+    fn from(n: &'static str) -> Self {
+        IconSpec::Named(n)
+    }
+}
+
+fn icon_button(icon: impl Into<IconSpec>, tooltip: &str, action: &str) -> gtk::Button {
+    let b = gtk::Button::new();
+    match icon.into() {
+        IconSpec::Lucide(i) => crate::icons::bind(&b, i),
+        IconSpec::Named(n) => b.set_icon_name(n),
+    }
     b.set_tooltip_text(Some(tooltip));
     b.set_action_name(Some(action));
     b
@@ -1507,9 +1542,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let ws_config = workspace.as_ref().map(|w| w.config.clone()).unwrap_or_default();
     let workspace_color = window_color(workspace.as_ref(), PROFILE.with(|p| p.borrow().clone()).as_ref());
     let nav = ws_config.nav.clone();
-    let back = icon_button("go-previous-symbolic", "Back (Alt+Left)", "win.back");
-    let forward = icon_button("go-next-symbolic", "Forward (Alt+Right)", "win.forward");
-    let reload = icon_button("view-refresh-symbolic", "Reload (Ctrl+R)", "win.reload");
+    let back = icon_button(crate::icons::ARROW_LEFT, "Back (Alt+Left)", "win.back");
+    let forward = icon_button(crate::icons::ARROW_RIGHT, "Forward (Alt+Right)", "win.forward");
+    let reload = icon_button(crate::icons::ROTATE_CW, "Reload (Ctrl+R)", "win.reload");
     let stop = icon_button("process-stop-symbolic", "Stop", "win.stop");
     stop.set_visible(false);
 
@@ -1544,6 +1579,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     header.pack_start(&forward);
     header.pack_start(&reload);
     header.pack_start(&stop);
+    let swept_ui = swept::Ui::new();
+    header.pack_start(&swept_ui.button);
     back.set_visible(nav.back);
     forward.set_visible(nav.forward);
     match nav.address_bar {
@@ -1558,10 +1595,11 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
 
     // Bookmarks (workspace windows with `nav.bookmarks_bar`): a star in the header and a bar under the tabs.
     let bookmarks_on = workspace.is_some() && nav.bookmarks_bar;
-    let star = icon_button("non-starred-symbolic", "Bookmark this page (Ctrl+D)", "win.bookmark-page");
+    let star = icon_button(crate::icons::STAR_PLUS, "Bookmark this page (Ctrl+D)", "win.bookmark-page");
     star.set_visible(bookmarks_on);
     // The main menu (not in a web app's window, which shows only its page).
-    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").tooltip_text("Menu").build();
+    let menu_button = gtk::MenuButton::builder().tooltip_text("Menu").build();
+    crate::icons::bind(&menu_button, crate::icons::MENU);
     menu_button.set_create_popup_func(|button| button.set_menu_model(Some(&main_menu())));
     if !workspace.as_ref().is_some_and(|w| w.is_app()) {
         header.pack_end(&menu_button);
@@ -1656,6 +1694,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         downloads: downloads_ui.clone(),
         menu_button: menu_button.clone(),
         picker: picker_ui.clone(),
+        swept: swept_ui.clone(),
+        swept_all_handler: Cell::new(None),
         js_queue: RefCell::new(std::collections::VecDeque::new()),
         closing: RefCell::new(Vec::new()),
         close_confirmed: std::cell::Cell::new(false),
@@ -2293,6 +2333,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     }
     shell.start_sweeping();
+    shell.refresh_swept();
     shell
 }
 
@@ -2311,6 +2352,38 @@ thread_local! {
 /// The open windows (GTK thread).
 pub fn windows() -> Vec<Rc<Shell>> {
     WINDOWS.with(|w| w.borrow().clone())
+}
+
+unsafe extern "C" {
+    // In libglib-2.0 (glib-sys does not declare the Unix-only functions).
+    fn g_unix_signal_add_full(
+        priority: i32,
+        signum: i32,
+        handler: Option<unsafe extern "C" fn(glib::ffi::gpointer) -> glib::ffi::gboolean>,
+        user_data: glib::ffi::gpointer,
+        notify: Option<unsafe extern "C" fn(glib::ffi::gpointer)>,
+    ) -> u32;
+}
+
+/// Run `f` on the GTK main loop when the process gets the Unix signal `signum` (the glib crate has no wrapper for
+/// `g_unix_signal_add`). `f` returns whether to keep listening.
+fn on_signal(signum: i32, f: impl FnMut() -> glib::ControlFlow + 'static) {
+    use glib::translate::IntoGlib;
+    type Callback = Box<dyn FnMut() -> glib::ControlFlow>;
+    unsafe extern "C" fn trampoline(data: glib::ffi::gpointer) -> glib::ffi::gboolean {
+        // SAFETY: `data` is the `Box<Callback>` leaked below, used on the main thread only (the source is in the default context).
+        let f = unsafe { &mut *(data as *mut Callback) };
+        f().into_glib()
+    }
+    unsafe extern "C" fn destroy(data: glib::ffi::gpointer) {
+        // SAFETY: the same box, dropped once when the source is removed.
+        drop(unsafe { Box::from_raw(data as *mut Callback) });
+    }
+    let boxed: Box<Callback> = Box::new(Box::new(f));
+    // SAFETY: the callback and destroy functions match the signatures GLib expects and `boxed` outlives the source.
+    unsafe {
+        g_unix_signal_add_full(glib::ffi::G_PRIORITY_DEFAULT, signum, Some(trampoline), Box::into_raw(boxed) as glib::ffi::gpointer, Some(destroy));
+    }
 }
 
 /// The open windows that are not web apps' (a link from another application, or a plain launch, must not end up in
@@ -2630,6 +2703,26 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
     app.add_action(&quit);
     app.set_accels_for_action("app.quit-profile", &["<Ctrl>q"]);
+
+    // SIGTERM (a session ending, `kill`, systemd), SIGINT (Ctrl+C in the terminal) and SIGHUP (the terminal closing) quit the profile
+    // as the menu's "Quit profile" does, without the question: tabs and window states are saved, session cookies ended, browsers
+    // closed. A second signal while that is under way ends the process at once.
+    let quitting = Rc::new(Cell::new(false));
+    for (signum, name) in [(libc::SIGTERM, "SIGTERM"), (libc::SIGINT, "SIGINT"), (libc::SIGHUP, "SIGHUP")] {
+        let (app, quitting) = (app.clone(), quitting.clone());
+        on_signal(signum, move || {
+            if quitting.replace(true) {
+                crate::log_warn!("{name} again while quitting: ending now");
+                std::process::exit(128 + signum);
+            }
+            crate::log_info!("{name}: quitting the profile");
+            for shell in windows() {
+                shell.finish_window_close();
+            }
+            app.quit();
+            glib::ControlFlow::Continue
+        });
+    }
 
     let activated = Rc::new(Cell::new(false));
     app.connect_activate({

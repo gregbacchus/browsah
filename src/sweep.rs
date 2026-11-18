@@ -280,6 +280,11 @@ impl Sweeper {
 
 // ---- sweeping a workspace that is not open ----------------------------------------------------------
 
+/// The tabs a sweep closed lately, newest first: reason `sweep:...`, at most `within` seconds old, at most `max` of them.
+pub fn recently_swept(closed: &[crate::store::ClosedTab], now: i64, within: i64, max: usize) -> Vec<&crate::store::ClosedTab> {
+    closed.iter().filter(|t| t.reason.starts_with("sweep:") && now - t.at <= within).take(max).collect()
+}
+
 /// The outcome of sweeping a workspace's remembered tabs.
 #[derive(Debug, Default)]
 pub struct StoredSweep {
@@ -412,6 +417,16 @@ pub fn cli(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_recent_sweeps_are_listed_newest_first_and_capped() {
+        let t = |id, at, reason: &str| crate::store::ClosedTab { id, workspace: None, url: format!("https://x/{id}"), title: String::new(), at, reason: reason.into(), group: None };
+        let all = vec![t(5, 990, "sweep:A"), t(4, 980, "user"), t(3, 900, "sweep:B"), t(2, 100, "sweep:C"), t(1, 99, "window")];
+        let ids = |within, max| recently_swept(&all, 1000, within, max).iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids(500, 10), vec![5, 3], "swept ones only, and not the old one");
+        assert_eq!(ids(5000, 10), vec![5, 3, 2]);
+        assert_eq!(ids(5000, 1), vec![5]);
+    }
+
     #[test]
     fn durations_for_the_log() {
         assert_eq!(super::short_duration(45), "45s");
