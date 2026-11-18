@@ -40,8 +40,14 @@ fn main() {
         }
     }
 
-    // `browsah profile ...` manages profiles on disk and needs neither CEF nor a window.
+    // `browsah --help` / `--version`: answered here, before config, GTK or CEF.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((text, code)) = cli::root_info(&args) {
+        println!("{text}");
+        std::process::exit(code);
+    }
+
+    // `browsah profile ...` manages profiles on disk and needs neither CEF nor a window.
     if args.first().map(String::as_str) == Some("profile") {
         std::process::exit(profile::cli(&args[1..]));
     }

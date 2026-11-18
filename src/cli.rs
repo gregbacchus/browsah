@@ -1,5 +1,55 @@
 //! Command-line options. Anything unrecognised that starts with `--` is passed to Chromium.
 
+/// `browsah --help`, `-h` or `help` (printed to stdout, exit 0).
+pub const HELP: &str = "browsah: a GTK4 web browser around Chromium (CEF), native Wayland
+
+usage:
+  browsah [OPTIONS] [URL | HOST | SEARCH WORDS]     start the browser (or hand the link to the running profile)
+  browsah COMMAND [ARGS]                            manage profiles, apps and workspaces, no window needed
+
+options:
+  --profile=ID        the profile to run (default: `default`; or set BROWSAH_PROFILE)
+  --workspace=ID      open this workspace of the profile
+  --app=ID            open this web app of the profile
+  --new-window        open a window with no workspace instead of the remembered ones
+  --url=URL           the page to open (a bare argument works too)
+  --config=PATH       use this application config file
+  --no-watch          do not reload config files when they change
+  --mode=paint|accel  rendering path (readback or zero-copy dmabuf); overrides `rendering.mode`
+  --backing=off       render at 1x instead of device resolution (a diagnostic)
+  --selftest          run the scripted self-test and exit (BROWSAH_SELFTEST_ONLY=a,b names sections)
+  --latency           measure input latency and exit
+  --bench=single|tabs|fps [--tabs=N] [--tab-mode=live|static] [--seconds=N]   rendering benchmarks
+  -h, --help, help    show this help
+  -V, --version       show the version
+  --OTHER             any other --switch is passed to Chromium
+
+commands (all take --profile ID where a profile matters; the default profile is `default`):
+  profile add <id> [--name NAME] [--color \"LIGHT [DARK]\"]     | list | install <id> | remove <id> --yes [--keep-data]
+  workspace add <id> [--name NAME] [--color ...]               | list | remove <id> --yes
+  app add [<id>] --url URL [--name N] [--scope P,...] [--display standalone|minimal|browser] [--color ...] [--icon FILE]
+  app list | install <id> | route <id> [--write | --remove] | remove <id> --yes
+  config show [--profile=ID] [--config=PATH]                  the effective configuration and where each value came from
+  config full [--profile=ID [--workspace=ID]]                  a file with every option, explained
+  route test <url> [--from SOURCE] [--kind KIND] [--target T] [--explain]    which routing rule a link would match
+  permissions list | reset [--origin URL] --yes                remembered permission answers
+  history [QUERY] [--limit N]  | history clear [--older-than-days N] --yes
+  sweep [--workspace ID] [--dry-run]                           apply sweeping rules to a profile that is not running
+  select [URL]                                                 choose a profile for a link (the default-browser entry)
+  selector install | uninstall | status                        the default-browser entry and its icon
+
+Everything is documented in the Documentation window (main menu) and in docs/ (docs/README.md).
+Needs LD_LIBRARY_PATH to include the directory with libcef.so, unless started from the brew launcher or a desktop entry.";
+
+/// The root options handled before anything starts: the help text or the version, with the exit code, or `None`.
+pub fn root_info(args: &[String]) -> Option<(String, i32)> {
+    match args.first().map(String::as_str)? {
+        "-h" | "--help" | "help" => Some((HELP.to_owned(), 0)),
+        "-V" | "--version" => Some((format!("browsah {}", env!("CARGO_PKG_VERSION")), 0)),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     /// `OnPaint`: GPU readback into CPU memory.
@@ -105,5 +155,40 @@ impl Options {
             o.tabs = 10;
         }
         o
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn help_and_version_are_answered_before_anything_starts() {
+        for flag in ["--help", "-h", "help"] {
+            let (text, code) = root_info(&a(&[flag])).expect(flag);
+            assert_eq!(code, 0);
+            assert!(text.contains("usage:") && text.contains("commands"));
+        }
+        let (v, _) = root_info(&a(&["--version"])).unwrap();
+        assert_eq!(v, format!("browsah {}", env!("CARGO_PKG_VERSION")));
+        assert!(root_info(&a(&["-V"])).is_some());
+        // Nothing else is intercepted: a URL, a subcommand, a Chromium switch.
+        for other in [&["example.com"][..], &["profile", "--help"], &["--disable-gpu"], &[]] {
+            assert!(root_info(&a(other)).is_none(), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn help_names_every_command_and_option() {
+        for command in ["profile", "workspace", "app", "config", "route", "permissions", "history", "sweep", "select", "selector"] {
+            assert!(HELP.contains(&format!("\n  {command} ")), "{command}");
+        }
+        for option in ["--profile=", "--workspace=", "--app=", "--new-window", "--url=", "--config=", "--no-watch", "--mode=", "--backing=off", "--selftest", "--latency", "--bench="] {
+            assert!(HELP.contains(option), "{option}");
+        }
     }
 }

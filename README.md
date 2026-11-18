@@ -18,6 +18,7 @@ cargo build --release        # the first build downloads a prebuilt CEF (~300 MB
 export LD_LIBRARY_PATH=$PWD/target/release
 ./target/release/browsah                     # opens the home page
 ./target/release/browsah example.com         # or a URL, host name, or search words
+./target/release/browsah --help              # the options and the commands (profile, workspace, app, config, ...)
 ```
 
 Needs GTK >= 4.14 and libadwaita >= 1.5 (Ubuntu 24.04 or newer) and a Wayland session. Type a URL,

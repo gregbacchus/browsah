@@ -41,5 +41,7 @@ class Browsah < Formula
   test do
     assert_predicate libexec/"libcef.so", :exist?
     assert_predicate bin/"browsah", :executable?
+    assert_match version.to_s, shell_output("#{bin}/browsah --version")
+    assert_match "usage:", shell_output("#{bin}/browsah --help")
   end
 end
