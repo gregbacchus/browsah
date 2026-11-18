@@ -641,8 +641,14 @@ impl Unwrapper {
 
 /// The first of `params` in `url`'s query whose value is a web address.
 fn first_web_param(url: &str, params: &[impl AsRef<str>]) -> Option<String> {
+    first_web_param_with(url, params, false)
+}
+
+/// As `first_web_param`; `any_case` ignores the case of the parameter's name (Outlook on the web writes `URL=`).
+fn first_web_param_with(url: &str, params: &[impl AsRef<str>], any_case: bool) -> Option<String> {
     let pairs = query_pairs(url);
-    params.iter().find_map(|p| pairs.iter().find(|(k, v)| k == p.as_ref() && (v.starts_with("http://") || v.starts_with("https://"))).map(|(_, v)| v.clone()))
+    let same = |k: &str, p: &str| if any_case { k.eq_ignore_ascii_case(p) } else { k == p };
+    params.iter().find_map(|p| pairs.iter().find(|(k, v)| same(k, p.as_ref()) && (v.starts_with("http://") || v.starts_with("https://"))).map(|(_, v)| v.clone()))
 }
 
 /// Is `host` one of Google's search sites (`google.com`, `www.google.co.nz`...)?
@@ -665,8 +671,12 @@ fn builtin_unwrap(url: &str) -> Option<String> {
         &["q", "url"] // Docs, Gmail, Chat, Calendar and some result pages
     } else if matches!(host.as_str(), "l.facebook.com" | "lm.facebook.com" | "l.messenger.com") && path == "/l.php" {
         &["u"]
-    } else if host.ends_with(".safelinks.protection.outlook.com") {
-        &["url"]
+    } else if [".safelinks.protection.outlook.com", ".safelinks.protection.office365.us", ".safelinks.protection.partner.outlook.cn"].iter().any(|d| host.ends_with(d)) {
+        &["url"] // Outlook Safe Links, in mail (every region and cloud)
+    } else if host.ends_with(".teams.cdn.office.net") && path.ends_with("/atp-safelinks.html") {
+        &["url"] // Teams' own Safe Links page, which checks the address and then goes on to it
+    } else if matches!(host.as_str(), "outlook.office.com" | "outlook.office365.com" | "outlook.live.com" | "outlook.office365.us") && path == "/owa/redir.aspx" {
+        return first_web_param_with(url, &["url"], true); // Outlook on the web's own redirect (`URL=`)
     } else if host == "slack-redir.net" && path == "/link" {
         &["url"]
     } else if matches!(host.as_str(), "www.linkedin.com" | "linkedin.com") && matches!(path.as_str(), "/redir/redirect" | "/redir/redirect/" | "/safety/go" | "/safety/go/") {
@@ -1074,6 +1084,10 @@ mod tests {
         assert_eq!(u(&format!("https://www.google.co.nz/url?sa=t&url={enc}&ved=1")), dest, "another Google site, the url parameter");
         assert_eq!(u(&format!("https://l.facebook.com/l.php?u={enc}&h=AT0")), dest);
         assert_eq!(u(&format!("https://eur01.safelinks.protection.outlook.com/?url={enc}&data=x")), dest);
+        assert_eq!(u(&format!("https://nam12.safelinks.protection.outlook.com/ap/w-59584e83/?url={enc}&data=x")), dest, "an attachment's Safe Link");
+        assert_eq!(u(&format!("https://usg01.safelinks.protection.office365.us/?url={enc}&data=x")), dest, "Government clouds");
+        assert_eq!(u(&format!("https://statics.teams.cdn.office.net/evergreen-assets/safelinks/1/atp-safelinks.html?url={enc}&locale=en-us&dest=https%3A%2F%2Fteams.microsoft.com%2Fapi%2Fatp%2Fv1%2Furlclick")), dest, "Teams");
+        assert_eq!(u(&format!("https://outlook.office.com/owa/redir.aspx?C=abc&URL={enc}&")), dest, "Outlook on the web, URL in capitals");
         assert_eq!(u(&format!("https://slack-redir.net/link?url={enc}")), dest);
         assert_eq!(u(&format!("https://www.linkedin.com/safety/go/?url={enc}")), dest);
         assert_eq!(u(&format!("https://duckduckgo.com/l/?uddg={enc}&rut=1")), dest);
@@ -1095,6 +1109,9 @@ mod tests {
             "https://google.evil.example/url?q=https%3A%2F%2Fmiro.com", // not a Google site
             "https://notgoogle.com/url?q=https%3A%2F%2Fmiro.com",
             "https://l.facebook.com/other?u=https%3A%2F%2Fmiro.com",
+            "https://statics.teams.cdn.office.net/evergreen-assets/other.html?url=https%3A%2F%2Fmiro.com", // not the Safe Links page
+            "https://outlook.office.com/mail/inbox?url=https%3A%2F%2Fmiro.com",
+            "https://notsafelinks.protection.outlook.com.evil.example/?url=https%3A%2F%2Fmiro.com",
         ] {
             assert_eq!(r.unwrap(same), same, "{same}");
         }

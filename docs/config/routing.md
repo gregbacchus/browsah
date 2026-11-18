@@ -39,7 +39,9 @@ not routed, so a rule for the destination never saw it. Two things handle this:
 
 1. **Unwrapping** (always on). Before the rules are applied, a redirector's address is replaced by the address in its query, so
    the rules judge, and open, where the link really goes (`browsah route test` prints an `unwrapped:` line). Known redirectors:
-   Google (`google.<tld>/url`, parameters `q` or `url`), Facebook and Messenger (`l.php`, `u`), Outlook Safe Links (`url`),
+   Google (`google.<tld>/url`, parameters `q` or `url`), Facebook and Messenger (`l.php`, `u`), Microsoft Safe Links in Outlook mail
+   (`*.safelinks.protection.outlook.com`, also the Government and China clouds, parameter `url`), Teams' Safe Links page
+   (`atp-safelinks.html` on `*.teams.cdn.office.net`, `url`) and Outlook on the web's `owa/redir.aspx` (`URL`, any case),
    Slack (`slack-redir.net/link`), LinkedIn (`/redir/redirect`, `/safety/go`), DuckDuckGo (`/l/`, `uddg`) and YouTube
    (`/redirect`, `q`). Add your own with `routing.unwrap`, turn the list off with `routing.unwrap_known: false`. A link that no rule claims
    is left alone: it goes to the redirector as before. Nothing is fetched: the tracking address is never requested for a link

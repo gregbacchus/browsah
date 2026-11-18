@@ -3894,7 +3894,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     r.check("(and the header is still tinted)", head.len() == 1 && near(head[0], tint), || format!("{head:?} tint {tint:?}"));
     cfg.window.frame.enabled = true;
     cfg.window.frame.thickness = 4;
-    cfg.window.frame.radius = 4;
+    cfg.window.frame.radius = 11;
     w.apply_config(&cfg);
     glib::timeout_future(Duration::from_millis(600)).await;
 
