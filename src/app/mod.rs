@@ -2154,6 +2154,13 @@ fn browser_windows() -> Vec<Rc<Shell>> {
 
 /// Run the browser in this process, which owns its profile's application id. `app` is already
 /// registered (see `main`). Returns the process exit code.
+/// Write the cookie databases to disk before CEF shuts down (see `view::flush_cookie_stores`).
+pub fn flush_stores_on_exit() {
+    if !view::flush_cookie_stores(Duration::from_secs(3)) {
+        eprintln!("browsah: the cookie stores did not finish writing in 3 s");
+    }
+}
+
 pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
     let cfg0 = loaded.config;
     input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);

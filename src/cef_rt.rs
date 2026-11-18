@@ -109,11 +109,45 @@ pub fn init(flags: Vec<String>, cache: Option<std::path::PathBuf>) -> Init {
     Init::Browser(Runtime { _args: args, _app: app })
 }
 
+/// Browsers that exist right now (created, not yet closed), counted by the app's life-span handler.
+static LIVE_BROWSERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Whether anything has been counted (the benchmarks create browsers without counting them).
+static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A browser was created (any thread).
+pub fn browser_created() {
+    COUNTING.store(true, std::sync::atomic::Ordering::SeqCst);
+    LIVE_BROWSERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A browser has closed (any thread).
+pub fn browser_closed() {
+    if LIVE_BROWSERS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        LIVE_BROWSERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl Runtime {
-    /// Call after every browser has been asked to close.
+    /// Call after every browser has been asked to close. Waits until they have said they are closed (a few milliseconds
+    /// usually, at most two seconds), then shuts CEF down. Without counted browsers (the benchmarks) it waits a fixed half second.
     pub fn shutdown(self) {
-        std::thread::sleep(Duration::from_millis(500)); // CEF's own thread finishes the closes
+        use std::sync::atomic::Ordering;
+        if COUNTING.load(Ordering::SeqCst) {
+            let start = std::time::Instant::now();
+            while LIVE_BROWSERS.load(Ordering::SeqCst) > 0 && start.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if std::env::var_os("BROWSAH_DEBUG").is_some() {
+                eprintln!("browsah: browsers closed after {:?} ({} left)", start.elapsed(), LIVE_BROWSERS.load(Ordering::SeqCst));
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let start = std::time::Instant::now();
         shutdown();
+        if std::env::var_os("BROWSAH_DEBUG").is_some() {
+            eprintln!("browsah: CEF shut down in {:?}", start.elapsed());
+        }
     }
 }
 

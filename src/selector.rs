@@ -278,11 +278,10 @@ pub fn selector_cli(args: &[String]) -> i32 {
     let icon = profile::icons_dir().join(format!("{SELECTOR_APP_ID}.svg"));
     match args.first().map(String::as_str) {
         Some("install") => {
-            let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+            let Ok((exe, libs)) = profile::launcher() else {
                 eprintln!("cannot find this program");
                 return 1;
             };
-            let libs = exe.parent().map(Path::to_path_buf).unwrap_or_default();
             let result = std::fs::create_dir_all(profile::applications_dir())
                 .and_then(|_| std::fs::create_dir_all(profile::icons_dir()))
                 .and_then(|_| std::fs::write(&entry, desktop_entry(&exe, &libs)))

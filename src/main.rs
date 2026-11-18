@@ -188,7 +188,9 @@ fn main() {
         bench::run(opts);
         0
     } else {
-        app::run(app, opts, loaded, profile)
+        let code = app::run(app, opts, loaded, profile);
+        app::flush_stores_on_exit();
+        code
     };
 
     runtime.shutdown();

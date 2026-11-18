@@ -145,32 +145,56 @@ pub fn desktop_entry(profile: &Profile, w: &Workspace, exe: &Path, libs: &Path) 
     entry
 }
 
-/// Write the launcher entries of the profile's apps again where they are out of date (an app's `multiple_windows` or
-/// name changed, or the program moved). Only entries that already exist are touched, never created.
-pub fn refresh_launchers(profile: &Profile) {
-    if profile.id == profile::TEST_ID {
+/// Write launcher entries again where they are out of date: the program moved (a package upgrade removes the old
+/// versioned directory), an app's `multiple_windows` or name changed, the generated icon changed. Covers every profile's
+/// entry and apps and the selector's. Only entries that already exist are touched, never created.
+pub fn refresh_launchers(running: &Profile) {
+    if running.id == profile::TEST_ID {
         return;
     }
-    let (Ok(exe), apps) = (std::env::current_exe().and_then(|p| p.canonicalize()), Workspace::list_apps(profile)) else { return };
-    let libs: PathBuf = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-    for w in apps {
-        let file = profile::applications_dir().join(format!("{}.desktop", app_id(profile, &w.id)));
-        let has_own_icon = w.config.app.as_ref().and_then(|a| a.icon.as_ref()).is_some_and(|f| w.dir.join(f).is_file());
-        let icon = profile::icons_dir().join(format!("{}.svg", app_id(profile, &w.id)));
-        let icon_stale = !has_own_icon && std::fs::read_to_string(&icon).is_ok_and(|current| current != generated_icon(profile, &w));
-        if icon_stale || std::fs::read_to_string(&file).is_ok_and(|current| current != desktop_entry(profile, &w, &exe, &libs)) {
-            let _ = install(profile, &w, &exe, &libs);
-        }
+    let Ok((exe, libs)) = profile::launcher() else { return };
+    let mut profiles = profile::list();
+    if !profiles.iter().any(|p| p.id == running.id) {
+        profiles.push(running.clone());
     }
-    // The profile's own icon (and the selector's), when they were installed and are not what would be written now.
-    let rewrite = |file: std::path::PathBuf, now: String| {
+    let mut changed = false;
+    // Rewrite a file that exists and is not what would be written now.
+    let mut rewrite = |file: PathBuf, now: String| {
         if std::fs::read_to_string(&file).is_ok_and(|current| current != now) {
-            let _ = std::fs::write(&file, now);
-            let _ = std::process::Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(profile::icons_dir().join("../../..")).status();
+            changed |= std::fs::write(&file, now).is_ok();
         }
     };
-    rewrite(profile::icons_dir().join(format!("{}.svg", profile.app_id())), profile::icon_svg(profile));
-    rewrite(profile::icons_dir().join(format!("{}.svg", crate::selector::SELECTOR_APP_ID)), crate::selector::icon_svg());
+    // An entry is rewritten in full for the running profile; for the others, and the selector (which another build of
+    // browsah may own), only when the program it names is gone, so a build run from a source tree leaves them alone.
+    let wanted = |file: &Path, own: bool| own || std::fs::read_to_string(file).is_ok_and(|t| profile::entry_program_missing(&t));
+    for profile in profiles.iter().filter(|p| p.id != profile::TEST_ID) {
+        let own = profile.id == running.id;
+        let entry = profile::applications_dir().join(format!("{}.desktop", profile.app_id()));
+        if wanted(&entry, own) {
+            rewrite(entry, profile::desktop_entry(profile, &exe, &libs));
+        }
+        rewrite(profile::icons_dir().join(format!("{}.svg", profile.app_id())), profile::icon_svg(profile));
+        for w in Workspace::list_apps(profile) {
+            let file = profile::applications_dir().join(format!("{}.desktop", app_id(profile, &w.id)));
+            let has_own_icon = w.config.app.as_ref().and_then(|a| a.icon.as_ref()).is_some_and(|f| w.dir.join(f).is_file());
+            let icon = profile::icons_dir().join(format!("{}.svg", app_id(profile, &w.id)));
+            let icon_stale = !has_own_icon && std::fs::read_to_string(&icon).is_ok_and(|current| current != generated_icon(profile, &w));
+            let entry_stale = wanted(&file, own) && std::fs::read_to_string(&file).is_ok_and(|current| current != desktop_entry(profile, &w, &exe, &libs));
+            if icon_stale || entry_stale {
+                let _ = install(profile, &w, &exe, &libs);
+            }
+        }
+    }
+    let selector_id = crate::selector::SELECTOR_APP_ID;
+    let selector_entry = profile::applications_dir().join(format!("{selector_id}.desktop"));
+    if wanted(&selector_entry, false) {
+        rewrite(selector_entry, crate::selector::desktop_entry(&exe, &libs));
+    }
+    rewrite(profile::icons_dir().join(format!("{selector_id}.svg")), crate::selector::icon_svg());
+    if changed {
+        let _ = std::process::Command::new("update-desktop-database").arg(profile::applications_dir()).status();
+        let _ = std::process::Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(profile::icons_dir().join("../../..")).status();
+    }
 }
 
 /// Write the app's `.desktop` entry and icon (its own icon file if it names one, else a generated one).
@@ -297,14 +321,13 @@ pub fn cli(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
-        Ok(e) => e,
+    let (exe, libs) = match profile::launcher() {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("cannot find this program: {e}");
             return 1;
         }
     };
-    let libs: PathBuf = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("add") => add(&profile, &args[1..], &exe, &libs),
         Some("list") => {

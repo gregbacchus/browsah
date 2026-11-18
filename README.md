@@ -161,7 +161,9 @@ browsah example.com
 The brew package is a prebuilt directory (the binary with CEF's `libcef.so` and resources, about 500 MB
 installed, debug info stripped) that uses the **system** GTK 4 and libadwaita (Ubuntu 24.04 or newer, x86_64 or aarch64;
 `sudo apt install libgtk-4-1 libadwaita-1-0` if they are missing). `browsah` on the PATH is a small
-launcher that sets `LD_LIBRARY_PATH` to the install directory. Update with `brew upgrade browsah`.
+launcher that sets `LD_LIBRARY_PATH` and tells browsah its stable `opt` paths (`BROWSAH_LAUNCHER`, `BROWSAH_LIBS`), so the
+desktop entries it writes keep working after `brew upgrade browsah`. Entries written by an earlier version (which named the
+versioned install directory) are repaired the next time any profile is started from the command line.
 
 **Releasing** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then
 

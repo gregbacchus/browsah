@@ -232,6 +232,13 @@ take minutes.
   `favicons` table (newest 2000) and reads it back for restored tabs and lists (`cached_for`, `small_image`, with a decoded-texture
   cache). The tab's icon slot is shared: favicon, the group's dot drawn on it (`with_dot`), a generic icon for pinned tabs; the indicator
   slot belongs to sweeping. Not stored for private windows.
+- **Launcher entries and the program path:** `.desktop` entries name the program through `profile::launcher()`: `BROWSAH_LAUNCHER` and
+  `BROWSAH_LIBS` when a package sets them (Homebrew's launcher script does, with the stable `opt` paths, because the versioned Cellar
+  directory is deleted on upgrade), else this binary's canonical path. `webapp::refresh_launchers` (start-up thread) rewrites the
+  running profile's entries, icons and apps in full, and any other profile's or the selector's entry only when its program no longer
+  exists (`profile::entry_program_missing`), so a source build never repoints another install's entries.
+- **Shutdown:** `main` flushes the cookie stores (`app::flush_stores_on_exit`) and then `Runtime::shutdown` waits for the counted browsers
+  (`cef_rt::browser_created/closed`) to close, not a fixed sleep (docs/research/shutdown.md); the benchmarks, which do not count, keep 500 ms.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the

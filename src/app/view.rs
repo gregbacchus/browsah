@@ -303,6 +303,43 @@ pub fn end_session_cookies(storage: Option<&std::path::Path>, rules: crate::cook
     });
 }
 
+wrap_completion_callback! {
+    struct FlushDone { pending: Arc<std::sync::atomic::AtomicUsize> }
+
+    impl CompletionCallback {
+        fn on_complete(&self) {
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Write every cookie store (the global one and each isolated workspace's) to disk and wait, up to `wait`, for them to say they
+/// are done. Chromium writes its cookie database in the background every so often, and tearing it down mid-write logged
+/// "Failed to post task from FlushAndNotifyInBackground" and could lose the last changes, so this runs before CEF shuts down.
+/// GTK thread only. Returns whether every store finished in time.
+pub fn flush_cookie_stores(wait: std::time::Duration) -> bool {
+    let mut contexts: Vec<RequestContext> = request_context_get_global_context().into_iter().collect();
+    CONTEXTS.with(|c| contexts.extend(c.borrow().values().cloned()));
+    let pending = Arc::new(std::sync::atomic::AtomicUsize::new(contexts.len()));
+    for rc in contexts {
+        let pending = pending.clone();
+        on_ui(move || {
+            let started = rc.cookie_manager(None).is_some_and(|manager| {
+                let mut done = FlushDone::new(pending.clone());
+                manager.flush_store(Some(&mut done)) != 0
+            });
+            if !started {
+                pending.fetch_sub(1, Ordering::SeqCst); // nothing to wait for
+            }
+        });
+    }
+    let start = std::time::Instant::now();
+    while pending.load(Ordering::SeqCst) > 0 && start.elapsed() < wait {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    pending.load(Ordering::SeqCst) == 0
+}
+
 /// The CEF request context for a folder, made on first use. Its folder must lie inside the profile's CEF folder.
 fn context_for(dir: &std::path::Path) -> Option<RequestContext> {
     CONTEXTS.with(|c| {
@@ -589,6 +626,7 @@ wrap_life_span_handler! {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             let Some(browser) = browser else { return };
             let Some(host) = browser.host() else { return };
+            crate::cef_rt::browser_created();
             host.was_hidden(self.shared.hidden.load(Ordering::Relaxed) as _);
             // The browser's view first asks for the screen info before this browser exists (and so gets scale 1):
             // ask again now, on CEF's UI thread, so the scale we report takes effect.
@@ -663,6 +701,7 @@ wrap_life_span_handler! {
 
         // The browser is gone: drop its GTK-side state so late events find nothing.
         fn on_before_close(&self, _b: Option<&mut Browser>) {
+            crate::cef_rt::browser_closed();
             let id = self.shared.id;
             glib::MainContext::default().invoke(move || {
                 deliver(id, ViewEvent::Closed);

@@ -339,16 +339,61 @@ const USAGE: &str = "usage:
 An id is lower case letters, digits, - and _, starting with a letter. Colours are #rrggbb.
 Launch a profile with: browsah --profile=<id> [URL]";
 
+/// The program the launcher entries run and the directory with `libcef.so`. A package can give stable paths in
+/// `BROWSAH_LAUNCHER` and `BROWSAH_LIBS` (Homebrew's launcher script does: its versioned install directory is deleted by
+/// the next upgrade, which would leave every entry pointing at nothing); otherwise this program's own path.
+pub fn launcher() -> std::io::Result<(PathBuf, PathBuf)> {
+    launcher_from(std::env::var_os("BROWSAH_LAUNCHER"), std::env::var_os("BROWSAH_LIBS"), || std::env::current_exe().and_then(|p| p.canonicalize()))
+}
+
+fn launcher_from(exe: Option<std::ffi::OsString>, libs: Option<std::ffi::OsString>, own: impl FnOnce() -> std::io::Result<PathBuf>) -> std::io::Result<(PathBuf, PathBuf)> {
+    if let (Some(e), Some(l)) = (exe, libs) {
+        let (e, l) = (PathBuf::from(e), PathBuf::from(l));
+        if e.is_absolute() && l.is_absolute() && e.is_file() {
+            return Ok((e, l));
+        }
+    }
+    let exe = own()?;
+    let libs = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    Ok((exe, libs))
+}
+
+/// Whether a `.desktop` file's `Exec=` program no longer exists (an upgrade removed the version it was written for).
+/// The program is the first absolute path on the line after any `env NAME=value` words; false when none can be found.
+pub fn entry_program_missing(entry: &str) -> bool {
+    let Some(line) = entry.lines().find_map(|l| l.strip_prefix("Exec=")) else { return false };
+    let mut rest = line.trim_start();
+    loop {
+        let (word, after) = if let Some(quoted) = rest.strip_prefix('"') {
+            match quoted.find('"') {
+                Some(i) => (&quoted[..i], quoted[i + 1..].trim_start()),
+                None => return false,
+            }
+        } else {
+            match rest.split_once(char::is_whitespace) {
+                Some((w, a)) => (w, a.trim_start()),
+                None => (rest, ""),
+            }
+        };
+        if word.starts_with('/') {
+            return !Path::new(word).exists();
+        }
+        if after.is_empty() {
+            return false;
+        }
+        rest = after;
+    }
+}
+
 /// `browsah profile ...`. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
-    let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
-        Ok(e) => e,
+    let (exe, libs) = match launcher() {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("cannot find this program: {e}");
             return 1;
         }
     };
-    let libs = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("add") => add(&args[1..], &exe, &libs),
         Some("list") => {
@@ -638,6 +683,33 @@ mod tests {
         let q = Profile { config: ProfileConfig::default(), ..p };
         assert_eq!(icon_svg(&q), crate::appicon::svg(None));
         assert_ne!(icon_svg(&q), svg);
+    }
+
+    #[test]
+    fn a_missing_program_in_an_entry_is_found() {
+        let line = |exe: &str| format!("[Desktop Entry]\nName=x\nExec=env LD_LIBRARY_PATH=/gone {exe} --profile=work %U\n");
+        assert!(entry_program_missing(&line("/no/such/0.1.2/libexec/browsah")));
+        assert!(!entry_program_missing(&line("/usr/bin/env")));
+        assert!(entry_program_missing("Exec=\"/no such dir/browsah\" --profile=w\n"));
+        assert!(!entry_program_missing("Exec=/usr/bin/env A=b\n"));
+        assert!(!entry_program_missing("Name=no exec line\n"));
+        assert!(!entry_program_missing("Exec=browsah --profile=w\n"), "a name looked up on PATH is not judged");
+    }
+
+    #[test]
+    fn launcher_paths_prefer_the_packages_stable_ones() {
+        let own = || Ok(PathBuf::from("/opt/cellar/0.1.2/libexec/browsah"));
+        // No package: this program and its directory.
+        assert_eq!(launcher_from(None, None, own).unwrap(), (PathBuf::from("/opt/cellar/0.1.2/libexec/browsah"), PathBuf::from("/opt/cellar/0.1.2/libexec")));
+        // A package's stable paths win when the launcher exists (here: this test program stands in for it).
+        let me = std::env::current_exe().unwrap();
+        let got = launcher_from(Some(me.clone().into()), Some("/opt/stable/libexec".into()), own).unwrap();
+        assert_eq!(got, (me, PathBuf::from("/opt/stable/libexec")));
+        // Missing launcher, one variable only, or relative paths: not trusted.
+        for (e, l) in [(Some("/nope/browsah"), Some("/opt/stable/libexec")), (Some("/usr/bin/env"), None), (None, Some("/opt/x")), (Some("browsah"), Some("libexec"))] {
+            let got = launcher_from(e.map(Into::into), l.map(Into::into), own).unwrap();
+            assert_eq!(got.0, PathBuf::from("/opt/cellar/0.1.2/libexec/browsah"), "{e:?} {l:?}");
+        }
     }
 
     #[test]

@@ -44,8 +44,7 @@ async fn fetch_icon(view: &Rc<BrowserView>, icons: &[String]) -> Option<Vec<u8>>
 pub async fn save_app(view: &Rc<BrowserView>, info: &AppInfo, name: &str) -> Result<String, String> {
     let profile = super::PROFILE.with(|p| p.borrow().clone()).ok_or("no profile")?;
     let icon = fetch_icon(view, &info.icons).await.map(|png| ("png", png));
-    let exe = std::env::current_exe().and_then(|p| p.canonicalize()).map_err(|e| e.to_string())?;
-    let libs = exe.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let (exe, libs) = crate::profile::launcher().map_err(|e| e.to_string())?;
     let spec = webapp::NewApp { name: Some(name.to_owned()), color: info.color.clone(), url: info.start_url.clone(), scope: info.scope.clone(), display: info.display, icon, manifest_id: info.manifest_id.clone() };
     webapp::create(&profile, None, &spec, &exe, &libs)
 }

@@ -2161,6 +2161,10 @@ async fn run_storage(shell: &Rc<Shell>, r: &mut Report) {
     r.check("four workspaces (two shared, two isolated) open", all_open, || "not all open".into());
     set("sh1").await;
     let a = show("sh2").await;
+    let start = std::time::Instant::now();
+    let flushed = super::view::flush_cookie_stores(Duration::from_secs(5));
+    r.check("the cookie stores (global and isolated) write to disk and report back before shutdown", flushed, || format!("not done after {:?}", start.elapsed()));
+    println!("cookies: flushing the stores took {:?}", start.elapsed());
     r.check("shared workspaces see each other's cookies", a.as_deref() == Some("Cookies [ck=1]"), || format!("{a:?}"));
     let b = show("is1").await;
     r.check("an isolated workspace does not see the profile's cookies", b.as_deref() == Some("Cookies []"), || format!("{b:?}"));
