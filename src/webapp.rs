@@ -19,10 +19,30 @@ pub enum AppDisplay {
     Minimal,
     /// The usual controls.
     Browser,
+    /// The controls the app's own `nav:` section says (the same options as a workspace's).
+    Custom,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// The controls a web app with `display: custom` chooses (`nav:` in `app.yaml`). Not the whole of a workspace's `nav`: an
+/// app has no bookmarks, and its tab bar and new-tab button follow `multiple_tabs`, so those are not options here.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct AppNav {
+    pub back: bool,
+    pub forward: bool,
+    pub reload: bool,
+    pub address_bar: AddressBar,
+}
+
+impl Default for AppNav {
+    fn default() -> Self {
+        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable }
+    }
 }
 
 /// The contents of an app's `app.yaml` that describe the app itself. (The file can also hold configuration
@@ -44,6 +64,10 @@ pub struct AppConfig {
     /// How much of the browser's interface the window shows.
     #[serde(default)]
     pub display: AppDisplay,
+    /// Which controls the window shows, with `display: custom` (back, forward, reload and the address bar, as a workspace's
+    /// `nav:` has them; unset ones are shown). Ignored, with a warning, for the other displays.
+    #[serde(default)]
+    pub nav: Option<AppNav>,
     /// An icon file inside the app's directory (`icon.png`, `icon.svg`). Default: a generated one.
     #[serde(default)]
     pub icon: Option<String>,
@@ -63,7 +87,7 @@ pub struct AppConfig {
 }
 
 /// The keys of `app.yaml` that are not configuration overrides.
-pub const APP_IDENTITY_KEYS: &[&str] = &["name", "color", "url", "scope", "display", "icon", "manifest_id", "multiple_windows", "multiple_tabs", "modals"];
+pub const APP_IDENTITY_KEYS: &[&str] = &["name", "color", "url", "scope", "display", "nav", "icon", "manifest_id", "multiple_windows", "multiple_tabs", "modals"];
 
 /// Read the app's own settings; overrides are read by the config layers.
 pub fn parse_app(text: &str) -> Result<AppConfig, String> {
@@ -87,17 +111,27 @@ pub fn window_config(app: AppConfig) -> WorkspaceConfig {
     c.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, scope });
     c.tabs.allow_new = app.multiple_tabs;
     c.tabs.popups = PopupPolicy::Modal;
-    c.nav = NavConfig {
-        address_bar: match app.display {
-            AppDisplay::Standalone => AddressBar::Hidden,
-            AppDisplay::Minimal => AddressBar::Readonly,
-            AppDisplay::Browser => AddressBar::Editable,
+    c.nav = match app.display {
+        // The app's own choice of the four controls; the tab bar and new-tab button follow `multiple_tabs`, and there are no bookmarks.
+        AppDisplay::Custom => {
+            let n = app.nav.clone().unwrap_or_default();
+            NavConfig { back: n.back, forward: n.forward, reload: n.reload, address_bar: n.address_bar, new_tab_button: app.multiple_tabs, tab_bar: app.multiple_tabs, bookmarks_bar: false }
+        }
+        display => NavConfig {
+            address_bar: match display {
+                AppDisplay::Minimal => AddressBar::Readonly,
+                AppDisplay::Browser => AddressBar::Editable,
+                _ => AddressBar::Hidden,
+            },
+            new_tab_button: app.multiple_tabs,
+            tab_bar: display == AppDisplay::Browser || app.multiple_tabs,
+            bookmarks_bar: false,
+            ..NavConfig::default()
         },
-        new_tab_button: app.multiple_tabs,
-        tab_bar: app.display == AppDisplay::Browser || app.multiple_tabs,
-        bookmarks_bar: false,
-        ..NavConfig::default()
     };
+    if app.nav.is_some() && app.display != AppDisplay::Custom {
+        eprintln!("browsah: the app's nav: section is only used with display: custom");
+    }
     c.app = Some(app);
     c
 }
@@ -249,7 +283,7 @@ pub fn uninstall(profile: &Profile, id: &str) {
 // ---- command line -----------------------------------------------------------------------------
 
 const USAGE: &str = "usage:
-  browsah app add <id> --url URL [--name NAME] [--scope PATTERN[,PATTERN...]] [--display standalone|minimal|browser]
+  browsah app add <id> --url URL [--name NAME] [--scope PATTERN[,PATTERN...]] [--display standalone|minimal|browser|custom]
                        [--color \"LIGHT [DARK]\"] [--icon FILE] [--profile ID]
   browsah app list [--profile ID]
   browsah app remove <id> [--profile ID] --yes
@@ -292,6 +326,10 @@ pub fn config_text(name: Option<&str>, color: Option<&profile::ColorPair>, url: 
         t.push_str(&format!("scope: [{}]\n", scope.iter().map(|s| quote(s)).collect::<Vec<_>>().join(", ")));
     }
     t.push_str(&format!("display: {display}\n"));
+    if display == "custom" {
+        // The controls to choose from, at the workspace defaults, for editing.
+        t.push_str("nav:\n  back: true\n  forward: true\n  reload: true\n  address_bar: editable   # editable | readonly | hidden\n");
+    }
     if let Some(i) = icon {
         t.push_str(&format!("icon: {}\n", quote(i)));
     }
@@ -387,6 +425,7 @@ fn display_name_of(d: AppDisplay) -> &'static str {
         AppDisplay::Standalone => "standalone",
         AppDisplay::Minimal => "minimal",
         AppDisplay::Browser => "browser",
+        AppDisplay::Custom => "custom",
     }
 }
 
@@ -557,8 +596,9 @@ fn add(profile: &Profile, args: &[String], exe: &Path, libs: &Path) -> i32 {
         Some("standalone") => Some(AppDisplay::Standalone),
         Some("minimal") => Some(AppDisplay::Minimal),
         Some("browser") => Some(AppDisplay::Browser),
+        Some("custom") => Some(AppDisplay::Custom),
         Some(_) => {
-            eprintln!("--display must be standalone, minimal or browser");
+            eprintln!("--display must be standalone, minimal, browser or custom");
             return 2;
         }
     };
@@ -892,6 +932,35 @@ mod tests {
     }
 
     #[test]
+    fn display_custom_takes_the_apps_own_nav_section() {
+        // Only the listed keys change; the rest are shown (editable address).
+        let c = window_config(parse_app("url: https://a.example/\ndisplay: custom\nnav:\n  back: false\n  address_bar: readonly\n").unwrap());
+        assert!(!c.nav.back && c.nav.forward && c.nav.reload && c.nav.address_bar == AddressBar::Readonly);
+        let d = window_config(parse_app("url: https://a.example/\ndisplay: custom\n").unwrap());
+        assert!(d.nav.back && d.nav.forward && d.nav.reload && d.nav.address_bar == AddressBar::Editable);
+        // The tab bar and the new-tab button follow multiple_tabs, and an app has no bookmarks, whatever the nav section is.
+        assert!(!c.nav.tab_bar && !c.nav.new_tab_button && !c.nav.bookmarks_bar && !c.tabs.allow_new);
+        let t = window_config(parse_app("url: https://a.example/\ndisplay: custom\nmultiple_tabs: true\n").unwrap());
+        assert!(t.nav.tab_bar && t.nav.new_tab_button && !t.nav.bookmarks_bar && t.tabs.allow_new);
+        // Those three are not options of an app's nav (a misspelt or removed key is an error in tests).
+        for key in ["tab_bar", "new_tab_button", "bookmarks_bar", "nope"] {
+            assert!(parse_app(&format!("url: https://a.example/\ndisplay: custom\nnav:\n  {key}: true\n")).is_err(), "{key}");
+        }
+        // The other displays are unchanged, with or without a nav section (which they ignore).
+        let s = window_config(parse_app("url: https://a.example/\nnav:\n  back: false\n").unwrap());
+        assert!(s.nav.back && s.nav.address_bar == AddressBar::Hidden && !s.nav.tab_bar);
+    }
+
+    #[test]
+    fn the_cli_writes_a_nav_section_for_display_custom() {
+        let text = config_text(Some("Mail"), None, "https://m.example/", &[], "custom", None, None);
+        assert!(text.contains("display: custom\nnav:\n  back: true"), "{text}");
+        let app = parse_app(&text).unwrap();
+        assert!(app.display == AppDisplay::Custom && app.nav == Some(AppNav::default()), "the written section is the defaults");
+        assert!(!config_text(None, None, "https://m.example/", &[], "browser", None, None).contains("nav:"));
+    }
+
+    #[test]
     fn a_web_app_implies_its_window() {
         let c = window_config(parse_app("url: https://mail.example.com/inbox\n").unwrap());
         assert!(!c.tabs.allow_new && c.tabs.popups == PopupPolicy::Modal);
@@ -921,7 +990,8 @@ mod tests {
         }
         let mut paths: Vec<String> = fields::<AppConfig>();
         paths.extend(fields::<ModalsConfig>().into_iter().map(|f| format!("modals.{f}")));
-        assert_eq!(paths.len(), APP_IDENTITY_KEYS.len() + 1, "{paths:?}");
+        paths.extend(fields::<AppNav>().into_iter().map(|f| format!("nav.{f}")));
+        assert_eq!(paths.len(), APP_IDENTITY_KEYS.len() + 1 + 4, "{paths:?}");
         for key in APP_IDENTITY_KEYS {
             assert!(paths.iter().any(|p| p == key), "APP_IDENTITY_KEYS has {key}, which AppConfig does not");
         }

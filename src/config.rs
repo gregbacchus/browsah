@@ -44,6 +44,12 @@ pub struct Config {
     /// Show the workspace picker (a button at the start of the window's header bar with a list of the profile's workspaces).
     /// Never shown in a web app's window. Set it per profile or workspace to hide it in those windows.
     pub workspace_picker: bool,
+    /// Tab sweeping (`close` or `discard` rules for tabs that are not used); a workspace inherits the profile's and the
+    /// application's, its own keys win and `rules+` appends.
+    pub sweep: crate::sweep::SweepConfig,
+    /// Put a background tab to sleep (free its page, keep the tab) after this much idle time (`30m`, `2h`): no value is off.
+    /// Never the tab being looked at.
+    pub sleep_tabs_after: Option<String>,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
     pub storage: Storage,
     /// The colour scheme pages see (`prefers-color-scheme`): `system` follows the desktop, like the rest of the window.
@@ -153,6 +159,8 @@ impl Default for Config {
             home_page: DEFAULT_HOME_PAGE.into(),
             new_tab_page: None,
             workspace_picker: true,
+            sweep: Default::default(),
+            sleep_tabs_after: None,
             storage: Storage::Shared,
             theme: Theme::System,
             search_url: DEFAULT_SEARCH_URL.into(),
@@ -225,6 +233,12 @@ impl Config {
         if !self.search_url.contains("{query}") {
             eprintln!("config: search_url has no {{query}} placeholder; using the default");
             self.search_url = DEFAULT_SEARCH_URL.into();
+        }
+        if let Some(text) = self.sleep_tabs_after.as_deref() {
+            if let Err(e) = crate::sweep::parse_duration(text) {
+                eprintln!("config: sleep_tabs_after: {e}; tabs are not put to sleep");
+                self.sleep_tabs_after = None;
+            }
         }
         if self.home_page.trim().is_empty() {
             self.home_page = DEFAULT_HOME_PAGE.into();
@@ -586,6 +600,9 @@ mod tests {
         add("downloads", field_names::<crate::downloads::DownloadsConfig>());
         add("cookies", field_names::<crate::cookies::CookiesConfig>());
         add("print", field_names::<PrintConfig>());
+        add("sweep", field_names::<crate::sweep::SweepConfig>());
+        add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
+        add("sweep.rules[].match", field_names::<crate::sweep::MatchConfig>());
         add("cookies.rules[]", field_names::<crate::cookies::CookieRuleConfig>());
         add("permissions.sites[]", field_names::<crate::permissions::SiteConfig>());
         out
@@ -618,7 +635,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -897,6 +914,24 @@ mod tests {
         std::fs::write(&ws, "new_tab_page: null\n").unwrap();
         assert!(load_window(&d.join("none.yaml"), &prof, None).unwrap().config.new_tab_url().is_some());
         assert!(load_window(&d.join("none.yaml"), &prof, Some(&ws)).unwrap().config.new_tab_url().is_none());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn sleeping_tabs_is_layered_and_a_bad_time_is_dropped() {
+        let d = temp_dir("sleep");
+        let (prof, ws, none) = (d.join("profile.yaml"), d.join("workspace.yaml"), d.join("none.yaml"));
+        std::fs::write(&prof, "sleep_tabs_after: 30m\n").unwrap();
+        std::fs::write(&ws, "sleep_tabs_after: null\n").unwrap();
+        let sleep = |ws_file: Option<&std::path::Path>| load_window(&none, &prof, ws_file).unwrap().config.sleep_tabs_after;
+        assert_eq!(sleep(None).as_deref(), Some("30m"), "the profile's value");
+        assert_eq!(sleep(Some(&ws)), None, "a null in the workspace undoes it");
+        std::fs::write(&ws, "sleep_tabs_after: 5m\n").unwrap();
+        assert_eq!(sleep(Some(&ws)).as_deref(), Some("5m"), "or replaces it");
+        // Nothing is set by default, and a value that is not a duration is dropped (with a message on the terminal).
+        assert_eq!(Config::parse("").unwrap().sleep_tabs_after, None);
+        assert_eq!(Config::parse("sleep_tabs_after: soon").unwrap().sleep_tabs_after, None);
+        assert_eq!(Config::parse("sleep_tabs_after: 0m").unwrap().sleep_tabs_after, None, "zero is not a time");
         let _ = std::fs::remove_dir_all(d);
     }
 

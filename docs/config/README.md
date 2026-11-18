@@ -87,7 +87,7 @@ Workspaces have theirs, [workspace.yaml](workspace.md).
 
 The profile selector (which profile gets a link from another application) is described in [selector.md](selector.md).
 
-Tab sweeping rules are described in [sweep.md](sweep.md).
+Tab sweeping rules (which can be set at every layer and are inherited) and automatic tab sleeping (`sleep_tabs_after`) are described in [sweep.md](sweep.md).
 
 Profiles have their own file, [profile.yaml](profile.md) (name, colour, default workspace, and any option overrides).
 

@@ -57,8 +57,6 @@ pub struct WorkspaceConfig {
     pub tabs: TabsConfig,
     /// How modals (a page opened to be viewed and closed) are shown.
     pub modals: ModalsConfig,
-    /// Tidying up tabs that are not used.
-    pub sweep: crate::sweep::SweepConfig,
     /// Set when this window context is a web app (read from the app's `app.yaml`, see `webapp.rs`; never from a
     /// `workspace.yaml`).
     #[serde(skip)]
@@ -193,7 +191,7 @@ pub fn in_scope(patterns: &[String], url: &str) -> bool {
 }
 
 /// The keys of `workspace.yaml` that are not configuration overrides.
-pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs", "modals", "sweep"];
+pub const IDENTITY_KEYS: &[&str] = &["name", "color", "nav", "tabs", "modals"];
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -559,11 +557,8 @@ mod tests {
         paths.extend(fields::<NavConfig>().into_iter().map(|f| format!("nav.{f}")));
         paths.extend(fields::<TabsConfig>().into_iter().map(|f| format!("tabs.{f}")));
         paths.extend(fields::<ModalsConfig>().into_iter().map(|f| format!("modals.{f}")));
-        paths.extend(fields::<crate::sweep::SweepConfig>().into_iter().map(|f| format!("sweep.{f}")));
-        paths.extend(fields::<crate::sweep::RuleConfig>().into_iter().map(|f| format!("sweep.rules[].{f}")));
-        paths.extend(fields::<crate::sweep::MatchConfig>().into_iter().map(|f| format!("sweep.rules[].match.{f}")));
         paths.extend(fields::<PinnedTab>().into_iter().map(|f| format!("tabs.pinned[].{f}")));
-        assert!(paths.len() >= 28, "{paths:?}");
+        assert!(paths.len() >= 19, "{paths:?}"); // (the `sweep` options are in the layered `Config` now)
         for p in paths {
             assert!(docs.contains(&format!("| `{p}`")), "workspace option {p} is not documented in docs/config/workspace.md");
         }

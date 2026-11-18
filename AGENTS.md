@@ -193,6 +193,14 @@ take minutes.
   the database (the profile process calls it from `app::sweep::background_sweep`, eight seconds after start and
   every minute per workspace interval, skipping workspaces with an open window; `browsah sweep` calls it for a
   profile that is not running).
+- **Web app tabs:** an explicit new-tab request (`ViewEvent::OpenTab`: Ctrl/middle click, "open in new tab") opens a tab whenever the window allows
+  tabs, even though an app's popup policy is `modal` (the overlay is for windows with no tabs). An app with a hidden address bar and tabs puts the
+  `adw::TabBar` (`inline` style) in the header's title position while `n_pages > 1` (`build`: `tabs_in_header`); with one tab the title shows.
+- **Sweeping config and sleeping:** `sweep` and `sleep_tabs_after` are options of the layered `Config` (not workspace-only keys), so a workspace
+  inherits the profile's and the application's `sweep` (its own keys win, `rules+` appends; `sweep::effective_sweep` reads the layers for
+  closed workspaces). `sleep_tabs_after` adds a last implicit `discard` rule (`SLEEP_RULE`, matches every tab, `pinned_ok`) in
+  `Sweeper::from_config`; the selected tab of every window is always protected (a sleeping tab wakes on selection, so a hidden window's selected
+  tab cannot sleep). `Shell::sweeper` is a `RefCell` rebuilt by `apply_config` and the 30 s timer runs the rules when their interval has passed.
 - **Sweeping** (`app/sweep.rs`, model in `sweep.rs`): a workspace's `sweep:` rules run on a timer. Each pass
   probes every live tab with a script (`PROBE`: unsaved form input, playing media) through DevTools
   `Runtime.evaluate`, waits 1.5 s, then closes (reason `sweep:<rule>` in `closed_tabs`) or discards

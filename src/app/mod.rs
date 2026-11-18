@@ -156,6 +156,8 @@ pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub tab_view: adw::TabView,
     pub entry: gtk::Entry,
+    /// The header bar (a web app with no address bar puts its tabs in it while it has more than one).
+    pub header: adw::HeaderBar,
     pub back: gtk::Button,
     pub forward: gtk::Button,
     pub reload: gtk::Button,
@@ -176,7 +178,10 @@ pub struct Shell {
     nav: crate::workspace::NavConfig,
     allow_new_tabs: bool,
     /// This workspace's sweeping rules (None: off), how many sweeps have run, and the last one's notes.
-    sweeper: Option<crate::sweep::Sweeper>,
+    /// The sweep rules and the automatic sleep rule of this window (rebuilt when the configuration reloads).
+    sweeper: RefCell<Option<crate::sweep::Sweeper>>,
+    /// When the rules last ran (unix seconds), for the check interval.
+    last_pass: Cell<i64>,
     sweeps_done: Cell<u32>,
     last_sweep: RefCell<Vec<String>>,
     pending_close_reason: RefCell<Option<String>>,
@@ -422,7 +427,7 @@ impl Shell {
         send.append_item(&new_window);
         self.tab_menu.append_submenu(Some("Send to workspace"), &send);
         let close = gio::Menu::new();
-        if self.sweeper.is_some() {
+        if self.sweeper.borrow().is_some() {
             close.append(Some("Sweep unused tabs now"), Some("win.sweep-now"));
         }
         close.append(Some("Close tab"), Some("win.close-menu-tab"));
@@ -828,6 +833,7 @@ impl Shell {
     /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
     pub fn apply_config(&self, cfg: &Config) {
         *self.settings.borrow_mut() = cfg.clone();
+        *self.sweeper.borrow_mut() = window_sweeper(self.workspace.is_some(), cfg); // sweep rules and sleeping follow the configuration
         self.picker.button.set_visible(cfg.workspace_picker && !self.workspace.as_ref().is_some_and(|w| w.is_app()));
         self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
@@ -875,6 +881,11 @@ impl Shell {
 
     pub fn state(&self) -> Rc<RefCell<State>> {
         self.current().expect("a tab").state.clone()
+    }
+
+    /// How many modals (overlay pages) are open in this window.
+    pub fn modal_count(&self) -> usize {
+        self.modals.borrow().len()
     }
 
     pub fn tab_count(&self) -> usize {
@@ -1284,15 +1295,17 @@ impl Shell {
                     });
                 }
             }
+            // A link asked for a new tab (Ctrl+click, middle click, "open in new tab"): a tab when the window may have tabs, even
+            // if its popups are modals (a web app's are); the overlay is for a window that has no tabs to open.
             ViewEvent::OpenTab { url, select } => {
-                if self.popup_policy == crate::workspace::PopupPolicy::Modal {
-                    self.open_modal(&url);
-                } else if self.allow_new_tabs {
+                if self.allow_new_tabs && self.popup_policy != crate::workspace::PopupPolicy::Block {
                     let opener_group = tab.group.get();
                     let new = self.open_tab(&url, select);
                     if opener_group != 0 {
                         self.assign_group(&new, opener_group);
                     }
+                } else if self.popup_policy == crate::workspace::PopupPolicy::Modal {
+                    self.open_modal(&url);
                 } else if let Some(factory) = NEW_EPHEMERAL.with(|f| f.borrow().clone()) {
                     factory(&url);
                 }
@@ -1459,10 +1472,26 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new);
     tab_bar.set_end_action_widget(Some(&new_tab_button));
     tab_bar.set_visible(nav.tab_bar);
+    // A web app with no address bar has room in its header: the tabs go there, and only while there is more than one (with a
+    // single tab the header shows the title as usual). Otherwise the tab bar is a row of its own under the header.
+    let tabs_in_header = workspace.as_ref().is_some_and(|w| w.is_app()) && nav.address_bar == crate::workspace::AddressBar::Hidden && nav.tab_bar;
+    if tabs_in_header {
+        tab_bar.add_css_class("inline");
+        tab_bar.set_hexpand(true);
+        let (header, tab_bar) = (header.clone(), tab_bar.clone());
+        tab_view.connect_n_pages_notify(move |view| {
+            let wanted = (view.n_pages() > 1).then(|| tab_bar.clone().upcast::<gtk::Widget>());
+            if header.title_widget() != wanted {
+                header.set_title_widget(wanted.as_ref());
+            }
+        });
+    }
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    toolbar.add_top_bar(&tab_bar);
+    if !tabs_in_header {
+        toolbar.add_top_bar(&tab_bar);
+    }
     toolbar.add_top_bar(&bookmark_revealer);
     let find_bar = find::Bar::new();
     toolbar.add_bottom_bar(&find_bar.revealer);
@@ -1488,6 +1517,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         window: window.clone(),
         tab_view: tab_view.clone(),
         entry: entry.clone(),
+        header: header.clone(),
         back,
         forward,
         reload,
@@ -1504,15 +1534,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         startup_settings: cfg.clone(),
         nav: ws_config.nav.clone(),
         allow_new_tabs: ws_config.tabs.allow_new,
-        sweeper: if workspace.is_some() {
-            let sweeper = crate::sweep::Sweeper::from_config(&ws_config.sweep);
-            for w in sweeper.iter().flat_map(|s| s.warnings.iter()) {
-                eprintln!("sweep: {w}");
-            }
-            sweeper
-        } else {
-            None
-        },
+        sweeper: RefCell::new(window_sweeper(workspace.is_some(), cfg)),
+        last_pass: Cell::new(now_secs()),
         sweeps_done: Cell::new(0),
         last_sweep: RefCell::new(Vec::new()),
         pending_close_reason: RefCell::new(None),
@@ -2649,6 +2672,17 @@ fn now_micros() -> i64 {
 /// The shell of a window.
 fn shell_of(window: &adw::ApplicationWindow) -> Option<Rc<Shell>> {
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).cloned())
+}
+
+/// The sweeper of a window: the sweep rules (a workspace's own, inherited from its profile and the application; none for a
+/// window with no workspace) and, for every window, the automatic sleep rule of `sleep_tabs_after`.
+fn window_sweeper(has_workspace: bool, cfg: &Config) -> Option<crate::sweep::Sweeper> {
+    let rules = if has_workspace { cfg.sweep.clone() } else { Default::default() };
+    let sweeper = crate::sweep::Sweeper::from_config(&rules, cfg.sleep_tabs_after.as_deref());
+    for w in sweeper.iter().flat_map(|s| s.warnings.iter()) {
+        eprintln!("sweep: {w}");
+    }
+    sweeper
 }
 
 /// The workspace id of the window, if it shows one.

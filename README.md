@@ -80,9 +80,10 @@ the history window, `Ctrl+Shift+T` reopens the last closed tab (in an ephemeral 
 window, so ephemeral windows are recoverable). `browsah history` lists and clears it from the command line.
 See [docs/config/history.md](docs/config/history.md).
 
-Tab sweeping: a workspace can tidy up tabs you no longer use by rules (idle for how long, a decaying use
+Tab sweeping: rules (in a workspace, or in `profile.yaml` or `config.yaml` for all of them to inherit) can tidy up tabs you no longer use (idle for how long, a decaying use
 score, which sites), closing them (recoverable with `Ctrl+Shift+T`, recorded as swept) or putting them to
-sleep. Tabs with unsaved form input or playing media are never swept. See
+sleep. `sleep_tabs_after: 30m` (at any level, also for web apps) simply puts background tabs to sleep after that idle time, never the one
+you are looking at. Tabs with unsaved form input or playing media are never swept. See
 [docs/config/sweep.md](docs/config/sweep.md).
 
 Permissions and downloads: pages that ask to use the camera, microphone, location, notifications and so on are

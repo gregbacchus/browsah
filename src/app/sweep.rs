@@ -20,11 +20,11 @@ pub(super) fn background_sweep(profile: &crate::profile::Profile, app_file: &std
     let Some(store) = super::store() else { return Vec::new() };
     let now = now_secs();
     let mut all = Vec::new();
-    for ws in crate::sweep::workspaces_with_sweeping(profile) {
+    for ws in crate::sweep::workspaces_with_sweeping(profile, app_file) {
         if super::windows().iter().any(|s| s.workspace.as_ref().is_some_and(|w| w.id == ws.id)) {
             continue; // an open window sweeps its own tabs
         }
-        let interval = crate::sweep::Sweeper::from_config(&ws.config.sweep).map(|s| s.interval_secs).unwrap_or(300);
+        let interval = crate::sweep::Sweeper::from_config(&crate::sweep::effective_sweep(profile, &ws, app_file), None).map(|s| s.interval_secs).unwrap_or(300);
         let due = LAST_BACKGROUND.with(|l| l.borrow().get(&ws.id).is_none_or(|last| now - last >= interval));
         if !(force || due) {
             continue;
@@ -89,13 +89,16 @@ fn parse_probe(json: &str) -> Option<(bool, bool)> {
 }
 
 impl Shell {
-    /// Start the periodic check, if this workspace has sweeping rules.
+    /// Start the periodic check. It ticks every 30 seconds and runs the rules when their interval has passed, so a change of
+    /// rules, interval or `sleep_tabs_after` (a configuration reload) takes effect without reopening the window.
     pub(super) fn start_sweeping(self: &Rc<Self>) {
-        let Some(sweeper) = &self.sweeper else { return };
         let window = self.window.downgrade();
-        glib::timeout_add_seconds_local(sweeper.interval_secs as u32, move || match window.upgrade().and_then(|w| shell_of(&w)) {
+        glib::timeout_add_seconds_local(30, move || match window.upgrade().and_then(|w| shell_of(&w)) {
             Some(s) => {
-                s.sweep_now();
+                let interval = s.sweeper.borrow().as_ref().map(|r| r.interval_secs);
+                if interval.is_some_and(|i| now_secs() - s.last_pass.get() >= i) {
+                    s.sweep_now();
+                }
                 glib::ControlFlow::Continue
             }
             None => glib::ControlFlow::Break,
@@ -121,9 +124,10 @@ impl Shell {
     /// Check the rules now: ask each live tab whether it holds unsaved input or is playing media, then
     /// act (`sweeps_done` counts finished passes). Tabs whose probe does not answer are left alone.
     pub fn sweep_now(self: &Rc<Self>) {
-        if self.sweeper.is_none() {
+        if self.sweeper.borrow().is_none() {
             return;
         }
+        self.last_pass.set(now_secs());
         self.note_use(now_secs());
         let probes: Vec<(Rc<Tab>, i32)> = self.tabs.borrow().iter().filter(|t| !t.view().is_dormant()).map(|t| (t.clone(), t.view().cdp_eval(PROBE))).collect();
         let window = self.window.downgrade();
@@ -135,7 +139,7 @@ impl Shell {
     }
 
     fn finish_sweep(self: &Rc<Self>, probes: Vec<(Rc<Tab>, i32)>) {
-        let Some(sweeper) = self.sweeper.clone() else { return };
+        let Some(sweeper) = self.sweeper.borrow().clone() else { return };
         // What the probes found. A tab that did not answer is "unknown": not swept.
         let mut unknown = std::collections::HashSet::new();
         for (tab, id) in &probes {
@@ -156,8 +160,10 @@ impl Shell {
         let mut closed = 0;
         let mut discarded = 0;
         for tab in self.tabs().into_iter().filter(|t| !t.parked.get()) {
+            // The tab being looked at in any window is never swept or put to sleep (a sleeping tab wakes when it is
+            // selected, so the selected tab of a window that is out of sight stays awake too). Pinned tabs are safe from
+            // the sweep rules but may sleep: `decide` knows which rule may take them.
             let protected = selected.as_ref().is_some_and(|s| Rc::ptr_eq(s, &tab))
-                || tab.page.is_pinned()
                 || tab.dirty.get()
                 || tab.playing.get()
                 || tab.state.borrow().loading
@@ -170,7 +176,7 @@ impl Shell {
                 continue;
             }
             let url = tab.state.borrow().address.clone();
-            let Some(rule) = sweeper.decide(&url, &tab.usage.borrow(), now, tab.created.get()) else { continue };
+            let Some(rule) = sweeper.decide(&url, &tab.usage.borrow(), now, tab.created.get(), tab.page.is_pinned()) else { continue };
             match rule.action {
                 Action::Close => {
                     *self.pending_close_reason.borrow_mut() = Some(format!("sweep:{}", rule.name));
@@ -182,7 +188,10 @@ impl Shell {
                 Action::Discard => {
                     if !tab.view().is_dormant() {
                         self.discard_tab(&tab);
-                        discarded += 1;
+                        // Automatic sleeping (`sleep_tabs_after`) is quiet: only the rules the person wrote announce themselves.
+                        if rule.name != crate::sweep::SLEEP_RULE {
+                            discarded += 1;
+                        }
                         notes.push(format!("discarded {url} ({})", rule.name));
                     }
                 }

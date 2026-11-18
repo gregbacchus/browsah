@@ -28,6 +28,7 @@ routing:
 theme: system             # system | light | dark: the colour scheme web pages see (prefers-color-scheme); system follows the desktop
 storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)
 new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
+sleep_tabs_after: null       # put background tabs to sleep after this idle time (30m, 2h...); null is off; also per profile, workspace or app
 workspace_picker: true    # the workspace list button at the start of the header (never in a web app); false hides it, also per profile or workspace
 
 window:
@@ -92,6 +93,20 @@ input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000
   touchpad_acceleration: 0.025 # extra scaling for fast swipes, 0 to 1; 0 = linear
   touchpad_speed: 6.0      # touchpad scroll multiplier, 0.1 to 20; raise if scrolling feels slow
+
+sweep:                      # tidy up tabs that are not used (docs/config/sweep.md); a profile or workspace can set its own, and inherits this
+  enabled: false
+  interval: 5m              # how often to check, 30s to 1d
+  rules:
+    - name: Stale searches
+      match: { url: ["*.google.com/search*"] }
+      idle_for: 1h          # not used for an hour
+      action: close         # close (default) | discard
+    - name: Rarely used
+      idle_for: 7d
+      score_below: 0.5      # and not used much before that either
+      half_life: 1d         # how fast use is forgotten for the score
+      action: discard
 
 print:
   paper: a4                 # a4 | letter

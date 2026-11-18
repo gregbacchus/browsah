@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -434,6 +434,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("frame") {
         run_frame(shell, r).await;
+    }
+    if wants("sleep") {
+        run_sleep(shell, r).await;
     }
     if wants("picker") {
         run_picker(shell, r).await;
@@ -1733,7 +1736,7 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
     r.check("a workspace with sweeping rules opens", ok, || "not open".into());
     let Some(sw) = find() else { return };
-    r.check("its rules are loaded", sw.sweeper.as_ref().is_some_and(|s| s.rules.len() == 4), || format!("{:?}", sw.sweeper));
+    r.check("its rules are loaded", sw.sweeper.borrow().as_ref().is_some_and(|s| s.rules.len() == 4), || format!("{:?}", sw.sweeper.borrow()));
     let pinned = sw.tabs().into_iter().find(|t| t.page.is_pinned());
     r.check("the workspace has its pinned tab", pinned.is_some(), || "no pinned tab".into());
     let home = sw.open_tab(&format!("http://localhost:{port}/scope.html"), true);
@@ -1775,6 +1778,57 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
 
     let _ = store().delete_workspace("sw");
     let _ = store().clear_history(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `sleep_tabs_after`: a background tab idle for that long is put to sleep (kept, its page freed) and wakes when it is
+/// selected; the tab being looked at is never touched. No sweep rules are needed.
+async fn run_sleep(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.workspaces_dir().join("sl");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("sl"));
+    std::fs::write(dir.join("workspace.yaml"), format!("name: Sleep\nhome_page: 'http://localhost:{port}/scope.html'\nsleep_tabs_after: 1s\n")).expect("workspace.yaml");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "sl"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"sl".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    r.check("a workspace with sleep_tabs_after opens", ok, || "not open".into());
+    let Some(w) = find() else { return };
+    r.check("the automatic sleep rule is the window's only rule", w.sweeper.borrow().as_ref().is_some_and(|s| s.rules.len() == 1 && s.rules[0].name == crate::sweep::SLEEP_RULE), || format!("{:?}", w.sweeper.borrow()));
+    let home = w.current().expect("first tab");
+    let other = w.open_tab(&format!("http://localhost:{port}/b.html?sleep=1"), true);
+    let _ = wait_until(15_000, || !other.state.borrow().loading && other.state.borrow().title == "Page B").await;
+    w.tab_view.set_selected_page(&home.page);
+    // Both tabs have been idle for hours as far as use goes; only the one in the background may sleep.
+    for t in [&home, &other] {
+        *t.usage.borrow_mut() = crate::sweep::Usage::from_text("1000:1");
+    }
+    w.sweep_now();
+    let ok = wait_until(15_000, || w.sweeps_done() == 1).await;
+    r.check("a sweep runs with only sleep_tabs_after set", ok, || "no sweep".into());
+    r.check("the background tab is put to sleep and kept", w.tabs().iter().any(|t| t.uid == other.uid) && other.view().is_dormant(), || format!("dormant={}", other.view().is_dormant()));
+    r.check("the tab being looked at stays awake", !home.view().is_dormant(), || "home asleep".into());
+    r.check("the sleep is reported as the automatic rule, quietly", w.last_sweep_notes().iter().any(|n| n.contains("discarded") && n.contains("(sleep)")), || format!("{:?}", w.last_sweep_notes()));
+    // Selecting a sleeping tab wakes it.
+    w.tab_view.set_selected_page(&other.page);
+    let ok = wait_until(15_000, || !other.view().is_dormant() && other.state.borrow().title == "Page B" && !other.state.borrow().loading).await;
+    r.check("selecting a sleeping tab wakes it", ok, || format!("dormant={} title={}", other.view().is_dormant(), other.state.borrow().title));
+    // Turning it off in the configuration (a reload) ends the sleeping at once.
+    let mut cfg = w.settings.borrow().clone();
+    cfg.sleep_tabs_after = None;
+    w.apply_config(&cfg);
+    r.check("removing sleep_tabs_after takes effect on the open window", w.sweeper.borrow().is_none(), || format!("{:?}", w.sweeper.borrow()));
+    cfg.sleep_tabs_after = Some("2h".into());
+    w.apply_config(&cfg);
+    r.check("and setting it again does too", w.sweeper.borrow().as_ref().is_some_and(|s| s.rules.len() == 1), || format!("{:?}", w.sweeper.borrow()));
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("sl"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2401,6 +2455,92 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
     let _ = std::fs::remove_dir_all(&dir);
+
+    run_app_tabs_in_header(shell, r).await;
+
+    // `display: custom`: the app's own back, forward, reload and address bar; the tab bar follows multiple_tabs.
+    for (id, tabs) in [("wa2", true), ("wa3", false)] {
+        let dir = profile.apps_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("app dir");
+        std::fs::write(dir.join("app.yaml"), format!("name: Custom {id}\nurl: 'http://localhost:{port}/scope.html'\ndisplay: custom\nmultiple_tabs: {tabs}\nnav:\n  back: false\n  forward: false\n  reload: false\n  address_bar: readonly\n")).expect("app");
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+        let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+        let Some(w) = find() else {
+            r.check(&format!("a display: custom app opens ({id})"), false, || "no window".into());
+            continue;
+        };
+        let bar = find_tab_bar(w.window.upcast_ref::<gtk::Widget>());
+        r.check(&format!("display: custom hides back, forward and reload as asked ({id})"), !w.back.is_visible() && !w.forward.is_visible() && !w.reload.is_visible(), || format!("back {} forward {} reload {}", w.back.is_visible(), w.forward.is_visible(), w.reload.is_visible()));
+        r.check(&format!("display: custom shows a read-only address ({id})"), gtk::prelude::WidgetExt::parent(&w.entry).is_some() && !w.entry.is_editable(), || format!("editable {}", w.entry.is_editable()));
+        r.check(&format!("the tab bar follows multiple_tabs ({id}: tabs {tabs})"), bar.as_ref().is_some_and(|b| b.is_visible() == tabs), || format!("{:?}", bar.map(|b| b.is_visible())));
+        r.check(&format!("and there is no picker or bookmark star in an app ({id})"), !w.picker.button.is_visible() && !w.star.is_visible(), || format!("picker {} star {}", w.picker.button.is_visible(), w.star.is_visible()));
+        if tabs {
+            // Ctrl+click on a link asks for a new tab: an app that allows tabs gets one, not an overlay.
+            let (view, held) = (w.view(), gdk::ModifierType::CONTROL_MASK);
+            let before = w.tab_count();
+            view.pointer_moved(40.0, 34.0, held);
+            view.click(1, 1, 40.0, 34.0, held, false);
+            view.click(1, 1, 40.0, 34.0, held, true);
+            let opened = wait_until(10_000, || w.tab_count() == before + 1).await;
+            r.check(&format!("Ctrl+click in an app that allows tabs opens a tab, not an overlay ({id})"), opened && w.modal_count() == 0, || format!("tabs {} (was {before}), modals {}", w.tab_count(), w.modal_count()));
+        }
+        w.window.close();
+        let _ = wait_until(5_000, || find().is_none()).await;
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// An app with no address bar and tabs allowed: its tabs live in the header, and only while there is more than one.
+async fn run_app_tabs_in_header(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let dir = profile.apps_dir().join("wa4");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("app dir");
+    std::fs::write(dir.join("app.yaml"), format!("name: Header tabs\nurl: 'http://localhost:{port}/scope.html'\ndisplay: standalone\nmultiple_tabs: true\n")).expect("app");
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "wa4"));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wa4".to_variant()));
+    let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+    let Some(w) = find() else {
+        r.check("an app with hidden address bar and tabs opens", false, || "no window".into());
+        return;
+    };
+    let in_header = || w.header.title_widget().is_some_and(|t| t.is::<adw::TabBar>());
+    r.check("with one tab the header shows the title, not a tab bar", !in_header() && find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_none(), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
+    let second = w.open_tab(&format!("http://localhost:{port}/b.html"), true);
+    let _ = wait_until(15_000, || !second.state.borrow().loading && second.state.borrow().title == "Page B").await;
+    glib::timeout_future(Duration::from_millis(400)).await;
+    r.check("with two tabs they are in the header's title position", in_header() && find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_some_and(|b| b.is_visible()), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
+    shot(&w.window, "web-app-tabs-in-header");
+    w.tab_view.close_page(&second.page);
+    let _ = wait_until(5_000, || w.tab_count() == 1).await;
+    glib::timeout_future(Duration::from_millis(200)).await;
+    r.check("back to one tab the header shows the title again", !in_header(), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa4"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The tab bar in a window's widget tree.
+fn find_tab_bar(root: &gtk::Widget) -> Option<adw::TabBar> {
+    if let Ok(b) = root.clone().downcast::<adw::TabBar>() {
+        return Some(b);
+    }
+    let mut child = root.first_child();
+    while let Some(w) = child {
+        if let Some(b) = find_tab_bar(&w) {
+            return Some(b);
+        }
+        child = w.next_sibling();
+    }
+    None
 }
 
 /// An address delivered to a web app (what a routing rule `open: app:<id>` does): a new window, a new tab or the

@@ -84,7 +84,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |
 | `modals` | map | overlay | How modals are shown. |
 | `modals.style` | `overlay` or `window` | `overlay` | `overlay`: over the window's content. `window`: a separate window kept above the workspace's window. |
-| `sweep` | map | off | Tidying up tabs that are not used (below, and [sweep.md](sweep.md)). Applies when the workspace opens. |
+| `sweep` | map | off | Tidying up tabs that are not used (below, and [sweep.md](sweep.md)). **Also valid in `config.yaml`, `profile.yaml` and an app's `app.yaml`**: a workspace inherits the profile's section, its own keys win and `rules+` adds to the inherited rules. Applies to open windows when the configuration reloads. |
 | `sweep.enabled` | bool | `false` | Sweeping is off unless this is `true`. |
 | `sweep.interval` | duration | `5m` | How often the rules are checked: a number and a unit (`30s`, `5m`, `2h`, `1d`), from 30 seconds to a day. |
 | `sweep.rules` | list | none | The rules; a tab is swept by the first rule whose conditions all hold. A rule with a mistake is skipped with a warning. |

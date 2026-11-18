@@ -7,7 +7,12 @@ color: "#2a6f97 #61a5c2"          # the generated icon's colour when there is no
 
 url: https://mail.example.com/inbox     # the page it opens on (required)
 scope: ["mail.example.com", "accounts.example.com/signin/*"]   # where it may navigate (default: the url's site)
-display: standalone                     # standalone (just the page) | minimal (plus a read-only address) | browser
+display: custom                         # standalone (just the page) | minimal (plus a read-only address) | browser | custom (the nav: below)
+nav:                                    # controls shown with display: custom (as a workspace's nav:, without tabs and bookmarks, see docs); ignored otherwise
+  back: true
+  forward: false
+  reload: true
+  address_bar: readonly                 # editable | readonly | hidden
 icon: icon.png                          # a file in this directory (default: a generated icon)
 manifest_id: https://mail.example.com/  # the web manifest's id, when it was installed from one
 multiple_windows: true                  # more than one window of the app (the launcher's "New Window"); default true

@@ -11,7 +11,7 @@
 use crate::profile::Profile;
 use crate::store::{Store, TabRecord};
 use crate::workspace::{scope_matches, Workspace};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 // ---- durations --------------------------------------------------------------------------------------
@@ -86,8 +86,9 @@ impl Usage {
 
 // ---- configuration ----------------------------------------------------------------------------------
 
-/// The `sweep:` section of `workspace.yaml`.
-#[derive(Debug, Clone, Deserialize)]
+/// The `sweep:` section (in `config.yaml`, `profile.yaml`, `workspace.yaml` or an app's `app.yaml`; a lower layer's keys win and
+/// `rules+` appends to the rules above).
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct SweepConfig {
@@ -104,7 +105,7 @@ impl Default for SweepConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct RuleConfig {
     /// Shown in the history of closed tabs (`sweep:<name>`) and messages.
@@ -127,7 +128,7 @@ pub struct RuleConfig {
     pub action: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct MatchConfig {
@@ -148,7 +149,12 @@ pub struct Rule {
     score_below: Option<f64>,
     half_life: i64,
     pub action: Action,
+    /// Whether a pinned tab may be swept by this rule (only the automatic sleep rule: pinned tabs are never closed).
+    pub pinned_ok: bool,
 }
+
+/// The name of the rule `sleep_tabs_after` adds.
+pub const SLEEP_RULE: &str = "sleep";
 
 impl Rule {
     /// Check a rule from the configuration. `position` (from 1) names unnamed rules.
@@ -167,7 +173,12 @@ impl Rule {
             Some("discard") => Action::Discard,
             Some(a) => return Err(format!("unknown action {a:?} (use close or discard)")),
         };
-        Ok(Rule { name, urls: cfg.matches.url.clone(), idle_for, score_below: cfg.score_below, half_life, action })
+        Ok(Rule { name, urls: cfg.matches.url.clone(), idle_for, score_below: cfg.score_below, half_life, action, pinned_ok: false })
+    }
+
+    /// The rule behind `sleep_tabs_after`: any tab idle for `idle` seconds is put to sleep (pinned ones too: they are kept).
+    pub fn sleep(idle: i64) -> Rule {
+        Rule { name: SLEEP_RULE.into(), urls: Vec::new(), idle_for: Some(idle), score_below: None, half_life: 12 * 3600, action: Action::Discard, pinned_ok: true }
     }
 
     /// Does the rule apply to this tab now? All its conditions must hold. A tab with no recorded use
@@ -196,29 +207,39 @@ pub struct Sweeper {
 }
 
 impl Sweeper {
-    /// `None` when sweeping is off or has no valid rule.
-    pub fn from_config(cfg: &SweepConfig) -> Option<Sweeper> {
-        if !cfg.enabled {
-            return None;
-        }
+    /// The rules of `sweep` (when it is enabled) and, last, the automatic sleep rule for `sleep_after` (`30m`, `2h`...); `None`
+    /// when there is neither. A sleep rule shortens the check interval so a short time is honoured (half of it, between 30 s and
+    /// the interval).
+    pub fn from_config(cfg: &SweepConfig, sleep_after: Option<&str>) -> Option<Sweeper> {
         let mut s = Sweeper { interval_secs: 300, ..Sweeper::default() };
-        match parse_duration(&cfg.interval) {
-            Ok(i) if (30..=86_400).contains(&i) => s.interval_secs = i,
-            Ok(_) => s.warnings.push(format!("sweep.interval {:?} must be between 30s and 1d; using 5m", cfg.interval)),
-            Err(e) => s.warnings.push(format!("sweep.interval: {e}; using 5m")),
+        if cfg.enabled {
+            match parse_duration(&cfg.interval) {
+                Ok(i) if (30..=86_400).contains(&i) => s.interval_secs = i,
+                Ok(_) => s.warnings.push(format!("sweep.interval {:?} must be between 30s and 1d; using 5m", cfg.interval)),
+                Err(e) => s.warnings.push(format!("sweep.interval: {e}; using 5m")),
+            }
+            for (i, r) in cfg.rules.iter().enumerate() {
+                match Rule::compile(r, i + 1) {
+                    Ok(rule) => s.rules.push(rule),
+                    Err(e) => s.warnings.push(format!("sweep rule {}{}: {e}; skipped", i + 1, r.name.as_ref().map(|n| format!(" ({n})")).unwrap_or_default())),
+                }
+            }
         }
-        for (i, r) in cfg.rules.iter().enumerate() {
-            match Rule::compile(r, i + 1) {
-                Ok(rule) => s.rules.push(rule),
-                Err(e) => s.warnings.push(format!("sweep rule {}{}: {e}; skipped", i + 1, r.name.as_ref().map(|n| format!(" ({n})")).unwrap_or_default())),
+        if let Some(text) = sleep_after.map(str::trim).filter(|t| !t.is_empty()) {
+            match parse_duration(text) {
+                Ok(idle) => {
+                    s.rules.push(Rule::sleep(idle));
+                    s.interval_secs = s.interval_secs.min((idle / 2).max(30));
+                }
+                Err(e) => s.warnings.push(format!("sleep_tabs_after: {e}; tabs are not put to sleep")),
             }
         }
         (!s.rules.is_empty()).then_some(s)
     }
 
-    /// The first rule that fires for a tab.
-    pub fn decide(&self, url: &str, usage: &Usage, now: i64, created: i64) -> Option<&Rule> {
-        self.rules.iter().find(|r| r.fires(url, usage, now, created))
+    /// The first rule that fires for a tab (a pinned tab only by a rule that may take pinned tabs).
+    pub fn decide(&self, url: &str, usage: &Usage, now: i64, created: i64, pinned: bool) -> Option<&Rule> {
+        self.rules.iter().find(|r| (!pinned || r.pinned_ok) && r.fires(url, usage, now, created))
     }
 }
 
@@ -243,7 +264,7 @@ pub struct StoredSweep {
 pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64, pinned_in_config: usize) -> StoredSweep {
     let mut out = StoredSweep::default();
     for r in records {
-        let fired = (!r.pinned).then(|| sweeper.decide(&r.url, &Usage::from_text(&r.usage), now, now)).flatten().filter(|rule| rule.action == Action::Close);
+        let fired = (!r.pinned).then(|| sweeper.decide(&r.url, &Usage::from_text(&r.usage), now, now, r.pinned)).flatten().filter(|rule| rule.action == Action::Close);
         match fired {
             Some(rule) => out.swept.push((r.clone(), rule.name.clone())),
             None => out.kept.push(r.clone()),
@@ -261,7 +282,7 @@ pub fn sweep_records(sweeper: &Sweeper, records: &[TabRecord], now: i64, pinned_
 /// the notes are produced ("would close ..."). Swept tabs are removed from the workspace and kept in
 /// the history of closed tabs as `sweep:<rule>`, subject to the workspace's history settings.
 pub fn sweep_stored(profile: &Profile, ws: &Workspace, store: &Store, app_file: &std::path::Path, now: i64, apply: bool) -> Vec<String> {
-    let Some(sweeper) = Sweeper::from_config(&ws.config.sweep) else { return Vec::new() };
+    let Some(sweeper) = Sweeper::from_config(&effective_sweep(profile, ws, app_file), None) else { return Vec::new() };
     let records = store.load_tabs(&ws.id);
     let result = sweep_records(&sweeper, &records, now, ws.config.tabs.pinned.len());
     if result.swept.is_empty() {
@@ -287,14 +308,20 @@ pub fn sweep_stored(profile: &Profile, ws: &Workspace, store: &Store, app_file: 
     notes
 }
 
-/// Every workspace of a profile that has sweeping rules.
-pub fn workspaces_with_sweeping(profile: &Profile) -> Vec<Workspace> {
-    Workspace::list(profile).into_iter().filter(|w| Sweeper::from_config(&w.config.sweep).is_some()).collect()
+/// The `sweep` section a workspace ends up with: the application's, the profile's and the workspace's own layered (the
+/// workspace's keys win, `rules+` appends). A file that cannot be read gives the defaults (no sweeping).
+pub fn effective_sweep(profile: &Profile, ws: &Workspace, app_file: &std::path::Path) -> SweepConfig {
+    crate::config::load_window(app_file, &profile.dir.join("profile.yaml"), Some(&ws.config_file())).map(|l| l.config.sweep).unwrap_or_default()
+}
+
+/// Every workspace of a profile that has sweeping rules (its own or inherited).
+pub fn workspaces_with_sweeping(profile: &Profile, app_file: &std::path::Path) -> Vec<Workspace> {
+    Workspace::list(profile).into_iter().filter(|w| Sweeper::from_config(&effective_sweep(profile, w, app_file), None).is_some()).collect()
 }
 
 const CLI_USAGE: &str = "usage: browsah sweep [--profile ID] [--workspace ID] [--dry-run]
 
-Applies each workspace's sweeping rules (`sweep:` in workspace.yaml) to its remembered tabs, for
+Applies each workspace's sweeping rules (`sweep:` in workspace.yaml, or inherited from profile.yaml and config.yaml) to its remembered tabs, for
 workspaces that are not open: tabs idle past a close rule are removed and kept in the history of
 closed tabs. A running profile does this itself; use this for a profile that is not running, from a
 cron job or a systemd timer. --dry-run only says what would be swept.";
@@ -333,7 +360,7 @@ pub fn cli(args: &[String]) -> i32 {
     let only = value("--workspace");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let mut any = false;
-    for ws in workspaces_with_sweeping(&profile).into_iter().filter(|w| only.as_ref().is_none_or(|o| *o == w.id)) {
+    for ws in workspaces_with_sweeping(&profile, &crate::config::default_path()).into_iter().filter(|w| only.as_ref().is_none_or(|o| *o == w.id)) {
         for note in sweep_stored(&profile, &ws, &store, &crate::config::default_path(), now, !dry) {
             any = true;
             println!("{}: {note}", ws.id);
@@ -360,7 +387,7 @@ mod tests {
     #[test]
     fn stored_tabs_are_swept_by_their_remembered_use() {
         let cfg: SweepConfig = serde_yaml_ng::from_str("enabled: true\nrules:\n  - name: Sleepy\n    match: { url: ['x.com'] }\n    idle_for: 1m\n    action: discard\n  - name: Old\n    idle_for: 1h\n").unwrap();
-        let s = Sweeper::from_config(&cfg).unwrap();
+        let s = Sweeper::from_config(&cfg, None).unwrap();
         let now = 100_000;
         let records = vec![
             rec(1, "https://a.com/old", "1000:1", false),        // idle for ~27 hours: swept (even though it was the selected one)
@@ -376,9 +403,67 @@ mod tests {
     }
 
     #[test]
+    fn sleep_after_adds_a_last_rule_that_discards_any_idle_tab_pinned_ones_too() {
+        let off = SweepConfig::default();
+        assert!(Sweeper::from_config(&off, None).is_none() && Sweeper::from_config(&off, Some("")).is_none());
+        // Alone (sweeping off): one discard rule, and the check interval follows the time (half of it, 30 s to 5 min).
+        let s = Sweeper::from_config(&off, Some("20m")).unwrap();
+        assert_eq!((s.rules.len(), s.rules[0].name.as_str(), s.rules[0].action, s.interval_secs), (1, SLEEP_RULE, Action::Discard, 300));
+        assert_eq!(Sweeper::from_config(&off, Some("1m")).unwrap().interval_secs, 30);
+        assert_eq!(Sweeper::from_config(&off, Some("10m")).unwrap().interval_secs, 300);
+        let (now, url) = (100_000, "https://a.com/");
+        let idle = Usage::from_text("90000:1"); // 10000 s ago
+        let recent = Usage::from_text("99900:1");
+        let s = Sweeper::from_config(&off, Some("1h")).unwrap();
+        assert!(s.decide(url, &idle, now, now, false).is_some(), "idle for 2h 46m: asleep");
+        assert!(s.decide(url, &recent, now, now, false).is_none(), "used a moment ago");
+        assert!(s.decide(url, &idle, now, now, true).is_some(), "a pinned tab may sleep (it is kept)");
+        // After the configured rules, which win; and a pinned tab is still safe from those.
+        let cfg: SweepConfig = serde_yaml_ng::from_str("enabled: true\nrules:\n  - name: Old\n    idle_for: 1h\n").unwrap();
+        let s = Sweeper::from_config(&cfg, Some("30m")).unwrap();
+        assert_eq!(s.rules.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Old", SLEEP_RULE]);
+        assert_eq!(s.decide(url, &idle, now, now, false).map(|r| r.name.as_str()), Some("Old"));
+        assert_eq!(s.decide(url, &idle, now, now, true).map(|r| r.name.as_str()), Some(SLEEP_RULE), "pinned: not closed, but may sleep");
+        // The sleep rule does nothing to stored (already asleep) tabs.
+        let out = sweep_records(&s, &[rec(1, url, "1000:1", false), rec(2, url, "1000:1", true)], now, 1);
+        assert_eq!(out.swept.iter().map(|(r, _)| r.uid).collect::<Vec<_>>(), [1]);
+        // A bad duration is a warning, not a rule.
+        let bad = Sweeper::from_config(&cfg, Some("soon")).unwrap();
+        assert_eq!(bad.rules.len(), 1);
+        assert!(bad.warnings.iter().any(|w| w.contains("sleep_tabs_after")), "{:?}", bad.warnings);
+    }
+
+    #[test]
+    fn a_workspace_inherits_the_profiles_sweep_rules() {
+        use crate::workspace::WorkspaceConfig;
+        let root = std::env::temp_dir().join(format!("browsah-sweep-inherit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ws-own")).unwrap();
+        std::fs::create_dir_all(root.join("ws-plain")).unwrap();
+        std::fs::create_dir_all(root.join("ws-off")).unwrap();
+        std::fs::write(root.join("profile.yaml"), "sweep:\n  enabled: true\n  interval: 10m\n  rules:\n    - name: Profile rule\n      idle_for: 2d\n").unwrap();
+        std::fs::write(root.join("ws-own/workspace.yaml"), "sweep:\n  rules+:\n    - name: Own rule\n      idle_for: 1h\n      action: discard\n").unwrap();
+        std::fs::write(root.join("ws-off/workspace.yaml"), "sweep:\n  enabled: false\n").unwrap();
+        let profile = Profile { id: "p".into(), config: Default::default(), dir: root.clone() };
+        let ws = |id: &str| Workspace { id: id.into(), config: WorkspaceConfig::default(), dir: root.join(format!("ws-{id}")) };
+        let names = |id: &str| {
+            let cfg = effective_sweep(&profile, &ws(id), &root.join("no-config.yaml"));
+            (cfg.enabled, cfg.interval.clone(), Sweeper::from_config(&cfg, None).map(|s| s.rules.iter().map(|r| r.name.clone()).collect::<Vec<_>>()))
+        };
+        // No sweep section of its own: the profile's, with the profile's interval.
+        assert_eq!(names("plain"), (true, "10m".into(), Some(vec!["Profile rule".to_owned()])));
+        // `rules+` adds to the profile's rules; the inherited `enabled` and `interval` stay.
+        assert_eq!(names("own"), (true, "10m".into(), Some(vec!["Profile rule".to_owned(), "Own rule".to_owned()])));
+        // A workspace can switch the inherited sweeping off.
+        assert_eq!(names("off"), (false, "10m".into(), None));
+        // And the workspaces that have rules are found through the inheritance.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_last_tab_of_a_workspace_is_never_swept() {
         let cfg: SweepConfig = serde_yaml_ng::from_str("enabled: true\nrules:\n  - idle_for: 1h\n").unwrap();
-        let s = Sweeper::from_config(&cfg).unwrap();
+        let s = Sweeper::from_config(&cfg, None).unwrap();
         let now = 100_000;
         // One tab, long idle: kept.
         let one = sweep_records(&s, &[rec(1, "https://a.com/", "1000:1", false)], now, 0);
@@ -489,21 +574,21 @@ mod tests {
             "enabled: true\ninterval: 1m\nrules:\n  - name: Search\n    match: { url: ['google.com'] }\n    idle_for: 1h\n  - name: Everything\n    idle_for: 7d\n    action: discard\n  - name: Broken\n    action: close\n",
         )
         .unwrap();
-        let s = Sweeper::from_config(&cfg).unwrap();
+        let s = Sweeper::from_config(&cfg, None).unwrap();
         assert_eq!(s.interval_secs, 60);
         assert_eq!(s.rules.len(), 2);
         assert_eq!(s.warnings.len(), 1);
         assert!(s.warnings[0].contains("rule 3") && s.warnings[0].contains("Broken"));
         let mut u = Usage::default();
         u.record(0, 1.0);
-        assert_eq!(s.decide("https://google.com/", &u, 4000, 0).map(|r| r.name.as_str()), Some("Search"));
-        assert!(s.decide("https://other.com/", &u, 4000, 0).is_none());
-        assert_eq!(s.decide("https://other.com/", &u, 700_000, 0).map(|r| r.action), Some(Action::Discard));
+        assert_eq!(s.decide("https://google.com/", &u, 4000, 0, false).map(|r| r.name.as_str()), Some("Search"));
+        assert!(s.decide("https://other.com/", &u, 4000, 0, false).is_none());
+        assert_eq!(s.decide("https://other.com/", &u, 700_000, 0, false).map(|r| r.action), Some(Action::Discard));
         // Off, or nothing valid: no sweeper.
-        assert!(Sweeper::from_config(&SweepConfig::default()).is_none());
+        assert!(Sweeper::from_config(&SweepConfig::default(), None).is_none());
         let off: SweepConfig = serde_yaml_ng::from_str("rules:\n  - idle_for: 1h\n").unwrap();
-        assert!(Sweeper::from_config(&off).is_none(), "disabled by default");
+        assert!(Sweeper::from_config(&off, None).is_none(), "disabled by default");
         let bad: SweepConfig = serde_yaml_ng::from_str("enabled: true\ninterval: 5s\nrules:\n  - idle_for: 1h\n").unwrap();
-        assert_eq!(Sweeper::from_config(&bad).unwrap().interval_secs, 300, "an interval that is too short falls back");
+        assert_eq!(Sweeper::from_config(&bad, None).unwrap().interval_secs, 300, "an interval that is too short falls back");
     }
 }

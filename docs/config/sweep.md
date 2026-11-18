@@ -1,8 +1,66 @@
 # Tab sweeping
 
-Sweeping tidies up tabs you are no longer using, by rules you write for a workspace (`sweep:` in
-[workspace.yaml](workspace.md)). It is off until `sweep.enabled` is `true`. The rules are checked every
-`sweep.interval` (5 minutes by default).
+Sweeping tidies up tabs you are no longer using, by rules you write (`sweep:`). It is off until `sweep.enabled` is `true`. The
+rules are checked every `sweep.interval` (5 minutes by default). A simpler setting, `sleep_tabs_after`, puts idle background
+tabs to sleep without any rules (see [Sleeping tabs automatically](#sleeping-tabs-automatically)).
+
+## Where the rules are set
+
+`sweep:` can be written in `config.yaml` (every workspace), in a profile's `profile.yaml` (that profile's workspaces) and in a
+workspace's `workspace.yaml` or a [web app](webapp.md)'s `app.yaml`, and the layers combine like any other option (see
+[Layers and reloading](README.md#layers-and-reloading)): a workspace **inherits** the profile's `sweep` section, and what it
+writes itself wins key by key. So a profile can say how often to check and give the rules every workspace shares:
+
+```yaml
+# profile.yaml
+sweep:
+  enabled: true
+  interval: 10m
+  rules:
+    - name: Stale searches
+      match: { url: ["*.google.com/search*"] }
+      idle_for: 1h
+```
+
+```yaml
+# workspace.yaml of one workspace: the profile's rules apply, plus its own (`rules+` adds to the list)
+sweep:
+  rules+:
+    - name: Old docs
+      match: { url: ["docs.example.com/*"] }
+      idle_for: 2d
+      action: discard
+```
+
+Writing `rules:` (without the `+`) in the workspace replaces the inherited list, and `sweep: { enabled: false }` switches the
+inherited sweeping off for that workspace. Windows with no workspace are not swept by rules (they have none to apply), a
+closed workspace is swept by its inherited rules too, and a change to the rules (or to `sweep.interval`) applies to windows that
+are already open when the configuration is reloaded.
+
+## Sleeping tabs automatically
+
+`sleep_tabs_after` is the simple form of a `discard` rule: any **background tab** that has not been used for this long is put to
+sleep (its page is freed, the tab stays and shows its last screenshot, and it loads again when you select it).
+
+```yaml
+sleep_tabs_after: 30m       # null (or leaving it out) is off; a number and a unit: 30s, 15m, 2h, 7d
+```
+
+It is an ordinary option, so it can be set in `config.yaml`, a profile's `profile.yaml`, a workspace's `workspace.yaml` or an app's
+`app.yaml`, the lowest layer winning (`sleep_tabs_after: null` in a workspace undoes a profile's). It needs no `sweep:`
+section and works in windows with no workspace too; if `sweep:` rules exist, they are checked first and the sleep rule is
+added after them. Details:
+
+- **never the tab you are looking at**: the selected tab of every window is left awake, so the foreground window's tab and
+  every other visible window's stay running. (The selected tab of a minimised window stays awake too: a sleeping tab wakes when it is
+  selected, so there is no moment at which it could come back.)
+- the same protections as sweeping: a tab with unsaved form input, one playing sound or video, and one still loading are not put to
+  sleep;
+- **pinned tabs may sleep** (sweep rules never touch them, because a rule can close; sleeping only frees the page);
+- it is quiet: no message, unlike a `discard` rule you wrote yourself;
+- the check runs every half of the time given, at least every 30 seconds and at most every `sweep.interval`, so `sleep_tabs_after: 1m` is
+  honoured within about a minute and a half;
+- a time that is not a number and a unit is reported on the terminal and sleeping stays off.
 
 ## When the workspace is not open
 
@@ -67,7 +125,7 @@ sweep:
 
 ## What is never swept
 
-- the tab you are looking at, a workspace's pinned tabs, and **the last tab of a workspace**: a sweep never
+- the tab you are looking at (in any window), a workspace's pinned tabs (from the rules; `sleep_tabs_after` may put them to sleep), and **the last tab of a workspace**: a sweep never
   leaves a workspace without a tab. (For a workspace whose window is closed, when every remembered tab would
   be swept and there is no pinned tab, the one used most recently is kept.);
 - a tab with **unsaved form input**: a typed value in a text box, a changed checkbox or choice, or text in
@@ -79,4 +137,5 @@ Pages that use the microphone or camera without playing media, and sound produce
 media element, are not detected: write a rule that does not match such sites.
 
 Use is remembered when a workspace is closed, so a tab that sat unused for a week while the browser was
-closed is idle for a week. Changes to the rules apply when the workspace is opened again.
+closed is idle for a week. Changes to the rules apply to open windows when the configuration is reloaded, and to a workspace
+when it is opened.

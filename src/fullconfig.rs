@@ -464,9 +464,10 @@ mod tests {
             assert_eq!(shown, matches!(ignored, "# nav:" | "# sweep:"), "{ignored}:\n{text}");
         }
         assert!(!text.contains("device_resolution") && !text.contains("# mode:"), "{text}");
-        // A web app's file offers its own keys, and none of a workspace's tab rules.
+        // A web app's file offers its own keys (including `nav`, used with `display: custom`), the layered options such as `sweep` and
+        // `sleep_tabs_after`, and none of a workspace's tab rules.
         let app = generate(Level::App, "Mail", None).unwrap();
-        for (key, shown) in [("# url:", true), ("# multiple_windows:", true), ("# storage:", true), ("# nav:", false), ("# tabs:", false), ("# sweep:", false), ("# gpu:", false)] {
+        for (key, shown) in [("# url:", true), ("# multiple_windows:", true), ("# storage:", true), ("# nav:", true), ("# tabs:", false), ("# sweep:", true), ("# sleep_tabs_after:", true), ("# gpu:", false)] {
             assert_eq!(app.contains(key), shown, "{key}:\n{app}");
         }
     }

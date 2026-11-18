@@ -114,11 +114,16 @@ Every key below is in `app.yaml` at the top level (there is no `app:` section). 
 | `color` | colour or two colours | none | The app's accent colour (light and dark, see [value types](value-types.md#colours)): the window frame (`window.frame`) and the generated icon's primary colour (the light one; an app with no colour uses its profile's, then the default blue). A site's `theme_color` fills it in when the app is created. |
 | `url` | text | none (required) | The page the app opens on. |
 | `scope` | list of text | the start URL's site | Where the app may navigate, as for a pinned tab's scope in a workspace (`host`, `host/path`, `*.example.com`); the scope of every tab and window of the app. Links outside it go through the routing rules. |
-| `display` | `standalone`, `minimal` or `browser` | `standalone` | `standalone`: only the page (back, forward and reload remain, the address is hidden). `minimal`: also the address, read-only. `browser`: the usual controls, with the tab bar. |
+| `display` | `standalone`, `minimal`, `browser` or `custom` | `standalone` | `standalone`: only the page (back, forward and reload remain, the address is hidden). `minimal`: also the address, read-only. `browser`: the usual controls, with the tab bar. `custom`: back, forward, reload and the address bar as the `nav` section below says, for what the three presets do not give (for example no back button, or a read-only address without forward); the tab bar still follows `multiple_tabs`. |
+| `nav` | section | see below | Which controls the window shows, **only with `display: custom`**: back, forward, reload and the address bar, as a workspace's [`nav`](workspace.md#options) has them. Keys left out are shown (the address editable), not the `standalone` look. The **tab bar and the new-tab button are not options**: they show when `multiple_tabs` is true; and an app has no bookmarks. With another `display` the section is ignored and a warning is printed when a window opens. Applies to windows opened after the change. `browsah app add --display custom` writes the section with every key at its default, ready to edit. |
+| `nav.back` | bool | `true` | Show the back button (and allow `Alt+Left`). |
+| `nav.forward` | bool | `true` | Show the forward button (and allow `Alt+Right`). |
+| `nav.reload` | bool | `true` | Show the reload and stop buttons (`Ctrl+R` still works). |
+| `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead. |
 | `icon` | text | a generated icon | A file in the app's directory used as its icon (`icon.png`, `icon.svg`). Applied to the launcher entry by `browsah app install`. |
 | `manifest_id` | text | none | The web manifest's `id`, kept so a later import can recognise the same app. |
 | `multiple_windows` | bool | `true` | May the app have more than one window. The launcher entry (written by `browsah app add` / `app install`) has a *New Window* action only when this is true. See above. |
-| `multiple_tabs` | bool | `false` | May a window have more than one tab (the new-tab button and tab bar show). Applies to windows opened after the change. |
+| `multiple_tabs` | bool | `false` | May a window have more than one tab (the new-tab button and tab bar show). A link opened with Ctrl+click, middle click or *Open link in new tab* then opens as a tab; without `multiple_tabs` it opens as an overlay (a modal) over the app. With the address hidden (`standalone`, or `custom` with `address_bar: hidden`) the tabs are not a row of their own but go into the header bar, and only while there is more than one tab: with a single tab the header shows the title as usual. Applies to windows opened after the change. |
 | `modals` | section | see below | How modals look; the same as a workspace's. |
 | `modals.style` | `overlay` or `window` | `overlay` | `overlay`: a modal covers the app's page; `window`: a separate window that stays above the app's. |
 
@@ -126,10 +131,17 @@ Every key below is in `app.yaml` at the top level (there is no `app:` section). 
 name: Mail
 url: https://mail.example.com/inbox
 scope: ["mail.example.com", "accounts.example.com/signin/*"]
-display: standalone
+display: standalone      # or custom, with a nav: section (see below)
 multiple_windows: true
 multiple_tabs: false
 storage: isolated        # any option a workspace may set, here the one described above
+```
+
+```yaml
+display: custom
+nav:                     # only what differs from the defaults needs to be written
+  back: false
+  address_bar: readonly
 ```
 
 An example with every option is [`examples/webapp.yaml`](../../examples/webapp.yaml). Web apps do not appear in a
