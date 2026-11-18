@@ -82,6 +82,9 @@ pub fn plan(source: &Path, prefix: &Path, bin_dir: &Path, allowlist: Option<&Pat
     if !prefix.is_absolute() || prefix.components().count() < 3 {
         return Err(format!("the install folder must be an absolute path at least two levels deep, like /opt/browsah (got {})", prefix.display()));
     }
+    if source == prefix {
+        return Err(format!("this is already the installed copy in {}: run system-install from the copy you want to install (Homebrew's `\"$(brew --prefix)/bin/browsah\"`, or your build), not from the installed one (/usr/local/bin/browsah)", prefix.display()));
+    }
     if prefix.starts_with(source) || source.starts_with(prefix) {
         return Err(format!("the install folder {} and the folder being copied {} overlap", prefix.display(), source.display()));
     }
@@ -109,7 +112,7 @@ pub fn describe(p: &Plan) -> String {
 
 fn permission_hint(e: &std::io::Error, path: &Path) -> String {
     if e.kind() == std::io::ErrorKind::PermissionDenied {
-        format!("{}: permission denied. This command changes system folders: run it with sudo, as `sudo \"$(command -v browsah)\" system-install`", path.display())
+        format!("{}: permission denied. This command changes system folders: run it with sudo and the full path of the copy you are installing, for Homebrew `sudo \"$(brew --prefix)/bin/browsah\" system-install`", path.display())
     } else {
         format!("{}: {e}", path.display())
     }
@@ -236,8 +239,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned))
 }
 
-const USAGE: &str = "usage: sudo \"$(command -v browsah)\" system-install [--1password] [--dry-run] [--yes] [--prefix=DIR] [--bin-dir=DIR]
-       sudo \"$(command -v browsah)\" system-uninstall [--1password] [--yes] [--prefix=DIR] [--bin-dir=DIR]
+const USAGE: &str = "usage: sudo BROWSAH system-install [--1password] [--dry-run] [--yes] [--prefix=DIR] [--bin-dir=DIR]
+       sudo BROWSAH system-uninstall [--1password] [--yes] [--prefix=DIR] [--bin-dir=DIR]
+
+BROWSAH is the full path of the copy to install: \"$(brew --prefix)/bin/browsah\" for Homebrew, or ./target/release/browsah for a build
+(not /usr/local/bin/browsah, which is the installed copy).
 
 system-install copies the program to /opt/browsah (owned by root), writes /usr/local/bin/browsah, and with --1password adds
 `browsah` to 1Password's list of trusted browsers. It prints what it will do and asks first (--yes skips the question,
@@ -372,6 +378,9 @@ mod tests {
         assert!(plan(&src, Path::new("/opt"), &dst, None).is_err(), "too shallow");
         assert!(plan(&src, Path::new("relative/dir"), &dst, None).is_err());
         assert!(plan(&src, &src.join("inside"), &dst, None).unwrap_err().contains("overlap"));
+        // Running the installed copy to install itself (its folder is the install folder): say what to do instead.
+        let err = plan(&src, &src, &dst, None).unwrap_err();
+        assert!(err.contains("already the installed copy") && err.contains("brew --prefix"), "{err}");
         assert!(plan(&src, &dst.join("browsah"), &dst, Some(&dst.join("no-such-file"))).unwrap_err().contains("is the 1Password desktop app installed"));
     }
 

@@ -98,8 +98,11 @@ permission verification failed` in 1Password's log). browsah has one command for
 2. Run, once (and again after you upgrade browsah):
 
    ```bash
-   sudo "$(command -v browsah)" system-install --1password
+   sudo "$(brew --prefix)/bin/browsah" system-install --1password
    ```
+
+   Run it from the copy you want to install: Homebrew's (as above) or your own build (`sudo ./target/release/browsah system-install`), not
+   from `/usr/local/bin/browsah`, which is the installed copy (the command says so if you do).
 
    It first prints what it will do, and asks before doing it (`--dry-run` only prints, `--yes` skips the question):
 
@@ -109,7 +112,7 @@ permission verification failed` in 1Password's log). browsah has one command for
    3. with `--1password`: add the line `browsah` to `/etc/1password/custom_allowed_browsers`, 1Password's list of trusted browsers
       (skipped if it is there; leave the flag off and add the line yourself if you prefer).
 
-   It changes nothing else: your profiles, extensions and settings stay where they are. `sudo "$(command -v browsah)" system-uninstall
+   It changes nothing else: your profiles, extensions and settings stay where they are. `sudo "$(brew --prefix)/bin/browsah" system-uninstall
    --1password` removes it again (the copy, the script and the line).
 3. Restart the 1Password desktop app so that it reads its list.
 4. Start browsah as `/usr/local/bin/browsah` (a `browsah` earlier in your `PATH`, such as Homebrew's, is a different copy that 1Password
@@ -117,7 +120,9 @@ permission verification failed` in 1Password's log). browsah has one command for
    1Password button appears in the header; its popup unlocks through the desktop app (no password is typed into browsah), and the
    inline menu on login forms offers saved logins.
 
-The system copy is a copy: after `brew upgrade browsah` (or a new build) run step 2 again to update it. The log of 1Password's browser
+The system copy is a copy, and `brew upgrade browsah` does not touch it: after an upgrade (or a new build) run step 2 again to update it (the
+script, the allow-list line and your profiles stay as they are; without the `--1password` flag it leaves the allow-list alone). Until you do,
+`/usr/local/bin/browsah` keeps running the older version. The log of 1Password's browser
 connection is `~/.config/1Password/logs/BrowserSupport/` and says why a browser was refused (if browsah runs with `XDG_CONFIG_HOME`
 changed, the log is under that folder instead). When an extension that uses native messaging starts without a root-owned program,
 the [log](log.md) says so (`browsah log --grep=root`).

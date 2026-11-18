@@ -218,7 +218,7 @@ fn main() {
                 log_debug!("extension {} ({}): native messaging host(s) {:?}", e.name, e.id, found.iter().map(|h| h.name.as_str()).collect::<Vec<_>>());
                 // Some programs (1Password's desktop app) only talk to a browser that is owned by root: say how to get one.
                 if !std::env::current_exe().is_ok_and(|p| system_install::root_owned_and_locked(&p)) {
-                    log_info!("extension {} uses native messaging and this browsah program is not owned by root: if the program it talks to refuses to connect (1Password does), install a root-owned copy with `sudo \"$(command -v browsah)\" system-install --1password`", e.name);
+                    log_info!("extension {} uses native messaging and this browsah program is not owned by root: if the program it talks to refuses to connect (1Password does), install a root-owned copy with `sudo \"$(brew --prefix)/bin/browsah\" system-install --1password` (Homebrew; docs/config/extensions.md)", e.name);
                 }
             }
         }
