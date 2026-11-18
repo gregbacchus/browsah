@@ -121,6 +121,14 @@ launcher, allow-list lines, refusals, uninstall) and as a dry run against the re
 root-owned), 1Password accepting that copy (it did accept the earlier hand-made `/opt/browsah-test` copy), and the Homebrew path. `browsah system-upgrade` (run from the installed copy, no sudo needed from the person) reads the `INSTALL` note, compares the program files with the copy it came from and runs that copy's `system-install` through `sudo env LD_LIBRARY_PATH=… BROWSAH_LIBS=…` (sudo removes the library path). Tested against temporary prefixes as a dry run (up to date, a changed copy, no note, missing source) and in unit tests; **not** run under sudo. A source build copies about 1.6 GB
 (its `libcef.so` is not stripped; the release tarball's is).
 
+## Browsing the Chrome Web Store in browsah (2026-11-19, measured)
+
+Opening a store page (`chromewebstore.google.com/detail/<name>/<id>`, 1Password's) in browsah works as a web page, but the store treats it as another
+browser: a "Switch to Chrome to install extensions and themes" banner and a "Switch to Chrome?" popup, with an **Add to Chrome** button still shown;
+`chrome.webstorePrivate` exists on the page. **Clicking Add to Chrome crashes browsah**: a segmentation fault (exit status 139), reproduced twice, no message in
+the log or the journal (no core dump tool on this machine, so no stack). So installing from the store's own button does not work and must not be offered;
+`browsah extension add` is the supported way. Not tried: making the store believe it is Chrome (client-hint brands), or finding the crashing call.
+
 ## Not yet known
 
 - Whether the popup's "fill current page" and the keyboard shortcuts work with no tabs registered.
