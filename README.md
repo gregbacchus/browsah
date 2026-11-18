@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH=$PWD/target/release
 ```
 
 Needs GTK >= 4.14 and libadwaita >= 1.5 (Ubuntu 24.04 or newer) and a Wayland session. Type a URL,
-a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar, `Ctrl+Alt+C` copy the page address (also in the menus, for windows with no address bar), `Ctrl+R`/`F5`
+a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar (clicking into it also selects the address), `Ctrl+Alt+C` copy the page address (also in the menus, for windows with no address bar), `Ctrl+R`/`F5`
 reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close tab,
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
 number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site. `Ctrl+F` finds in the page (`Enter`/`Shift+Enter` or
@@ -117,6 +117,10 @@ every option are in [examples/](examples/): `config.yaml`, `profile.yaml`, `work
 The main menu's **Documentation** shows the docs rendered as a site, and **Application / Profile / Workspace config (all
 options)** shows your file padded out with every option, its default and its explanation (a copy you can save over the
 real file); `browsah config full [--profile=ID [--workspace=ID]]` prints the same.
+
+Dragging: a drag that starts in a page (a sortable list, a reorderable panel: any `draggable` element) and ends in the same page works,
+`Esc` cancels it; files, text and links dragged in from other applications work too. Dragging *out of* the page (to another
+application) is not supported.
 
 The main menu's **Browser test page** opens `bench/pages/edge.html`: buttons for popups, JS dialogs, permissions, downloads, file pickers, drag and drop, context menus, TLS and HTTP errors, storage and more, with a log of what each did.
 

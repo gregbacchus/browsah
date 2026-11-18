@@ -264,6 +264,14 @@ take minutes.
   clipboard in `view.rs`.
 - Verify behaviour changes with the relevant `--selftest` section(s) (never the whole self-test: see the testing rule at the top) and, for rendering or power claims, the benchmarks;
   tests passing is not proof that the docs are accurate.
+- **Drags that start in the page** (`draggable` elements: sortable lists, reorderable panels): `RenderHandler::start_dragging` (view.rs) takes the
+  drag and stores it in `Shared::page_drag`; while it runs the pointer is the drag (`BrowserView::pointer_moved` → `page_drag_move`:
+  `drag_target_drag_enter/over`), the left button's release is the drop (`page_drag_end`) and `Esc` cancels; then
+  `drag_source_ended_at` / `drag_source_system_drag_ended`. The mouse-up is not sent to the page. Without `start_dragging`, CEF aborts every
+  in-page HTML5 drag after `dragstart`. Dragging out of the page to another application is still not supported. Tested by `drop`.
+- **Activation of a running profile:** `connect_activate` treats only the first activation as this process's own command line; a later one
+  (the profile's launcher icon, `browsah --profile=ID`) is a plain launch (`activation_workspaces`). Otherwise a process started with `--app=ID`
+  would turn "show the profile" into "focus the app".
 - **Cookies** (`src/cookies.rs`, filter in `view.rs`): a `CookieAccessFilter` returned from the per-request
   `ResourceRequestHandler` (only when the rules are not open) judges each cookie sent or saved by the request's
   URL against the view's copy of `cookies:` (`BrowserView::set_cookies`, pushed by `apply_view_settings`).

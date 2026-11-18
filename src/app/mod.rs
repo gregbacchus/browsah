@@ -1396,6 +1396,21 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         .placeholder_text("Search or enter address")
         .input_purpose(gtk::InputPurpose::Url)
         .build();
+    // Clicking into the address bar selects the whole address (like other browsers); once it has focus a click places the caret.
+    let select_all = gtk::GestureClick::new();
+    select_all.set_button(1);
+    select_all.set_propagation_phase(gtk::PropagationPhase::Capture);
+    select_all.connect_pressed({
+        let entry = entry.clone();
+        move |gesture, n_press, _, _| {
+            if n_press == 1 && !entry.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN) {
+                entry.grab_focus();
+                entry.select_region(0, -1);
+                gesture.set_state(gtk::EventSequenceState::Claimed); // the entry's own click would put the caret there
+            }
+        }
+    });
+    entry.add_controller(select_all);
     let clamp = adw::Clamp::builder().maximum_size(900).tightening_threshold(600).child(&entry).build();
 
     let header = adw::HeaderBar::new();
@@ -2421,15 +2436,22 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
     app.add_action(&open_ws_action);
 
+    let activated = Rc::new(Cell::new(false));
     app.connect_activate({
-        let (opts, cfg, profile, new_window, open_workspace) = (opts.clone(), cfg.clone(), profile.clone(), new_window.clone(), open_workspace.clone());
+        let (opts, cfg, profile, new_window, open_workspace, activated) = (opts.clone(), cfg.clone(), profile.clone(), new_window.clone(), open_workspace.clone(), activated);
         move |app| {
+            // The first activation is this process starting, with its own command line. Any later one is another launch of the
+            // profile with nothing to open (its launcher icon): that asks for the profile's windows, whatever this process was
+            // started with (a web app's launcher, say, which must not turn "show the profile" into "show the app").
+            let first = !activated.replace(true);
             if let Some(s) = browser_windows().last() {
                 s.window.present(); // another launch of this profile: show a window
                 return;
             }
-            let test_run = opts.selftest || opts.latency;
-            let url = if opts.selftest {
+            let test_run = first && (opts.selftest || opts.latency);
+            let url = if !first {
+                None
+            } else if opts.selftest {
                 Some(selftest::start_url())
             } else if opts.latency {
                 Some(latency::start_url())
@@ -2438,11 +2460,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             };
             // Which workspaces to open: the one asked for, else those open at last exit, else the
             // profile's default; with none of those, an ephemeral window.
-            let ids: Vec<String> = match (&opts.workspace, test_run || opts.new_window) {
-                (Some(id), _) => vec![id.clone()],
-                (None, true) => Vec::new(),
-                (None, false) => startup_workspaces(&profile),
-            };
+            let ids = activation_workspaces(first, opts.workspace.as_deref(), test_run || (first && opts.new_window), || startup_workspaces(&profile));
             let mut opened = false;
             for (i, id) in ids.iter().enumerate() {
                 // A link given on the command line goes to the first workspace.
@@ -2687,6 +2705,27 @@ fn window_color(workspace: Option<&crate::workspace::Workspace>, profile: Option
 }
 
 #[cfg(test)]
+mod activation_tests {
+    use super::activation_workspaces;
+
+    #[test]
+    fn the_first_activation_follows_the_command_line() {
+        let startup = || vec!["remembered".to_owned()];
+        assert_eq!(activation_workspaces(true, Some("figma"), false, startup), ["figma"]);
+        assert_eq!(activation_workspaces(true, None, false, startup), ["remembered"]);
+        assert!(activation_workspaces(true, None, true, startup).is_empty(), "--new-window or a test run opens a plain window");
+    }
+
+    #[test]
+    fn a_later_activation_is_a_plain_launch_of_the_profile() {
+        let startup = || vec!["remembered".to_owned()];
+        // The process was started for a web app (`--app=figma`): launching the profile again does not mean that app.
+        assert_eq!(activation_workspaces(false, Some("figma"), false, startup), ["remembered"]);
+        assert_eq!(activation_workspaces(false, None, true, startup), ["remembered"]);
+    }
+}
+
+#[cfg(test)]
 mod frame_css_tests {
     use super::*;
     use crate::config::FrameConfig;
@@ -2775,6 +2814,16 @@ fn remember_app_window(window: &adw::ApplicationWindow, id: &str) {
 
 /// Which workspaces a plain start opens: those open at last exit that still exist, else the
 /// profile's `default_workspace`, else none.
+/// The workspaces an activation of the profile opens. At start (`first`) the one named on the command line, else (unless a plain
+/// window is wanted) `startup`; a later activation is a plain launch of the profile and ignores the command line.
+fn activation_workspaces(first: bool, named: Option<&str>, plain_window: bool, startup: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    match (first, named, plain_window) {
+        (true, Some(id), _) => vec![id.to_owned()],
+        (true, None, true) => Vec::new(),
+        _ => startup(),
+    }
+}
+
 fn startup_workspaces(profile: &crate::profile::Profile) -> Vec<String> {
     let exists = |id: &String| crate::workspace::Workspace::resolve(profile, id).is_ok();
     let remembered: Vec<String> = profile.load_state().open_workspaces.into_iter().filter(exists).collect();

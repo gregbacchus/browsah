@@ -86,7 +86,7 @@ pub struct FrameConfig {
 
 impl Default for FrameConfig {
     fn default() -> Self {
-        Self { enabled: true, thickness: 4, radius: 8 }
+        Self { enabled: true, thickness: 4, radius: 4 }
     }
 }
 
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn the_frame_options_default_and_clamp() {
         let d = Config::default().window.frame;
-        assert!(d.enabled && d.thickness == 4 && d.radius == 8, "thin by default");
+        assert!(d.enabled && d.thickness == 4 && d.radius == 4, "thin by default, with corners as round as the border is wide");
         let mut c: Config = serde_yaml_ng::from_str("window: { frame: { thickness: 500, radius: -3, enabled: false } }").unwrap();
         c.sanitize();
         assert!(!c.window.frame.enabled && c.window.frame.thickness == 40 && c.window.frame.radius == 0);

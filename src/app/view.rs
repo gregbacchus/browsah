@@ -199,6 +199,9 @@ struct Shared {
     /// DevTools method results by message id: (success, JSON text).
     cdp_results: Mutex<HashMap<i32, (bool, String)>>,
     cdp_registration: Mutex<Option<RegHandle>>,
+    /// A drag that started in the page (a `draggable` element): windowless Chromium has no system drag loop, so the pointer
+    /// drives it (see `BrowserView::page_drag_move`). Set on CEF's thread, read on the GTK thread.
+    page_drag: Mutex<Option<PageDrag>>,
     /// Downloaded images by URL: (HTTP status, width, height).
     images: Mutex<HashMap<String, (i32, usize, usize)>>,
     /// The same images as PNG bytes (for an app's icon).
@@ -329,6 +332,7 @@ impl Shared {
             pending_url: Mutex::new(None),
             cdp_results: Mutex::new(HashMap::new()),
             cdp_registration: Mutex::new(None),
+            page_drag: Mutex::new(None),
             images: Mutex::new(HashMap::new()),
             image_data: Mutex::new(HashMap::new()),
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
@@ -474,6 +478,32 @@ wrap_render_handler! {
             info.depth_per_component = 8;
             info.is_monochrome = 0;
             1
+        }
+
+        // A drag that starts in the page (a `draggable` element: a sortable list, a reorderable panel). Returning true takes the
+        // drag: the pointer then drives CEF's drag calls until the button is released (`page_drag_move`, `page_drag_end`).
+        fn start_dragging(&self, _b: Option<&mut Browser>, drag_data: Option<&mut DragData>, allowed_ops: DragOperationsMask, _x: ::std::os::raw::c_int, _y: ::std::os::raw::c_int) -> ::std::os::raw::c_int {
+            let Some(data) = drag_data.and_then(|d| ImplDragData::clone(&*d)) else { return 0 };
+            *self.shared.page_drag.lock().unwrap() = Some(PageDrag { data: SendBox(data), ops: SendBox(allowed_ops), entered: false, op: SendBox(drag_ops(0)), ending: false });
+            1
+        }
+
+        // What the page would do with the drop where the pointer is (none, copy, move): remembered for the end of the drag,
+        // and shown as the pointer.
+        fn update_drag_cursor(&self, _b: Option<&mut Browser>, operation: DragOperationsMask) {
+            let bits = operation.as_ref().0;
+            if let Some(d) = self.shared.page_drag.lock().unwrap().as_mut() {
+                d.op = SendBox(operation);
+            }
+            let name = match bits {
+                0 => "no-drop",
+                1 => "copy",
+                _ => "grabbing",
+            };
+            let id = self.shared.id;
+            glib::MainContext::default().invoke(move || {
+                with_side(id, |side| side.overlay.set_cursor_from_name(Some(name)));
+            });
         }
 
         // Readback path: the buffer is only valid during the call, so copy it.
@@ -1261,6 +1291,22 @@ wrap_pdf_print_callback! {
 
 struct SendBox<T>(T);
 unsafe impl<T> Send for SendBox<T> {}
+
+/// A drag that began in the page and is still running.
+struct PageDrag {
+    data: SendBox<DragData>,
+    ops: SendBox<DragOperationsMask>,
+    /// CEF has been told the drag entered the page (on the first pointer move).
+    entered: bool,
+    /// The operation the page last answered with (copy, move, none), from `update_drag_cursor`.
+    op: SendBox<DragOperationsMask>,
+    /// The button was released or the drag cancelled: the end is queued on CEF's thread and the pointer is ignored meanwhile.
+    ending: bool,
+}
+
+fn drag_ops(bits: u32) -> DragOperationsMask {
+    DragOperationsMask::from(sys::cef_drag_operations_mask_t(bits))
+}
 
 /// Run CEF's drag-target calls on its UI thread (they are ignored elsewhere).
 fn drag_on_ui(shared: &Shared, f: impl FnOnce(&BrowserHost) + 'static) {
@@ -2527,9 +2573,7 @@ impl BrowserView {
                     return;
                 }
                 if let Some(v) = w.upgrade() {
-                    v.pointer.set((x, y));
-                    let ev = v.mouse_event(x, y, ctrl.current_event_state());
-                    v.with_host(|h| h.send_mouse_move_event(Some(&ev), 0));
+                    v.pointer_moved(x, y, ctrl.current_event_state());
                 }
             }
         });
@@ -2553,6 +2597,9 @@ impl BrowserView {
                     return;
                 }
                 if let Some(v) = w.upgrade() {
+                    if v.page_dragging() {
+                        return;
+                    }
                     let (x, y) = v.pointer.get();
                     let ev = v.mouse_event(x, y, gdk::ModifierType::empty());
                     v.with_host(|h| h.send_mouse_move_event(Some(&ev), 1));
@@ -2737,6 +2784,16 @@ impl BrowserView {
         });
     }
 
+    /// The pointer moved to (x, y) with these buttons and keys held.
+    pub(super) fn pointer_moved(&self, x: f64, y: f64, state: gdk::ModifierType) {
+        self.pointer.set((x, y));
+        if self.page_drag_move(x, y) {
+            return;
+        }
+        let ev = self.mouse_event(x, y, state);
+        self.with_host(|h| h.send_mouse_move_event(Some(&ev), 0));
+    }
+
     pub(super) fn click(&self, button: u32, n_press: i32, x: f64, y: f64, state: gdk::ModifierType, up: bool) {
         self.input_events.set(self.input_events.get() + 1);
         let kind = match button {
@@ -2748,8 +2805,74 @@ impl BrowserView {
             _ => return,
         };
         self.pointer.set((x, y));
+        // A drag that started in the page ends with the left button: the drop, not a click.
+        if up && kind == MouseButtonType::LEFT && self.page_drag_end(x, y, true) {
+            return;
+        }
+        if self.page_dragging() {
+            return;
+        }
         let ev = self.mouse_event(x, y, state);
         self.with_host(|h| h.send_mouse_click_event(Some(&ev), kind, up as _, n_press.max(1)));
+    }
+
+    /// Whether a drag that started in the page is running.
+    fn page_dragging(&self) -> bool {
+        self.shared.page_drag.lock().unwrap().is_some()
+    }
+
+    /// While a drag that started in the page runs, the pointer is the drag: tell CEF it entered (once) and where it is. Returns
+    /// whether a drag is running (the move is then not a mouse move).
+    fn page_drag_move(&self, x: f64, y: f64) -> bool {
+        let ev = self.mouse_event(x, y, gdk::ModifierType::BUTTON1_MASK);
+        let (first, data, ops) = {
+            let mut g = self.shared.page_drag.lock().unwrap();
+            let Some(d) = g.as_mut() else { return false };
+            if d.ending {
+                return true;
+            }
+            let first = !d.entered;
+            d.entered = true;
+            (first, ImplDragData::clone(&d.data.0), d.ops.0.clone())
+        };
+        drag_on_ui(&self.shared, move |h| {
+            if let (true, Some(mut data)) = (first, data) {
+                h.drag_target_drag_enter(Some(&mut data), Some(&ev), ops.clone());
+            }
+            h.drag_target_drag_over(Some(&ev), ops);
+        });
+        true
+    }
+
+    /// End the drag that started in the page: drop it where the pointer is (`drop`) or cancel it (`Esc`). Returns whether there
+    /// was one. The calls run on CEF's thread after the moves already queued, so the last answer of the page is known by then.
+    fn page_drag_end(&self, x: f64, y: f64, drop: bool) -> bool {
+        {
+            let mut g = self.shared.page_drag.lock().unwrap();
+            match g.as_mut() {
+                Some(d) if !d.ending => d.ending = true,
+                Some(_) => return true,
+                None => return false,
+            }
+        }
+        let ev = self.mouse_event(x, y, gdk::ModifierType::BUTTON1_MASK);
+        let shared = self.shared.clone();
+        drag_on_ui(&self.shared, move |h| {
+            let Some(d) = shared.page_drag.lock().unwrap().take() else { return };
+            let ops = d.ops.0;
+            let accepted = d.op.0.as_ref().0 != 0;
+            if d.entered {
+                if drop && accepted {
+                    h.drag_target_drag_over(Some(&ev), ops);
+                    h.drag_target_drop(Some(&ev));
+                } else {
+                    h.drag_target_drag_leave();
+                }
+            }
+            h.drag_source_ended_at(ev.x, ev.y, if drop && accepted { d.op.0 } else { drag_ops(0) });
+            h.drag_source_system_drag_ended();
+        });
+        true
     }
 
     /// Text from the input method. Either an ordinary character that the input method handled on
@@ -2880,6 +3003,11 @@ impl BrowserView {
     fn key(self: &Rc<Self>, press: bool, key: gdk::Key, keycode: u32, state: gdk::ModifierType, event: Option<gdk::Event>) -> bool {
         if press {
             self.input_events.set(self.input_events.get() + 1);
+        }
+        if press && key == gdk::Key::Escape && self.page_dragging() {
+            let (x, y) = self.pointer.get();
+            self.page_drag_end(x, y, false); // Esc cancels a drag that started in the page
+            return true;
         }
         if press && input::is_shell_shortcut(key, state) {
             return false; // the window's accelerators handle it

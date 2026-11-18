@@ -37,7 +37,7 @@ It creates `apps/<id>/app.yaml`, writes `~/.local/share/applications/be.geee.bro
 (the file given with `--icon`, else the best icon the manifest lists that downloads, else a generated one: a circle in the
 app's colour with four swishes, see [the generated icon](profile.md#the-generated-icon)). A manifest's PNG and SVG icons are used as they are; other formats GdkPixbuf can read
 (ICO, JPEG, WebP if its loader is installed) are converted to PNG, keeping any transparency; of an ICO's sizes the largest is used.
-Start it from the launcher, or with `browsah --profile=<profile> --app=<id>` (add a link to open the app on it; add
+Launching the profile itself (its launcher icon, or `browsah --profile=<profile>`) while an app is open opens the profile's own windows as usual; it does not just bring the app forward. Start an app from the launcher, or with `browsah --profile=<profile> --app=<id>` (add a link to open the app on it; add
 `--new-window` for another window of an app that allows more than one). The launcher entry is written again when the
 profile starts if it is out of date (for example after `multiple_windows` or `name` changed), so edits show up in the
 dash without `app install`.

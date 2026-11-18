@@ -36,7 +36,7 @@ window:
   frame:                # the window's colour as a border around the page (needs a profile or workspace colour)
     enabled: true
     thickness: 4        # logical pixels, 0 to 40
-    radius: 8           # the page's corner radius
+    radius: 4           # the page's corner radius (about the border's thickness looks right)
 
 rendering:
   mode: accelerated        # accelerated (no copy) or readback (fallback, slower)

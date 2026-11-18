@@ -200,6 +200,20 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
         format!("{:?}", shell.window.title())
     });
     r.check("address bar shows the address", shell.entry.text() == a_url, || shell.entry.text().to_string());
+    // Clicking into the address bar selects all of it; with focus already there a click leaves the selection alone.
+    {
+        use gtk::prelude::{EditableExt, ObjectExt};
+        let click = shell.entry.observe_controllers().into_iter().flatten().find_map(|c| c.downcast::<gtk::GestureClick>().ok()).expect("the address bar's click gesture");
+        shell.view().widget.grab_focus();
+        shell.entry.select_region(0, 0);
+        click.emit_by_name::<()>("pressed", &[&1i32, &10.0f64, &10.0f64]);
+        let len = shell.entry.text().chars().count() as i32;
+        r.check("clicking into the address bar selects the whole address", shell.entry.selection_bounds() == Some((0, len)) && shell.entry.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN), || format!("{:?} of {len}", shell.entry.selection_bounds()));
+        shell.entry.select_region(2, 4);
+        click.emit_by_name::<()>("pressed", &[&1i32, &10.0f64, &10.0f64]);
+        r.check("with the focus already there a click does not select everything again", shell.entry.selection_bounds() == Some((2, 4)), || format!("{:?}", shell.entry.selection_bounds()));
+        shell.view().widget.grab_focus();
+    }
     r.check("back and forward disabled on the first page", !shell.back.is_sensitive() && !shell.forward.is_sensitive(), || {
         format!("back={} forward={}", shell.back.is_sensitive(), shell.forward.is_sensitive())
     });
@@ -2708,6 +2722,7 @@ async fn run_zoom(shell: &Rc<Shell>, r: &mut Report) {
 
 /// Text dropped on the page reaches its `drop` handler (the CEF side of the GTK drop target).
 async fn run_drop(shell: &Rc<Shell>, r: &mut Report) {
+    run_drag_inside(shell, r).await;
     let st = shell.state();
     let before = st.borrow().load_cycles;
     let view = shell.view();
@@ -3147,6 +3162,49 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     r.check("another site gets the same scale and scrollbar", (dpr2 - total).abs() < 0.05 && (bar2 * dpr2 - 15.0 * total).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
 }
 
+/// A drag that starts in the page and ends in the page (a sortable list, a reorderable panel): the page's own `draggable`
+/// element, its drop target and its `dragend` all get their events, driven with the left button held the way real pointer
+/// events carry it.
+async fn run_drag_inside(shell: &Rc<Shell>, r: &mut Report) {
+    let st = shell.state();
+    let before = st.borrow().load_cycles;
+    let view = shell.view();
+    view.navigate("data:text/html,<title>drag-wait</title><body style='margin:0'><div id=a draggable=true style='width:120px;height:40px;background:%23c33'>A</div><div id=b style='position:absolute;left:0;top:200px;width:300px;height:100px;background:%23ccc'>B</div><script>const log=[];const t=s=>{log.push(s);document.title=log.join('|')};a.ondragstart=e=>{e.dataTransfer.setData('text/plain','item');e.dataTransfer.effectAllowed='move';t('start')};b.ondragenter=e=>{e.preventDefault();t('enter')};b.ondragover=e=>e.preventDefault();b.ondrop=e=>{e.preventDefault();t('drop:'+e.dataTransfer.getData('text/plain'))};a.ondragend=e=>t('end:'+e.dataTransfer.dropEffect)</script>");
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before && s.title == "drag-wait" }).await;
+    let held = gdk::ModifierType::BUTTON1_MASK;
+    view.pointer_moved(30.0, 20.0, gdk::ModifierType::empty());
+    view.click(1, 1, 30.0, 20.0, gdk::ModifierType::empty(), false);
+    for i in 1..=12 {
+        view.pointer_moved(30.0, 20.0 + i as f64 * 15.0, held);
+        glib::timeout_future(Duration::from_millis(30)).await;
+    }
+    r.check("a drag that starts in the page reaches the page's dragstart", wait_until(5_000, || st.borrow().title.contains("start")).await, || st.borrow().title.clone());
+    r.check("and the drop target gets dragenter", wait_until(5_000, || st.borrow().title.contains("enter")).await, || st.borrow().title.clone());
+    view.click(1, 1, 30.0, 200.0, held, true);
+    r.check("releasing over the target drops the dragged data there", wait_until(5_000, || st.borrow().title.contains("drop:item")).await, || st.borrow().title.clone());
+    r.check("the dragged element gets dragend with the move effect", wait_until(5_000, || st.borrow().title.contains("end:move")).await, || st.borrow().title.clone());
+    // Esc cancels a drag: no drop, dragend with no effect.
+    let drops = |t: &str| t.matches("drop:").count();
+    view.pointer_moved(30.0, 20.0, gdk::ModifierType::empty());
+    view.click(1, 1, 30.0, 20.0, gdk::ModifierType::empty(), false);
+    for i in 1..=12 {
+        view.pointer_moved(30.0, 20.0 + i as f64 * 15.0, held);
+        glib::timeout_future(Duration::from_millis(30)).await;
+    }
+    let started = wait_until(5_000, || st.borrow().title.matches("start").count() == 2).await;
+    Driver { shell }.key(Key::Escape, ModifierType::empty());
+    let cancelled = wait_until(5_000, || st.borrow().title.ends_with("end:none")).await;
+    view.click(1, 1, 30.0, 200.0, held, true);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("Esc cancels a drag: no drop, dragend with no effect", started && cancelled && drops(&st.borrow().title) == 1, || st.borrow().title.clone());
+    // And after a drag the page takes ordinary clicks again.
+    let _ = view.cdp_eval("document.title = 'clicks'; document.addEventListener('click', () => { document.title = 'clicked'; }, {once: true}); 1");
+    let _ = wait_until(5_000, || st.borrow().title == "clicks").await;
+    view.click(1, 1, 150.0, 250.0, gdk::ModifierType::empty(), false);
+    view.click(1, 1, 150.0, 250.0, gdk::ModifierType::empty(), true);
+    r.check("after a drag the page gets ordinary clicks again", wait_until(5_000, || st.borrow().title == "clicked").await, || st.borrow().title.clone());
+}
+
 /// The workspace picker: a button in workspace windows (not in a web app's; `workspace_picker: false` hides it) listing the
 /// profile's workspaces with a colour badge, in the last-used or the alphabetical order, remembered in the profile.
 async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
@@ -3311,7 +3369,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     let (ww, wh) = (w.window.width(), w.window.height());
     let tv = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0));
     let tvw = w.tab_view.width();
-    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0 + 1, tv.1 + 1), (tv.0 + 12, tv.1 + 12)]);
+    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0, tv.1), (tv.0 + 12, tv.1 + 12)]);
     r.check("the window can be un-maximized for the test", ok, || "still maximized".into());
     r.check("the page is inset from the left and right edges (the colour shows at the sides)", px.len() == 6 && near(px[0], tint) && near(px[1], tint) && tv.0 > 0 && tvw < ww, || format!("{px:?} tint {tint:?} tabview x {} width {tvw} of {ww}", tv.0));
     r.check("the colour shows below the page too, and the page itself is not tinted", px.len() == 6 && near(px[2], tint) && near(px[3], white), || format!("{px:?} tint {tint:?}"));
@@ -3345,7 +3403,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     r.check("(and the header is still tinted)", head.len() == 1 && near(head[0], tint), || format!("{head:?} tint {tint:?}"));
     cfg.window.frame.enabled = true;
     cfg.window.frame.thickness = 4;
-    cfg.window.frame.radius = 8;
+    cfg.window.frame.radius = 4;
     w.apply_config(&cfg);
     glib::timeout_future(Duration::from_millis(600)).await;
 
@@ -3356,7 +3414,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     shot(&w.window, "frame-maximized");
     let (ww, wh) = (w.window.width(), w.window.height());
     let tv = w.tab_view.compute_point(&w.window, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0));
-    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0 + 1, tv.1 + 1), (tv.0 + 12, tv.1 + 12)]);
+    let px = pixels(&w.window, &[(3, wh / 2), (ww - 4, wh / 2), (ww / 2, wh - 3), (ww / 2, wh / 2), (tv.0, tv.1), (tv.0 + 12, tv.1 + 12)]);
     r.check("maximized, the colour still frames the page (sides, bottom, rounded corners)", ok && px.len() == 6 && near(px[0], tint) && near(px[1], tint) && near(px[2], tint) && near(px[3], white) && near(px[4], tint) && near(px[5], white), || format!("{px:?} tint {tint:?}"));
     // Fullscreen: the page fills the screen (the bars are hidden too).
     let _ = WidgetExt::activate_action(&w.window, "win.fullscreen", None);

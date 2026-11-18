@@ -716,7 +716,7 @@ a bookmark bar showing under the tab bar, the same area with a web app's header.
 A window with a colour (its workspace's, else its profile's) shows it as a border around the page, like a terminal with a
 coloured window chrome: the page sits in a `.browsah-frame` box (`ToolbarView` content) whose style gives it the colour as
 background and padding on the sides and bottom, and the tab view inside it rounded corners (GTK CSS has no `overflow`, so
-the clip is `set_overflow(Hidden)` in code). `window.frame.enabled`, `thickness` (default 4 px, 0 to 40) and `radius` (default 8)
+the clip is `set_overflow(Hidden)` in code). `window.frame.enabled`, `thickness` (default 4 px, 0 to 40) and `radius` (default 4 since the thickness went to 4; it was 8 with the first thickness)
 are live options, per workspace; the window's style sheet is rewritten when the configuration is reloaded
 (`refresh_color_css`). The bottom border is dropped while the find bar (the only footer) is open, by a `has-footer` class on
 the window. The frame stays when maximized (asked for) and goes in fullscreen, where the bars are hidden. The bottom bar is
