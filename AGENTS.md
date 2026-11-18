@@ -177,6 +177,7 @@ take minutes.
   profile so they never touch a real profile or collide with a running browser. Profile config
   (`profile.yaml`) has its own docs and example, with tests that check both (see
   `docs/config/profile.md`, `examples/profile.yaml`).
+- **Tab history across restarts:** CEF cannot be given navigation entries, so a tab keeps its earlier and later pages in `Tab::hist_back`/`hist_fwd` (`src/navhistory.rs`, saved in `tabs.nav_history`); `Shell::history_back/forward` use them when the browser has nothing to go to, `Tab::keep_browser_history` folds the browser's entries in before a view is replaced (sleep, fall-back). A step through the lists must run `location.replace/assign` with a user gesture (`BrowserView::step_to`) and is not told apart from a new navigation for 2 s (`skip_nav_until`). docs/research/tab-history.md.
 - **Workspaces** are windows of the profile's process (`Shell` per window, registry in `app/mod.rs`:
   `windows()`; a tab's owner window changes when it is dragged, see `Tab::owner`). A workspace window
   saves its tabs (`Shell::save_now`, debounced by `schedule_save`, and in the close handler before

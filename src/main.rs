@@ -20,6 +20,7 @@ mod history;
 mod icons;
 mod log;
 mod manifest;
+mod navhistory;
 mod permissions;
 mod picker;
 mod profile;

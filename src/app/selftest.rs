@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "newtab", "extensions",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "newtab", "extensions",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -446,6 +446,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("copybutton") {
         run_copybutton(shell, r).await;
+    }
+    if wants("navhistory") {
+        run_navhistory(shell, r).await;
     }
     if wants("picker") {
         run_picker(shell, r).await;
@@ -1997,7 +2000,7 @@ async fn run_closed_workspace_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let _ = store().clear_history(None);
     std::fs::write(dir.join("workspace.yaml"), "name: Closed\nsweep:\n  enabled: true\n  interval: 1d\n  rules:\n    - name: Gone\n      match: { url: ['localhost'] }\n      idle_for: 1h\n").expect("workspace.yaml");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let tab = |uid: u64, url: &str, used: i64, pinned: bool| TabRecord { uid, url: url.into(), title: format!("T{uid}"), pinned, selected: uid == 1, usage: format!("{used}:1"), group: 0 };
+    let tab = |uid: u64, url: &str, used: i64, pinned: bool| TabRecord { uid, url: url.into(), title: format!("T{uid}"), pinned, selected: uid == 1, usage: format!("{used}:1"), group: 0, history: String::new() };
     let old = now - 3 * 86_400;
     store().save_tabs("sx", &[
         tab(1, "http://localhost:1/old-selected", old, false),
@@ -4360,4 +4363,107 @@ async fn run_copybutton(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(500)).await;
     let got = read().await;
     r.check("a page that was not just used cannot set the clipboard", got == "untouched", || format!("clipboard {got:?}"));
+}
+
+/// A tab's back and forward list survives closing the window and a tab being put to sleep. CEF cannot be given entries, so a restored
+/// tab keeps the earlier and later pages in lists beside the browser's own (`navhistory`); Back and Forward use them when the browser
+/// has nothing to go to, and a new navigation drops the later pages.
+async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let store = || crate::store::Store::open(&db).expect("store");
+    let dir = profile.workspaces_dir().join("nh");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("workspace dir");
+    let _ = store().delete_workspace("nh");
+    std::fs::write(dir.join("workspace.yaml"), format!("name: History\nhome_page: 'http://localhost:{port}/scope.html'\n")).expect("workspace.yaml");
+    crate::router::install(crate::router::Router::default());
+    let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "nh"));
+    let (a, b, c) = (format!("http://localhost:{port}/scope.html"), format!("http://localhost:{port}/b.html"), format!("http://localhost:{port}/white.html"));
+    let at = |w: &Rc<Shell>, url: &str| {
+        let url = url.to_owned();
+        let w = w.clone();
+        move || w.current().is_some_and(|t| t.state.borrow().address == url && !t.state.borrow().loading)
+    };
+
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"nh".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().address == a && !t.state.borrow().loading))).await;
+    r.check("a workspace opens on its first page", ok, || "not open".into());
+    let Some(w) = find() else { return };
+    let tab = w.current().expect("tab");
+    for url in [&b, &c] {
+        tab.view().navigate(url);
+        let _ = wait_until(15_000, at(&w, url)).await;
+    }
+    let ok = wait_until(5_000, || tab.view().nav_entries().0.len() == 3).await;
+    r.check("the browser lists the three pages", ok, || format!("{:?}", tab.view().nav_entries()));
+    w.history_back(); // to the middle page, so a page is ahead and one behind
+    let ok = wait_until(15_000, at(&w, &b)).await;
+    r.check("back goes to the middle page", ok, || tab.state.borrow().address.clone());
+    glib::timeout_future(Duration::from_millis(500)).await;
+    w.save_now();
+    let saved = store().load_tabs("nh");
+    r.check("the tab is saved with its list", saved.len() == 1 && crate::navhistory::decode(&saved[0].history, &b).is_some_and(|(back, fwd)| back.len() == 1 && fwd.len() == 1), || format!("{saved:?}"));
+
+    // Close the window and open the workspace again.
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"nh".to_variant()));
+    let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().address == b && !t.state.borrow().loading))).await;
+    r.check("the workspace comes back on the middle page", ok, || "not back".into());
+    let Some(w) = find() else { return };
+    let tab = w.current().expect("tab");
+    let (back, fwd) = (tab.hist_back.borrow().len(), tab.hist_fwd.borrow().len());
+    r.check("its earlier and later pages came back too", back == 1 && fwd == 1, || format!("back {back}, forward {fwd}"));
+    r.check("back and forward are both enabled", w.back_action.is_enabled() && w.forward_action.is_enabled(), || format!("back {} forward {}", w.back_action.is_enabled(), w.forward_action.is_enabled()));
+    w.history_back();
+    let ok = wait_until(15_000, at(&w, &a)).await;
+    r.check("back goes to the earlier page", ok, || tab.state.borrow().address.clone());
+    r.check("nothing is left behind, and two pages are ahead", !w.back_action.is_enabled() && w.forward_action.is_enabled() && tab.hist_fwd.borrow().len() == 2, || format!("back {} fwd {}", w.back_action.is_enabled(), tab.hist_fwd.borrow().len()));
+    w.history_forward();
+    let ok = wait_until(15_000, at(&w, &b)).await;
+    r.check("forward returns to the middle page", ok, || tab.state.borrow().address.clone());
+    w.history_forward();
+    let ok = wait_until(15_000, at(&w, &c)).await;
+    r.check("and on to the last page", ok, || tab.state.borrow().address.clone());
+    w.history_back();
+    let ok = wait_until(15_000, at(&w, &b)).await;
+    w.history_back();
+    let ok = ok && wait_until(15_000, at(&w, &a)).await;
+    r.check("back twice, through the browser's own list now, reaches the first page again", ok, || tab.state.borrow().address.clone());
+
+    // A new navigation drops the pages that were ahead, a reload does not (the shell's own steps just now are not told apart for 2 s).
+    glib::timeout_future(Duration::from_millis(2500)).await;
+    tab.hist_fwd.borrow_mut().push(crate::navhistory::Entry::new(&c, "ahead"));
+    tab.view().reload();
+    let _ = wait_until(15_000, || tab.state.borrow().load_cycles >= 1).await;
+    glib::timeout_future(Duration::from_millis(700)).await;
+    let kept = tab.hist_fwd.borrow().len();
+    tab.view().navigate(&format!("{b}?new=1"));
+    let _ = wait_until(15_000, || tab.state.borrow().address.contains("new=1") && !tab.state.borrow().loading).await;
+    glib::timeout_future(Duration::from_millis(700)).await;
+    r.check("a reload keeps the pages ahead and a new page drops them", kept == 1 && tab.hist_fwd.borrow().is_empty(), || format!("after reload {kept}, after navigation {}", tab.hist_fwd.borrow().len()));
+
+    // A tab put to sleep keeps its list.
+    let sleeper = w.open_tab(&a, false);
+    let _ = wait_until(15_000, || !sleeper.state.borrow().loading && sleeper.state.borrow().address == a).await;
+    sleeper.view().navigate(&b);
+    let _ = wait_until(15_000, || sleeper.state.borrow().address == b && !sleeper.state.borrow().loading).await;
+    let _ = wait_until(5_000, || sleeper.view().nav_entries().0.len() == 2).await;
+    w.discard_tab(&sleeper);
+    r.check("a tab put to sleep keeps the earlier page in its list", sleeper.view().is_dormant() && sleeper.hist_back.borrow().len() == 1 && sleeper.hist_back.borrow()[0].url == a, || format!("{:?}", sleeper.hist_back.borrow()));
+    w.tab_view.set_selected_page(&sleeper.page);
+    let ok = wait_until(15_000, || !sleeper.view().is_dormant() && sleeper.state.borrow().address == b && !sleeper.state.borrow().loading).await;
+    r.check("and goes back to it after waking", ok && w.back_action.is_enabled(), || format!("{:?}", sleeper.state.borrow()));
+    w.history_back();
+    let ok = wait_until(15_000, || sleeper.state.borrow().address == a && !sleeper.state.borrow().loading).await;
+    r.check("back from the woken tab reaches the earlier page", ok, || sleeper.state.borrow().address.clone());
+
+    w.window.close();
+    let _ = wait_until(5_000, || find().is_none()).await;
+    let _ = store().delete_workspace("nh");
+    let _ = std::fs::remove_dir_all(&dir);
 }

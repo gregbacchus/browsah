@@ -284,6 +284,7 @@ impl Shell {
         new.set_workspace(self.workspace_id().map(str::to_owned));
         new.set_popup_policy(self.popup_policy);
         self.apply_view_settings(&new);
+        tab.keep_browser_history();
         let old = tab.view();
         tab.holder.prepend(&new.widget);
         tab.holder.remove(&old.widget);
@@ -293,6 +294,8 @@ impl Shell {
             let mut s = tab.state.borrow_mut();
             s.ready = false;
             s.loading = false;
+            s.can_back = false; // the new browser has one entry (the saved lists stand in for the rest)
+            s.can_forward = false;
         }
         tab.page.set_title(&tab_title(&tab.state.borrow()));
         tab.dirty.set(false);

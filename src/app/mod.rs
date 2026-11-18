@@ -73,6 +73,12 @@ pub struct Tab {
     full_pin: Cell<bool>,
     /// The address the tab was opened on (what a fallback reload uses before the page has reported its own).
     first_url: RefCell<String>,
+    /// Pages before and after the browser's own list (nearest last), kept across restarts and sleep (`navhistory`).
+    hist_back: RefCell<Vec<crate::navhistory::Entry>>,
+    hist_fwd: RefCell<Vec<crate::navhistory::Entry>>,
+    /// Until then, navigation starts are the shell's own (a restored page loading, a step through the lists; a navigation can report
+    /// its start more than once): the forward list stays.
+    skip_nav_until: Cell<Option<std::time::Instant>>,
     /// The window (shell) the tab is in. Changes when a tab is dragged to another window.
     owner: RefCell<Weak<Shell>>,
     /// Stable id; names the tab's screenshot and its row in the database.
@@ -137,6 +143,28 @@ thread_local! {
 impl Tab {
     pub fn is_pinned(&self) -> bool {
         self.full_pin.get() || self.page.is_pinned()
+    }
+
+    /// The tab's whole back/forward list as text for the database: the saved lists around the browser's own entries.
+    fn history_text(&self, s: &State) -> String {
+        let view = self.view();
+        let (cef, index) = view.nav_entries();
+        let (back, fwd) = if view.is_dormant() { (self.hist_back.borrow().clone(), self.hist_fwd.borrow().clone()) } else { crate::navhistory::fold(&self.hist_back.borrow(), &cef, index, &self.hist_fwd.borrow()) };
+        crate::navhistory::encode(&back, &crate::navhistory::Entry::new(&s.address, &s.title), &fwd)
+    }
+
+    /// Before the browser is replaced by a fresh one on the same page (sleep, rendering fall-back): keep its entries in the lists.
+    fn keep_browser_history(&self) {
+        let (cef, index) = self.view().nav_entries();
+        let (back, fwd) = crate::navhistory::fold(&self.hist_back.borrow(), &cef, index, &self.hist_fwd.borrow());
+        *self.hist_back.borrow_mut() = back;
+        *self.hist_fwd.borrow_mut() = fwd;
+        self.skip_navigation_starts();
+    }
+
+    /// The next few seconds of navigation starts are the shell's own (see `skip_nav_until`).
+    fn skip_navigation_starts(&self) {
+        self.skip_nav_until.set(Some(std::time::Instant::now() + std::time::Duration::from_secs(2)));
     }
 
     pub fn owner(&self) -> Option<Rc<Shell>> {
@@ -761,7 +789,7 @@ impl Shell {
             if s.address.is_empty() || s.address == "about:blank" {
                 return None;
             }
-            Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: tab.is_pinned(), selected, usage: tab.usage.borrow().to_text(), group: tab.group.get() })
+            Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: tab.is_pinned(), selected, usage: tab.usage.borrow().to_text(), group: tab.group.get(), history: tab.history_text(&s) })
         };
         let mut out = Vec::new();
         for i in 0..self.tab_view.n_pages() {
@@ -851,6 +879,11 @@ impl Shell {
         self.prepare_storage();
         let view = BrowserView::new_dormant(WidgetExt::display(&self.window), self.mode.get(), self.backing, self.frame_rate.get(), &rec.url, shot.as_deref(), on_event);
         let tab = self.add_tab(view, cell, state, false, rec.uid);
+        if let Some((back, fwd)) = crate::navhistory::decode(&rec.history, &rec.url) {
+            *tab.hist_back.borrow_mut() = back;
+            *tab.hist_fwd.borrow_mut() = fwd;
+        }
+        tab.skip_navigation_starts(); // loading the remembered page is not a new navigation
         tab.page.set_title(&tab_title(&tab.state.borrow()));
         self.favicon_for_address(&tab); // the site's remembered icon, before anything has loaded
         self.refresh_tab_icon(&tab); // a sleeping tab is dimmed even with no icon to redraw
@@ -1013,10 +1046,50 @@ impl Shell {
         drop(s);
         self.update_star();
         let s = tab.state.borrow();
-        self.back_action.set_enabled(s.can_back && self.nav.back);
-        self.forward_action.set_enabled(s.can_forward && self.nav.forward);
+        self.back_action.set_enabled((s.can_back || !tab.hist_back.borrow().is_empty()) && self.nav.back);
+        self.forward_action.set_enabled((s.can_forward || !tab.hist_fwd.borrow().is_empty()) && self.nav.forward);
         self.reload.set_visible(!s.loading && self.nav.reload);
         self.stop.set_visible(s.loading && self.nav.reload);
+    }
+
+    /// Back for the selected tab: the browser's own list while it has an earlier page, else the saved list (a restored tab's earlier pages).
+    pub fn history_back(self: &Rc<Self>) {
+        let Some(tab) = self.current() else { return };
+        if tab.state.borrow().can_back {
+            tab.view().go_back();
+            return;
+        }
+        let Some(target) = tab.hist_back.borrow_mut().pop() else { return };
+        let here = {
+            let s = tab.state.borrow();
+            crate::navhistory::Entry::new(&s.address, &s.title)
+        };
+        if tab.state.borrow().can_forward {
+            // The browser has pages after this one, which replacing this page would leave pointing past it: move them to the
+            // saved list, and let the browser keep only this page.
+            let (entries, index) = tab.view().nav_entries();
+            let (back, fwd) = crate::navhistory::fold(&tab.hist_back.borrow(), &entries, index, &tab.hist_fwd.borrow());
+            *tab.hist_back.borrow_mut() = back;
+            *tab.hist_fwd.borrow_mut() = fwd;
+            tab.view().forget_other_entries();
+        }
+        tab.hist_fwd.borrow_mut().push(here);
+        tab.skip_navigation_starts();
+        crate::log_debug!("history: back to {} (saved list)", target.url);
+        tab.view().step_to(&target.url, true);
+    }
+
+    /// Forward for the selected tab: the browser's own list, else the saved list.
+    pub fn history_forward(self: &Rc<Self>) {
+        let Some(tab) = self.current() else { return };
+        if tab.state.borrow().can_forward {
+            tab.view().go_forward();
+            return;
+        }
+        let Some(target) = tab.hist_fwd.borrow_mut().pop() else { return };
+        tab.skip_navigation_starts();
+        crate::log_debug!("history: forward to {} (saved list)", target.url);
+        tab.view().step_to(&target.url, false); // after this page: the browser keeps it, so Back returns here
     }
 
     /// Take over a running view (a modal's page moving to this window) as a new selected tab.
@@ -1094,7 +1167,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -1124,6 +1197,7 @@ impl Shell {
         // Find this tab's event cell again through the closure chain: a fresh cell is simplest.
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let _ = cell.set(Rc::downgrade(tab));
+        tab.keep_browser_history();
         let old = tab.view();
         let new = self.make_view(&cell, &url);
         new.set_scope(old.scope()); // a pinned tab keeps its scope
@@ -1135,6 +1209,8 @@ impl Shell {
             let mut s = tab.state.borrow_mut();
             s.ready = false;
             s.fell_back = true;
+            s.can_back = false; // the new browser has one entry (the saved lists stand in for the rest)
+            s.can_forward = false;
         }
         if self.current().is_some_and(|c| Rc::ptr_eq(&c, tab)) {
             tab.view().widget.grab_focus();
@@ -1460,6 +1536,14 @@ impl Shell {
                 tab.view().apply_zoom();
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
+            ViewEvent::NavStart { history_step } => {
+                // A new navigation drops the pages that were ahead; back, forward, reload and the shell's own steps keep them.
+                let skipped = tab.skip_nav_until.get().is_some_and(|t| std::time::Instant::now() < t);
+                crate::log_debug!("history: navigation starts (step {history_step}, shell's own {skipped}, {} ahead)", tab.hist_fwd.borrow().len());
+                if !skipped && !history_step {
+                    tab.hist_fwd.borrow_mut().clear();
+                }
+            }
             ViewEvent::Loading { loading, can_back, can_forward } => {
                 if loading && tab.state.borrow().crashed {
                     // Something is loading again (reload or a new address): show the page.
@@ -1758,12 +1842,20 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         }
     };
     back_action.connect_activate({
-        let f = on_tab(BrowserView::go_back);
-        move |_, _| f()
+        let weak = weak.clone();
+        move |_, _| {
+            if let Some(s) = weak.upgrade() {
+                s.history_back();
+            }
+        }
     });
     forward_action.connect_activate({
-        let f = on_tab(BrowserView::go_forward);
-        move |_, _| f()
+        let weak = weak.clone();
+        move |_, _| {
+            if let Some(s) = weak.upgrade() {
+                s.history_forward();
+            }
+        }
     });
     add_action(&window, "reload", on_tab(BrowserView::reload));
     add_action(&window, "stop", on_tab(BrowserView::stop));

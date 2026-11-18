@@ -96,6 +96,8 @@ pub enum ViewEvent {
     Ready,
     /// A page's own copy button put this text on its clipboard (the shell puts it on the system clipboard, if the person has just used the page).
     ClipboardWrite(String),
+    /// The main frame started a navigation. `history_step` is true for back, forward and reload (the tab's saved forward list stays).
+    NavStart { history_step: bool },
     /// The main frame's address changed.
     Address(String),
     Title(String),
@@ -263,6 +265,8 @@ struct Shared {
     cdp_order: Mutex<()>,
     /// Set while the browser has not been created yet (a restored tab): its address.
     deferred_url: Mutex<Option<String>>,
+    /// The browser's own back/forward list and the index of the current entry (read when a page finishes loading).
+    nav: Mutex<(Vec<crate::navhistory::Entry>, usize)>,
     /// Where the view may navigate (patterns of `workspace::scope_matches`); empty: anywhere.
     scope: Mutex<Vec<String>>,
     /// The workspace this view's tab is in (`None`: an ephemeral window); the router's source.
@@ -306,6 +310,37 @@ thread_local! {
 /// The next view created keeps its cookies and site data in `dir` (`None`: with the profile's).
 pub fn set_next_storage(dir: Option<std::path::PathBuf>) {
     NEXT_STORAGE.with(|s| *s.borrow_mut() = dir);
+}
+
+/// CEF's `cef_transition_type_t` pieces (include/internal/cef_types.h): the source is the low byte, the flags are above it.
+const TT_SOURCE_MASK: u32 = 0xFF;
+const TT_RELOAD: u32 = 8;
+const TT_FORWARD_BACK_FLAG: u32 = 0x0100_0000;
+
+wrap_navigation_entry_visitor! {
+    struct ViewNav { shared: Arc<Shared>, seen: Arc<Mutex<(Vec<crate::navhistory::Entry>, usize)>> }
+
+    impl NavigationEntryVisitor {
+        fn visit(&self, entry: Option<&mut NavigationEntry>, current: ::std::os::raw::c_int, index: ::std::os::raw::c_int, total: ::std::os::raw::c_int) -> ::std::os::raw::c_int {
+            let mut seen = self.seen.lock().unwrap();
+            if let Some(e) = entry.filter(|e| e.is_valid() != 0) {
+                seen.0.push(crate::navhistory::Entry { url: CefString::from(&e.url()).to_string(), title: CefString::from(&e.title()).to_string() });
+                if current != 0 {
+                    seen.1 = seen.0.len() - 1;
+                }
+            }
+            if index + 1 >= total {
+                *self.shared.nav.lock().unwrap() = std::mem::take(&mut *seen);
+            }
+            1
+        }
+    }
+}
+
+/// Read the browser's back/forward list into `Shared::nav` (the visitor runs on CEF's UI thread, once per entry).
+fn read_navigation_entries(shared: &Arc<Shared>, host: &BrowserHost) {
+    let mut visitor = ViewNav::new(shared.clone(), Arc::new(Mutex::new((Vec::new(), 0))));
+    host.navigation_entries(Some(&mut visitor), 0);
 }
 
 wrap_cookie_visitor! {
@@ -403,6 +438,7 @@ impl Shared {
             next_cdp_id: std::sync::atomic::AtomicI32::new(1),
             cdp_order: Mutex::new(()),
             deferred_url: Mutex::new(None),
+            nav: Mutex::new((Vec::new(), 0)),
             scope: Mutex::new(Vec::new()),
             workspace: Mutex::new(None),
             allowed_schemes: Mutex::new(Vec::new()),
@@ -776,9 +812,14 @@ wrap_load_handler! {
     impl LoadHandler {
         // A page starts loading: forget what Chromium kept of earlier permission answers for its origin
         // (see `forget_in_chromium`), so this page's requests reach the permission handler.
-        fn on_load_start(&self, b: Option<&mut Browser>, frame: Option<&mut Frame>, _transition: TransitionType) {
+        fn on_load_start(&self, b: Option<&mut Browser>, frame: Option<&mut Frame>, transition: TransitionType) {
             if let (Some(b), Some(frame)) = (b, frame) {
                 if frame.is_main() != 0 {
+                    // The transition is a source value plus qualifier flags, which is not one of the enum's variants, so read its bits.
+                    // SAFETY: `TransitionType` wraps CEF's 32-bit `cef_transition_type_t`; the bits are only tested, never matched.
+                    let bits: u32 = unsafe { std::mem::transmute::<TransitionType, u32>(transition) };
+                    let step = bits & TT_FORWARD_BACK_FLAG != 0 || bits & TT_SOURCE_MASK == TT_RELOAD;
+                    send(self.shared.id, ViewEvent::NavStart { history_step: step });
                     self.shared.link_nav.store(false, Ordering::Relaxed); // the navigation committed: its redirects are over
                     forget_in_chromium(b, &CefString::from(&frame.url()).to_string());
                 }
@@ -789,11 +830,16 @@ wrap_load_handler! {
 
         fn on_loading_state_change(
             &self,
-            _b: Option<&mut Browser>,
+            b: Option<&mut Browser>,
             is_loading: ::std::os::raw::c_int,
             can_go_back: ::std::os::raw::c_int,
             can_go_forward: ::std::os::raw::c_int,
         ) {
+            if is_loading == 0 {
+                if let Some(host) = b.and_then(|b| b.host()) {
+                    read_navigation_entries(&self.shared, &host); // before the shell hears of it: it saves this list with the tab
+                }
+            }
             send(
                 self.shared.id,
                 ViewEvent::Loading { loading: is_loading != 0, can_back: can_go_back != 0, can_forward: can_go_forward != 0 },
@@ -2203,6 +2249,31 @@ impl BrowserView {
             }
             None => self.wake(), // a restored tab being navigated: bring its browser up on this address
         }
+    }
+
+    /// The browser's own back/forward list as of the last finished load, and the index of the current entry.
+    pub fn nav_entries(&self) -> (Vec<crate::navhistory::Entry>, usize) {
+        self.shared.nav.lock().unwrap().clone()
+    }
+
+    /// Show `url` in place of the current page (`replace`, the browser's list keeps one entry for it) or as a new entry after it.
+    /// For a restored tab's saved back/forward list (`navhistory`), which the browser cannot hold. Before the browser exists the
+    /// page is loaded when it is created.
+    pub fn step_to(&self, url: &str, replace: bool) {
+        let have_page = self.shared.browser.lock().unwrap().as_ref().and_then(|b| b.0.main_frame()).is_some();
+        if !have_page {
+            self.navigate(url);
+            return;
+        }
+        let quoted = serde_json::to_string(url).unwrap_or_default();
+        let code = format!("location.{}({quoted})", if replace { "replace" } else { "assign" });
+        // With a user gesture: Chromium skips entries a page adds without one when going back (its history-manipulation protection).
+        self.cdp_eval_as(&code, true);
+    }
+
+    /// Drop every entry of the browser's list except the current page.
+    pub fn forget_other_entries(&self) {
+        self.cdp("Page.resetNavigationHistory");
     }
 
     pub fn go_back(&self) {

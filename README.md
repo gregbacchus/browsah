@@ -54,7 +54,7 @@ see [docs/config/README.md](docs/config/README.md#layers-and-reloading).
 
 Workspaces: a workspace is a named window of tabs inside a profile, with its own colour, optional
 locked-down controls, pinned tabs with optional titles in the tab bar and site restrictions,
-bookmarks, and its tabs remembered between runs (sleeping behind a blurred screenshot until shown).
+bookmarks, and its tabs remembered between runs (sleeping behind a blurred screenshot until shown, with their back and forward pages).
 Use **Quit profile** (`Ctrl+Q`) to restore all open workspaces when you next start the profile.
 
 ```bash

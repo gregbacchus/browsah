@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,8 @@ pub struct TabRecord {
     pub usage: String,
     /// The tab's group (0: none).
     pub group: u32,
+    /// Its back and forward list (`navhistory::encode`), empty for none.
+    pub history: String,
 }
 
 /// A tab group as remembered.
@@ -239,6 +241,9 @@ impl Store {
                  CREATE TABLE IF NOT EXISTS prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
             )?;
         }
+        if version < 12 {
+            self.conn.execute_batch("ALTER TABLE tabs ADD COLUMN nav_history TEXT NOT NULL DEFAULT '';")?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
     }
 
@@ -352,9 +357,9 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM tabs WHERE workspace = ?1", params![workspace])?;
         {
-            let mut insert = tx.prepare("INSERT INTO tabs (workspace, position, uid, url, title, pinned, selected, usage, grp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+            let mut insert = tx.prepare("INSERT INTO tabs (workspace, position, uid, url, title, pinned, selected, usage, grp, nav_history) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")?;
             for (i, t) in tabs.iter().enumerate() {
-                insert.execute(params![workspace, i as i64, t.uid as i64, t.url, t.title, t.pinned, t.selected, t.usage, t.group as i64])?;
+                insert.execute(params![workspace, i as i64, t.uid as i64, t.url, t.title, t.pinned, t.selected, t.usage, t.group as i64, t.history])?;
             }
         }
         tx.commit()
@@ -362,11 +367,11 @@ impl Store {
 
     /// A workspace's remembered tabs, in order.
     pub fn load_tabs(&self, workspace: &str) -> Vec<TabRecord> {
-        let Ok(mut stmt) = self.conn.prepare("SELECT uid, url, title, pinned, selected, usage, grp FROM tabs WHERE workspace = ?1 ORDER BY position") else {
+        let Ok(mut stmt) = self.conn.prepare("SELECT uid, url, title, pinned, selected, usage, grp, nav_history FROM tabs WHERE workspace = ?1 ORDER BY position") else {
             return Vec::new();
         };
         let rows = stmt.query_map(params![workspace], |r| {
-            Ok(TabRecord { uid: r.get::<_, i64>(0)? as u64, url: r.get(1)?, title: r.get(2)?, pinned: r.get(3)?, selected: r.get(4)?, usage: r.get(5)?, group: r.get::<_, i64>(6)? as u32 })
+            Ok(TabRecord { uid: r.get::<_, i64>(0)? as u64, url: r.get(1)?, title: r.get(2)?, pinned: r.get(3)?, selected: r.get(4)?, usage: r.get(5)?, group: r.get::<_, i64>(6)? as u32, history: r.get(7)? })
         });
         match rows {
             Ok(rows) => rows.flatten().collect(),
@@ -540,7 +545,19 @@ mod tests {
     use super::*;
 
     fn rec(uid: u64, url: &str, selected: bool) -> TabRecord {
-        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1"), group: 0 }
+        TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1"), group: 0, history: String::new() }
+    }
+
+    #[test]
+    fn a_tabs_history_is_saved_and_loaded_with_it() {
+        let s = Store::open_memory();
+        let mut with = rec(1, "https://e.example/3", true);
+        with.history = crate::navhistory::encode(&[crate::navhistory::Entry::new("https://e.example/2", "two")], &crate::navhistory::Entry::new("https://e.example/3", "three"), &[]);
+        assert!(!with.history.is_empty());
+        s.save_tabs("w", &[with.clone(), rec(2, "https://e.example/9", false)]).unwrap();
+        let loaded = s.load_tabs("w");
+        assert_eq!(loaded[0].history, with.history);
+        assert_eq!(loaded[1].history, "");
     }
 
     #[test]
