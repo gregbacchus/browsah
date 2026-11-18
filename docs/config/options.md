@@ -202,7 +202,7 @@ print:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `gpu.workarounds` | bool | `true` | Apply per-GPU environment workarounds before Chromium starts. Currently: `AMD_DEBUG=nodcc` on AMD GPUs, without which Chromium delivers no accelerated frames on native Wayland. Set `false` to run without them (to test, or if your driver no longer needs them). |
+| `gpu.workarounds` | bool | `true` | Apply per-GPU environment workarounds before Chromium starts. Currently: `AMD_DEBUG=nodcc` on AMD GPUs and `INTEL_DEBUG=noccs` on Intel GPUs (set when one is present, added to any value you already have), without which Chromium delivers no accelerated frames on native Wayland and browsah falls back to slower readback rendering after 3 seconds. Set `false` to run without them (to test, or if your driver no longer needs them). |
 
 ```yaml
 gpu:

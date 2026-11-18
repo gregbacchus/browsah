@@ -44,8 +44,9 @@ dash without `app install`.
 
 **Sending links to the app.** `browsah app route <id>` prints the rule that makes links to the app's site (its `scope`,
 or the start page's site) open in the app; `--write` adds it to the profile's `routing.rules` (first, so it beats
-broader rules; running it again replaces it, `--remove` deletes it). Writing rewrites `profile.yaml` and drops
-its comments. The rule is an ordinary [routing](routing.md) rule (`open: app:<id>`) that you can edit or write yourself
+broader rules; running it again replaces it, `--remove` deletes it). The rule is named `Open in <the app's name>`
+(`Open in Mail`); renaming the app and running `--write` again replaces that rule, and a rule of your own for the app
+under another name is left alone. Writing rewrites `profile.yaml` and drops its comments. The rule is an ordinary [routing](routing.md) rule (`open: app:<id>`) that you can edit or write yourself
 for other sites, other sources or `routing.external`. Nothing is routed to an app until you add a rule.
 
 **Installing from a page.** Right-click a tab and choose *Install as web app…*. The page's web manifest is read

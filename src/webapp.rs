@@ -699,20 +699,24 @@ pub fn route_patterns(app: &AppConfig) -> Vec<String> {
     patterns
 }
 
-fn route_rule_name(id: &str) -> String {
-    format!("Open in the {id} app")
+/// The name of the routing rule `app route` writes: "Open in <the app's name>".
+fn route_rule_name(app_name: &str) -> String {
+    format!("Open in {app_name}")
 }
 
-/// `profile.yaml`'s text with the routing rule for app `id` set (replacing the one `app route` wrote before) or, with
-/// `None`, removed. Comments in the file are not kept, as in every rewrite of a configuration file here.
-pub fn with_route_rule(profile_yaml: &str, id: &str, patterns: Option<&[String]>) -> Result<String, String> {
+/// `profile.yaml`'s text with the routing rule for app `id` (named "Open in <app_name>") set, replacing the one `app route` wrote
+/// before, or, with `None`, removed. The earlier rule is found by what it does (`open: app:<id>`) and its "Open in ..." name, so
+/// one written under another name (the app was renamed, or an earlier version named it after the id) is replaced, not
+/// duplicated; a rule of that app that you wrote with a name of your own is left alone. Comments in the file are not kept, as in
+/// every rewrite of a configuration file here.
+pub fn with_route_rule(profile_yaml: &str, id: &str, app_name: &str, patterns: Option<&[String]>) -> Result<String, String> {
     use serde_yaml_ng::{Mapping, Value};
     let mut root: Value = if profile_yaml.trim().is_empty() { Value::Mapping(Mapping::new()) } else { serde_yaml_ng::from_str(profile_yaml).map_err(|e| e.to_string())? };
     if root.is_null() {
         root = Value::Mapping(Mapping::new());
     }
     let map = root.as_mapping_mut().ok_or("profile.yaml is not a mapping")?;
-    let name = route_rule_name(id);
+    let name = route_rule_name(app_name);
     let key = |k: &str| Value::String(k.to_owned());
     let routing = map.entry(key("routing")).or_insert_with(|| Value::Mapping(Mapping::new()));
     if routing.is_null() {
@@ -724,7 +728,8 @@ pub fn with_route_rule(profile_yaml: &str, id: &str, patterns: Option<&[String]>
         *rules = Value::Sequence(Vec::new());
     }
     let rules = rules.as_sequence_mut().ok_or("`routing.rules` in profile.yaml is not a list")?;
-    let ours = |r: &Value| r.get("name").and_then(Value::as_str) == Some(name.as_str());
+    let target = format!("app:{id}");
+    let ours = |r: &Value| r.get("open").and_then(Value::as_str) == Some(target.as_str()) && r.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with("Open in "));
     let at = rules.iter().position(ours);
     match (patterns, at) {
         (Some(p), at) => {
@@ -775,7 +780,7 @@ fn route(profile: &Profile, args: &[String]) -> i32 {
     let current = std::fs::read_to_string(&file).unwrap_or_default();
     let (remove, write) = (args.iter().any(|a| a == "--remove"), args.iter().any(|a| a == "--write"));
     let patterns = route_patterns(app);
-    let updated = match with_route_rule(&current, id, if remove { None } else { Some(&patterns) }) {
+    let updated = match with_route_rule(&current, id, w.display_name(), if remove { None } else { Some(&patterns) }) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}: {e}", file.display());
@@ -785,7 +790,7 @@ fn route(profile: &Profile, args: &[String]) -> i32 {
     if !remove && !write {
         println!("# This rule sends links to {} to the {id} app (only addresses inside its scope are delivered to it).", patterns.join(", "));
         println!("# Add it under routing.rules in {}, or have it written with: browsah app route {id} --write --profile={}", file.display(), profile.id);
-        println!("routing:\n  rules:\n    - name: {}\n      match: {{ url: [{}] }}\n      open: app:{id}", quote(&route_rule_name(id)), patterns.iter().map(|p| quote(p)).collect::<Vec<_>>().join(", "));
+        println!("routing:\n  rules:\n    - name: {}\n      match: {{ url: [{}] }}\n      open: app:{id}", quote(&route_rule_name(w.display_name())), patterns.iter().map(|p| quote(p)).collect::<Vec<_>>().join(", "));
         return 0;
     }
     if let Err(e) = std::fs::write(&file, updated) {
@@ -1011,27 +1016,47 @@ mod tests {
     #[test]
     fn the_route_rule_is_written_replaced_and_removed_in_the_profile_file() {
         let p = ["mail.example.com".to_owned()];
-        let first = with_route_rule("name: Work\nrouting:\n  rules:\n    - match: { url: [x.com] }\n      open: block\n", "mail", Some(&p)).unwrap();
+        let first = with_route_rule("name: Work\nrouting:\n  rules:\n    - match: { url: [x.com] }\n      open: block\n", "mail", "Mail", Some(&p)).unwrap();
         let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&first).unwrap();
         let rules = v["routing"]["rules"].as_sequence().unwrap();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0]["open"].as_str(), Some("app:mail"), "the app's rule goes first");
         assert_eq!(v["name"].as_str(), Some("Work"));
         // Again: replaced, not added twice.
-        let again = with_route_rule(&first, "mail", Some(&["a.example".to_owned()])).unwrap();
+        let again = with_route_rule(&first, "mail", "Mail", Some(&["a.example".to_owned()])).unwrap();
         let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&again).unwrap();
         assert_eq!(v["routing"]["rules"].as_sequence().unwrap().len(), 2);
         assert_eq!(v["routing"]["rules"][0]["match"]["url"][0].as_str(), Some("a.example"));
         // Removed: only that rule.
-        let gone = with_route_rule(&again, "mail", None).unwrap();
+        let gone = with_route_rule(&again, "mail", "Mail", None).unwrap();
         let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&gone).unwrap();
         assert_eq!(v["routing"]["rules"].as_sequence().unwrap().len(), 1);
-        let none = with_route_rule(&with_route_rule("name: W\n", "mail", Some(&p)).unwrap(), "mail", None).unwrap();
+        let none = with_route_rule(&with_route_rule("name: W\n", "mail", "Mail", Some(&p)).unwrap(), "mail", "Mail", None).unwrap();
         assert_eq!(none.trim(), "name: W", "no empty routing section is left behind");
         // From nothing, and the result is a profile file the real types accept.
-        let fresh = with_route_rule("", "mail", Some(&p)).unwrap();
+        let fresh = with_route_rule("", "mail", "Mail", Some(&p)).unwrap();
         assert!(crate::profile::parse_config(&fresh).is_ok(), "{fresh}");
-        assert!(with_route_rule("- a\n", "mail", Some(&p)).is_err());
+        assert!(with_route_rule("- a\n", "mail", "Mail", Some(&p)).is_err());
+        // The rule is named after the app: "Open in <name>".
+        let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fresh).unwrap();
+        assert_eq!(v["routing"]["rules"][0]["name"].as_str(), Some("Open in Mail"));
+        // Renaming the app replaces the rule (not a second one); so does a rule an earlier version named after the id.
+        let renamed = with_route_rule(&fresh, "mail", "Work Mail", Some(&p)).unwrap();
+        let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&renamed).unwrap();
+        assert_eq!((v["routing"]["rules"].as_sequence().unwrap().len(), v["routing"]["rules"][0]["name"].as_str()), (1, Some("Open in Work Mail")));
+        let legacy = "routing:\n  rules:\n    - name: Open in the mail app\n      match: { url: [mail.example.com] }\n      open: app:mail\n";
+        let upgraded = with_route_rule(legacy, "mail", "Mail", Some(&p)).unwrap();
+        let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&upgraded).unwrap();
+        assert_eq!((v["routing"]["rules"].as_sequence().unwrap().len(), v["routing"]["rules"][0]["name"].as_str()), (1, Some("Open in Mail")));
+        // A rule of your own for the app (another name), and rules of other apps, are left alone; removing takes only ours.
+        let mixed = "routing:\n  rules:\n    - name: My mail links\n      match: { url: [m.example] }\n      open: app:mail\n    - name: Open in Docs\n      match: { url: [d.example] }\n      open: app:docs\n";
+        let added = with_route_rule(mixed, "mail", "Mail", Some(&p)).unwrap();
+        let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&added).unwrap();
+        assert_eq!(v["routing"]["rules"].as_sequence().unwrap().len(), 3);
+        let removed = with_route_rule(&added, "mail", "Mail", None).unwrap();
+        let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&removed).unwrap();
+        let names: Vec<&str> = v["routing"]["rules"].as_sequence().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+        assert_eq!(names, ["My mail links", "Open in Docs"]);
     }
 
     #[test]

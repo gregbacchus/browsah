@@ -32,7 +32,7 @@ Wayland is a hard requirement and is met.
 
 | Problem | Workaround | Status |
 |---|---|---|
-| Native Wayland delivers **no accelerated frames** on AMD/Mesa (`Unable to allocate frame for first frame capture: OOM?`) | `AMD_DEBUG=nodcc` in the environment of the CEF processes (set by the app at start-up) | Measured fix on this GPU; cause suspected (DCC-compressed buffer) not confirmed; Intel analogue `INTEL_DEBUG=noccs` reported by others, untested here; NVIDIA reported to work without one |
+| Native Wayland delivers **no accelerated frames** on AMD/Mesa (`Unable to allocate frame for first frame capture: OOM?`) | `AMD_DEBUG=nodcc` in the environment of the CEF processes (set by the app at start-up) | Measured fix on this GPU; cause suspected (DCC-compressed buffer) not confirmed. Intel: `INTEL_DEBUG=noccs` is applied too, since it removed the same failure on an Intel + NVIDIA laptop ([intel-noccs.md](intel-noccs.md); only "no fallback" observed, not performance); NVIDIA reported to work without one |
 | HiDPI blur | Real device scale factor to CEF; Wayland fractional-scale feature off | Verified at native scale 2; 1.5 and 1 only by forcing the scale on the same screen; mixed-DPI monitors untried |
 | Frames never arrive (rare driver cases) | Fall back to `OnPaint` | Built: no accelerated frame within 3 s replaces the view with a readback one ([tabs note](browser-tabs.md#dmabuf-watchdog)); tested only by removing the AMD workaround |
 
@@ -65,7 +65,7 @@ All at 2880x1568, native Wayland, zero-copy, single run each.
    scripted checks, and input to the next frame at GTK is ~7-8 ms (dmabuf). **Not verified:** real
    device input, a real IME (preedit, candidate window), drag selection, drag and drop,
    kinetic scrolling, accessibility ([input](cef-input.md)).
-2. **Other hardware.** Only AMD/Mesa on one GNOME session. Intel, NVIDIA, other compositors
+2. **Other hardware.** AMD/Mesa on one GNOME session, and one Intel + NVIDIA laptop for the Intel fix (see [intel-noccs.md](intel-noccs.md)). NVIDIA rendering, other compositors
    (KDE, Sway), and fractional scales (125 %, 150 %) are untested; the Mesa workaround is
    GPU-specific.
 3. **Real websites.** Everything was measured on tiny local pages: no network, video, WebGL,

@@ -113,4 +113,4 @@ print:
   backgrounds: true         # print background colours and images
 
 gpu:
-  workarounds: true        # per-GPU environment fixes (AMD_DEBUG=nodcc on AMD)
+  workarounds: true        # per-GPU environment fixes (AMD_DEBUG=nodcc on AMD, INTEL_DEBUG=noccs on Intel)

@@ -101,8 +101,8 @@ workaround is verified; the mechanism is inferred from the reports below.
   [#107](https://github.com/moq-dev/studio/pull/107): same error on other Mesa GPUs (Intel UHD
   630, Mesa 26.2.4). On the same project, NVIDIA proprietary on GNOME Wayland painted 9/9 tests.
 - [moq-dev/studio#111](https://github.com/moq-dev/studio/pull/111): Intel equivalent,
-  `INTEL_DEBUG=noccs` (avoids the two-plane CCS modifier); browser tests 3/14 to 14/14. **Not
-  tested here.**
+  `INTEL_DEBUG=noccs` (avoids the two-plane CCS modifier); browser tests 3/14 to 14/14. Since
+  then it removed the same failure on an Intel + NVIDIA laptop and is applied ([intel-noccs.md](intel-noccs.md)).
 - **No CEF/Chromium maintainer statement or upstream bug was found**, and release builds strip
   the allocation-failure detail, so this may be a gap upstream.
 
