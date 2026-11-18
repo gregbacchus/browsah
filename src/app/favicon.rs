@@ -69,7 +69,40 @@ pub fn with_dot(window: &adw::ApplicationWindow, base: &gdk::Texture, color: &st
     Some(renderer.render_texture(&node, Some(&all)))
 }
 
+/// `base` without colour.
+pub fn grayscale(window: &adw::ApplicationWindow, base: &gdk::Texture) -> Option<gdk::Texture> {
+    let size = 32.0;
+    let all = graphene::Rect::new(0.0, 0.0, size, size);
+    let snapshot = gtk::Snapshot::new();
+    // Rec. 709 luma into every channel; alpha is kept.
+    let m = graphene::Matrix::from_float([
+        0.2126, 0.2126, 0.2126, 0.0, //
+        0.7152, 0.7152, 0.7152, 0.0, //
+        0.0722, 0.0722, 0.0722, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ]);
+    snapshot.push_color_matrix(&m, &graphene::Vec4::zero());
+    snapshot.append_texture(base, &all);
+    snapshot.pop();
+    let node = snapshot.to_node()?;
+    let renderer = window.native()?.renderer()?;
+    Some(renderer.render_texture(&node, Some(&all)))
+}
+
 impl Shell {
+    /// Dim a sleeping tab (and show it, below, with a colourless icon) as `sleeping_tabs` says; an awake tab looks as usual.
+    pub(super) fn refresh_sleep_look(&self, tab: &Rc<Tab>) {
+        let opacity = if tab.view().is_dormant() { self.settings.borrow().sleeping_tabs.opacity } else { 1.0 };
+        let (bar, page) = (self.tab_bar.clone(), tab.page.clone());
+        let apply = move || {
+            if let Some(w) = super::pinned_tabs::tab_widget(bar.upcast_ref(), &page) {
+                w.set_opacity(opacity);
+            }
+        };
+        apply();
+        glib::idle_add_local_once(apply); // a tab just added has no widget yet
+    }
+
     /// The page's icon arrived (or, empty, it has none): show it, and remember it for the site.
     pub(super) fn set_favicon(&self, tab: &Rc<Tab>, png: Vec<u8>) {
         if png.is_empty() {
@@ -100,9 +133,12 @@ impl Shell {
     }
 
     /// Put the right icon on the tab's page: its favicon (with its group's dot), a plain dot for a grouped tab with no icon, a generic
-    /// icon for a pinned tab (which shows only its icon), else none.
+    /// icon for a pinned tab, else none.
     pub(super) fn refresh_tab_icon(&self, tab: &Rc<Tab>) {
-        let favicon = tab.favicon.borrow().clone();
+        let mut favicon = tab.favicon.borrow().clone();
+        if tab.view().is_dormant() && self.settings.borrow().sleeping_tabs.grayscale_icon {
+            favicon = favicon.map(|f| grayscale(&self.window, &f).unwrap_or(f));
+        }
         let group = self.group(tab.group.get());
         let icon: Option<gio::Icon> = match (group, favicon) {
             (Some(g), Some(f)) => with_dot(&self.window, &f, &g.color).map(|t| t.upcast()).or_else(|| Some(f.upcast())),
@@ -112,6 +148,7 @@ impl Shell {
             (None, None) => None,
         };
         tab.page.set_icon(icon.as_ref());
+        self.refresh_sleep_look(tab);
     }
 }
 

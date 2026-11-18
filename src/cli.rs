@@ -34,6 +34,7 @@ commands (all take --profile ID where a profile matters; the default profile is 
   route test <url> [--from SOURCE] [--kind KIND] [--target T] [--explain]    which routing rule a link would match
   permissions list | reset [--origin URL] --yes                remembered permission answers
   history [QUERY] [--limit N]  | history clear [--older-than-days N] --yes
+  log [--lines=N] [--grep=TEXT] [--level=L] [--follow]          the profile's log from the system journal (what happened, and why)
   sweep [--workspace ID] [--dry-run]                           apply sweeping rules to a profile that is not running
   select [URL]                                                 choose a profile for a link (the default-browser entry)
   selector install | uninstall | status                        the default-browser entry and its icon

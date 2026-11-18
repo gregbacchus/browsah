@@ -13,9 +13,11 @@ browsah --profile=work --workspace=mail [URL]           # open it (or raise it i
 ```
 
 `--profile` defaults to `default`. A plain start of a profile opens the workspaces that were open
-when it last ran (closing windows one at a time forgets them, except the last), else the profile's
-`default_workspace`, else a window with no workspace. Such an **ephemeral window** (also made with
-`Ctrl+Shift+N`) is not remembered.
+when it last ran, else the profile's `default_workspace`, else a window with no workspace. Use
+**Quit profile** in the main menu or `Ctrl+Q` to quit with all open workspaces remembered. Closing
+individual windows dismisses their workspaces from the restore list, except for the final window.
+On a cold launch with `--workspace=ID`, the remembered workspaces also open and the requested one
+comes forward. An **ephemeral window** (also made with `Ctrl+Shift+N`) is not remembered.
 
 **A window with no workspace** can be opened at any time, whatever else is open, in four ways: `Ctrl+Shift+N`; the main menu (the
 button at the right of the header) → *New window*; `browsah --profile=<id> --new-window [URL]` (a running profile opens it; a
@@ -95,9 +97,10 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `sweep.rules[].score_below` | number | none | The tab's use score (see [sweep.md](sweep.md)) is below this. A rule needs `idle_for`, `score_below` or both; both must hold. |
 | `sweep.rules[].half_life` | duration | `12h` | How fast use is forgotten when working out the score: use this long ago counts for half. |
 | `sweep.rules[].action` | `close` or `discard` | `close` | `close` closes the tab (recorded as closed by the rule; `Ctrl+Shift+T` reopens it). `discard` keeps the tab but frees its page (it shows its last screenshot and reloads when shown). |
-| `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Each is a map with the keys below. They load fresh each time the workspace opens. |
+| `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Icon pins appear before full pins. Each is a map with the keys below. They load fresh each time the workspace opens. |
 | `tabs.pinned[].url` | text | required | The address the tab opens on. |
 | `tabs.pinned[].title` | text | the page's title | Label shown until the page gives its own title. |
+| `tabs.pinned[].size` | `icon` or `full` | `icon` | `icon` shows a compact tab with just the icon. `full` shows the icon and title, sharing the available width with ordinary tabs as the window resizes. Neither shows a close button. Set per entry in `workspace.yaml`. Changes apply the next time the workspace opens. |
 | `tabs.pinned[].scope` | list of text | anywhere | Where the tab may navigate (patterns below). A navigation to an address outside it opens as a new tab (an ephemeral window if `allow_new` is `false`) and the pinned tab stays where it is. |
 
 **Scope patterns** are `host` or `host/path`. The host is exact (`mail.example.com`), or `*.example.com`
@@ -121,6 +124,7 @@ tabs:
   pinned:
     - url: https://mail.example.com/
       title: Mail
+      size: full
       scope: ["mail.example.com", "accounts.example.com/signin/*"]
 ```
 

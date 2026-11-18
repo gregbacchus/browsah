@@ -108,6 +108,13 @@ sweep:                      # tidy up tabs that are not used (docs/config/sweep.
       half_life: 1d         # how fast use is forgotten for the score
       action: discard
 
+sleeping_tabs:
+  opacity: 0.6              # 0.2 to 1: how opaque a sleeping tab is in the tab strip (1 leaves it undimmed)
+  grayscale_icon: true      # show a sleeping tab's icon without colour
+
+logging:                    # the system journal (journalctl -t browsah, or browsah log); applies at the next start
+  level: info               # error | warn | info | debug (debug adds why sweeping kept each tab)
+
 print:
   paper: a4                 # a4 | letter
   backgrounds: true         # print background colours and images

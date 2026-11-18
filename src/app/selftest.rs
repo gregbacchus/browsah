@@ -1139,7 +1139,7 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     std::fs::write(
         ws_dir.join("workspace.yaml"),
         format!(
-            "name: Locked\ncolor: '#2a6f97 #61a5c2'\nnav: {{ address_bar: readonly, forward: false, new_tab_button: false }}\ntabs:\n  allow_new: false\n  pinned:\n    - url: http://localhost:{port}/scope.html\n      title: Scoped\n      scope: [localhost]\n"
+            "name: Locked\ncolor: '#2a6f97 #61a5c2'\nnav: {{ address_bar: readonly, forward: false, new_tab_button: false }}\ntabs:\n  allow_new: false\n  pinned:\n    - url: http://localhost:{port}/scope.html\n      title: Scoped\n      size: full\n      scope: [localhost]\n"
         ),
     )
     .expect("workspace.yaml");
@@ -1151,7 +1151,7 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a workspace with a pinned tab opens on it (and nothing else)", ok, || format!("{:?}", find().map(|s| (s.tab_count(), s.current().map(|t| t.state.borrow().title.clone())))));
     let Some(w) = find() else { return };
     let pinned = w.current().expect("tab");
-    r.check("the tab is pinned and it is the only tab", pinned.page.is_pinned() && w.tab_count() == 1, || format!("pinned={} tabs={}", pinned.page.is_pinned(), w.tab_count()));
+    r.check("the tab is pinned and it is the only tab", pinned.is_pinned() && !pinned.page.is_pinned() && w.tab_count() == 1, || format!("pinned={} tabs={}", pinned.page.is_pinned(), w.tab_count()));
     r.check("the address bar is read-only and forward is hidden", !w.entry.is_editable() && !w.forward.is_visible() && w.back.is_visible(), || {
         format!("editable={} forward={} back={}", w.entry.is_editable(), w.forward.is_visible(), w.back.is_visible())
     });
@@ -1215,6 +1215,69 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     pinned.view().navigate(&format!("http://localhost:{port}/redir"));
     let ok = wait_until(15_000, || pinned.state.borrow().address.contains("127.0.0.1")).await;
     r.check("a redirect out of the scope is followed in the pinned tab", ok && w.tab_count() == 1, || format!("{:?} tabs={}", pinned.state.borrow().address, w.tab_count()));
+
+    // Compare both pin styles and an ordinary tab after the locked workspace checks.
+    let compact_pin = crate::workspace::parse_config(&format!(
+        "tabs: {{ pinned: [ {{ url: 'http://localhost:{port}/b.html', size: icon }} ] }}"
+    )).expect("compact pin config");
+    w.add_pinned(&compact_pin.tabs.pinned);
+    let ordinary = w.open_tab_scoped(&format!("http://localhost:{port}/b.html"), Vec::new());
+    w.tab_view.set_selected_page(&pinned.page);
+    let compact = w.tab_view.nth_page(0);
+    let full_widget = || super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &pinned.page);
+    let compact_widget = || super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &compact);
+    let ok = wait_until(3_000, || {
+        let (Some(full), Some(compact)) = (full_widget(), compact_widget()) else { return false };
+        let title_visible = |tab: &gtk::Widget| {
+            super::pinned_tabs::child_with_class(tab, "tab-title").is_some_and(|title| title.is_mapped() && title.width() > 0)
+        };
+        full.width() >= 2 * compact.width()
+            && compact.width() > 0
+            && title_visible(&full)
+            && !title_visible(&compact)
+            && super::pinned_tabs::child_with_class(&full, "tab-close-button").is_some_and(|button| !button.is_visible())
+    }).await;
+    r.check("a full-size pinned tab is wide, shows its title and has no close button beside a compact pin", ok, || {
+        format!("tab widths: {:?}, {:?}", full_widget().map(|t| t.width()), compact_widget().map(|t| t.width()))
+    });
+    let widths = || {
+        let full = full_widget()?;
+        let regular = super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &ordinary.page)?;
+        Some((full.width(), regular.width()))
+    };
+    let matching = || widths().is_some_and(|(full, regular)| full > 0 && full.abs_diff(regular) <= 1);
+    let ok = wait_until(3_000, matching).await;
+    r.check("a full pin takes the same width as an ordinary tab", ok, || format!("{:?}", widths()));
+
+    w.window.maximize();
+    let _ = wait_until(3_000, || w.window.is_maximized()).await;
+    let _ = wait_until(3_000, matching).await;
+    let before = w.tab_bar.width();
+    w.window.unmaximize();
+    w.window.set_default_size(800, 640);
+    let ok = wait_until(5_000, || w.tab_bar.width() != before && matching()).await;
+    r.check("full pins and ordinary tabs still match after a window resize", ok, || {
+        format!("tab bar was {before}, now {}; tab widths {:?}", w.tab_bar.width(), widths())
+    });
+
+    // Allow the insertion and pinning animations to finish before capturing the tab strip.
+    glib::timeout_future(Duration::from_millis(400)).await;
+    shot(&w.tab_bar, "workspace-pinned-tab-sizes");
+
+    pinned.page.set_indicator_icon(Some(&gio::ThemedIcon::new("audio-volume-high-symbolic")));
+    let ok = wait_until(3_000, || {
+        let Some(tab) = full_widget() else { return false };
+        let bounds = |class| {
+            super::pinned_tabs::child_with_class(&tab, class)
+                .filter(|w| w.is_mapped() && w.width() > 0)
+                .and_then(|w| w.compute_bounds(&tab))
+        };
+        let (Some(title), Some(indicator)) = (bounds("tab-title"), bounds("tab-indicator")) else { return false };
+        title.intersection(&indicator).is_none()
+    }).await;
+    r.check("a pinned tab's status indicator leaves room for the title", ok, || "status indicator overlaps the title or is missing".into());
+    shot(&w.tab_bar, "workspace-pinned-tab-status");
+    pinned.page.set_indicator_icon(None::<&gio::Icon>);
 
     w.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
@@ -1767,10 +1830,30 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the tab being looked at is never swept", sw.tabs().iter().any(|t| t.uid == home.uid), || "home swept".into());
     r.check("a pinned tab is never swept, however idle (a rule matches every tab)", pinned.as_ref().is_some_and(|p| sw.tabs().iter().any(|t| t.uid == p.uid)), || "pinned tab swept".into());
 
+    // The same in the real closing path: the page is asked first (the self-test otherwise closes at once), as when you use it.
+    super::prompts::set_ui_test(false);
+    let plain = sw.open_tab(&format!("http://localhost:{port}/b.html?async=1"), false);
+    let unl = sw.open_tab(&format!("http://localhost:{port}/unload.html"), false);
+    let ok = wait_until(20_000, || [&plain, &unl].iter().all(|t| !t.state.borrow().loading && !t.state.borrow().title.is_empty())).await;
+    r.check("two more tabs load for the asking-first close", ok, || "not loaded".into());
+    sw.tab_view.set_selected_page(&home.page);
+    glib::timeout_future(Duration::from_millis(2500)).await;
+    let before = sw.tab_count();
+    sw.sweep_now();
+    let ok = wait_until(15_000, || sw.sweeps_done() == 2).await;
+    r.check("a second sweep runs", ok, || "no sweep".into());
+    let ok = wait_until(8_000, || !sw.tabs().iter().any(|t| t.uid == plain.uid || t.uid == unl.uid)).await;
+    r.check("tabs the page is asked about first are really closed, not left blank", ok, || {
+        format!("{} tabs (was {before}); left: {:?}", sw.tab_count(), sw.tabs().iter().filter(|t| t.uid == plain.uid || t.uid == unl.uid).map(|t| (t.state.borrow().address.clone(), t.state.borrow().title.clone())).collect::<Vec<_>>())
+    });
+    let closed = store().closed_tabs(Scope::Workspace("sw"), 10);
+    r.check("and recorded with the sweep's reason", closed.iter().any(|c| c.url.contains("unload.html") && c.reason.starts_with("sweep:")) && closed.iter().any(|c| c.url.contains("async=1") && c.reason.starts_with("sweep:")), || format!("{closed:?}"));
+    super::prompts::set_ui_test(true);
+
     // A swept tab comes back with Ctrl+Shift+T.
     let n = sw.tab_count();
     let _ = WidgetExt::activate_action(&sw.window, "win.reopen-tab", None);
-    let ok = wait_until(15_000, || sw.tab_count() == n + 1 && sw.current().is_some_and(|t| t.state.borrow().address.contains("stale=1"))).await;
+    let ok = wait_until(15_000, || sw.tab_count() == n + 1 && sw.current().is_some_and(|t| ["stale=1", "async=1", "unload.html"].iter().any(|p| t.state.borrow().address.contains(p)))).await;
     r.check("reopening brings the swept tab back", ok, || format!("{} tabs (was {n})", sw.tab_count()));
 
     // Use is remembered with the tabs.
@@ -1864,10 +1947,18 @@ async fn run_sleep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the background tab is put to sleep and kept", w.tabs().iter().any(|t| t.uid == other.uid) && other.view().is_dormant(), || format!("dormant={}", other.view().is_dormant()));
     r.check("the tab being looked at stays awake", !home.view().is_dormant(), || "home asleep".into());
     r.check("the sleep is reported as the automatic rule, quietly", w.last_sweep_notes().iter().any(|n| n.contains("discarded") && n.contains("(sleep)")), || format!("{:?}", w.last_sweep_notes()));
+    glib::timeout_future(Duration::from_millis(1500)).await; // a closing browser reports things late
+    r.check("a tab put to sleep keeps its address and title", other.state.borrow().address.contains("b.html?sleep=1") && other.state.borrow().title == "Page B", || format!("{:?}", other.state.borrow()));
+    let opacity = |t: &Rc<super::Tab>| super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &t.page).map(|x| x.opacity());
+    let want = w.settings.borrow().sleeping_tabs.opacity;
+    let ok = wait_until(3_000, || opacity(&other).is_some_and(|o| (o - want).abs() < 0.01)).await;
+    r.check("a sleeping tab is dimmed and an awake one is not", ok && opacity(&home).is_some_and(|o| o > 0.99), || format!("sleeping {:?}, awake {:?}, wanted {want}", opacity(&other), opacity(&home)));
+    shot(&w.tab_bar, "sleeping-tabs");
     // Selecting a sleeping tab wakes it.
     w.tab_view.set_selected_page(&other.page);
     let ok = wait_until(15_000, || !other.view().is_dormant() && other.state.borrow().title == "Page B" && !other.state.borrow().loading).await;
     r.check("selecting a sleeping tab wakes it", ok, || format!("dormant={} title={}", other.view().is_dormant(), other.state.borrow().title));
+    r.check("a woken tab is no longer dimmed", wait_until(3_000, || opacity(&other).is_some_and(|o| o > 0.99)).await, || format!("{:?}", opacity(&other)));
     // Turning it off in the configuration (a reload) ends the sleeping at once.
     let mut cfg = w.settings.borrow().clone();
     cfg.sleep_tabs_after = None;
@@ -3471,18 +3562,20 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
     w.picker.button.popup();
     glib::timeout_future(Duration::from_millis(200)).await;
     r.check("reopening the list keeps the remembered order", order_of(&w.picker) == ["pk2", "pk3", "pk1"] && w.picker.alpha.is_active(), || format!("{:?}", order_of(&w.picker)));
-    // Choosing a workspace opens it.
-    let mut c = w.picker.list.first_child();
-    let mut clicked = false;
-    while let Some(child) = c {
-        if child.widget_name() == "pk3" {
-            if let Ok(b) = child.clone().downcast::<gtk::Button>() {
-                b.emit_clicked();
-                clicked = true;
+    let click_workspace = |ui: &super::picker::Ui, id: &str| {
+        let mut child = ui.list.first_child();
+        while let Some(row) = child {
+            child = row.next_sibling();
+            if row.widget_name() == id {
+                if let Ok(button) = row.downcast::<gtk::Button>() {
+                    button.emit_clicked();
+                    return true;
+                }
             }
         }
-        c = child.next_sibling();
-    }
+        false
+    };
+    let clicked = click_workspace(&w.picker, "pk3");
     let opened = wait_until(15_000, || find("pk3").is_some()).await;
     r.check("choosing a workspace in the list opens its window", clicked && opened, || format!("clicked={clicked}"));
     r.check("a workspace that opens counts as used: it leads the last used order", {
@@ -3494,6 +3587,17 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
         order_of(&w.picker).first().map(String::as_str) == Some("pk3")
     }, || format!("{:?}", order_of(&w.picker)));
     w.picker.button.popdown();
+    if let Some(target) = find("pk3") {
+        let active = wait_until(5_000, || target.window.is_active()).await;
+        target.picker.button.popup();
+        let _ = wait_until(3_000, || order_of(&target.picker).iter().any(|id| id == "pk1")).await;
+        let initial_count = super::windows().len();
+        let clicked = click_workspace(&target.picker, "pk1");
+        let focused = wait_until(5_000, || w.window.is_active()).await;
+        r.check("choosing an open workspace focuses its existing window", active && clicked && focused
+            && super::windows().len() == initial_count && find("pk1").is_some_and(|s| Rc::ptr_eq(&s, &w)),
+            || format!("picker source active={active}, clicked={clicked}, target active={focused}"));
+    }
     // A workspace that sets `workspace_picker: false` has no button in its own window; the others keep theirs.
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pk2".to_variant()));
     let _ = wait_until(15_000, || find("pk2").is_some()).await;

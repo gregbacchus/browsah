@@ -62,6 +62,26 @@ added after them. Details:
   honoured within about a minute and a half;
 - a time that is not a number and a unit is reported on the terminal and sleeping stays off.
 
+## How a sleeping tab looks
+
+A sleeping tab (put to sleep by `sleep_tabs_after` or a `discard` rule, or restored from the last run and not shown yet) is drawn
+dimmed in the tab strip, with its icon in grey, so the tabs that are really running stand out. It returns to normal the moment you
+select it and its page loads.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `sleeping_tabs.opacity` | number, 0.2 to 1 | `0.6` | How opaque a sleeping tab is. `1` leaves it undimmed; values outside the range are clamped. |
+| `sleeping_tabs.grayscale_icon` | bool | `true` | Show a sleeping tab's icon without colour (a group's colour dot stays coloured). |
+
+```yaml
+sleeping_tabs:
+  opacity: 0.6
+  grayscale_icon: true
+```
+
+An ordinary layered option (`config.yaml`, `profile.yaml`, `workspace.yaml`, `app.yaml`, the lowest layer winning); a configuration
+reload applies it to the tabs already open, in every window. It only changes how the tab strip looks, not when tabs sleep.
+
 ## When the workspace is not open
 
 Sweeping does not need the workspace's window. While the profile is running, a workspace whose window is

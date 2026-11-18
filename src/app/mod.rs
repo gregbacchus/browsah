@@ -18,6 +18,7 @@ mod suggest;
 mod latency;
 mod modal;
 mod picker;
+mod pinned_tabs;
 mod prompts;
 mod sweep;
 mod nav;
@@ -66,6 +67,10 @@ pub struct Tab {
     sad: adw::StatusPage,
     pub state: Rc<RefCell<State>>,
     pub page: adw::TabPage,
+    /// A workspace pin drawn as an ordinary libadwaita tab.
+    full_pin: Cell<bool>,
+    /// The address the tab was opened on (what a fallback reload uses before the page has reported its own).
+    first_url: RefCell<String>,
     /// The window (shell) the tab is in. Changes when a tab is dragged to another window.
     owner: RefCell<Weak<Shell>>,
     /// Stable id; names the tab's screenshot and its row in the database.
@@ -128,6 +133,10 @@ thread_local! {
 }
 
 impl Tab {
+    pub fn is_pinned(&self) -> bool {
+        self.full_pin.get() || self.page.is_pinned()
+    }
+
     pub fn owner(&self) -> Option<Rc<Shell>> {
         self.owner.borrow().upgrade()
     }
@@ -155,6 +164,7 @@ struct Persist {
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub tab_view: adw::TabView,
+    tab_bar: adw::TabBar,
     pub entry: gtk::Entry,
     /// The header bar (a web app with no address bar puts its tabs in it while it has more than one).
     pub header: adw::HeaderBar,
@@ -185,6 +195,8 @@ pub struct Shell {
     sweeps_done: Cell<u32>,
     last_sweep: RefCell<Vec<String>>,
     pending_close_reason: RefCell<Option<String>>,
+    /// Why a tab that asked its page before closing (`begin_close`) is closing: the reason is only known when the request is made.
+    close_reasons: RefCell<Vec<(adw::TabPage, String)>>,
     /// Nothing in this window is remembered (a sign-in another application started).
     pub private: Cell<bool>,
     /// Whose session cookies these are: the workspace's id, or a number for an ephemeral window.
@@ -407,7 +419,7 @@ impl Shell {
         cookies.append(Some("Print\u{2026}"), Some("win.print"));
         self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
-        if page.is_pinned() || self.workspace.as_ref().is_some_and(|w| w.is_app()) {
+        if self.page_is_pinned(page) || self.workspace.as_ref().is_some_and(|w| w.is_app()) {
             return; // a workspace's pinned tabs stay where they are, and a web app's tabs are not sent anywhere
         }
         let send = gio::Menu::new();
@@ -438,7 +450,7 @@ impl Shell {
     /// The tab keeps running: its page moves with its browser.
     fn send_menu_tab(&self, id: &str) {
         let Some(page) = self.menu_page.borrow().clone().or_else(|| self.tab_view.selected_page()) else { return };
-        if page.is_pinned() || self.workspace.as_ref().is_some_and(|w| w.id == id) {
+        if self.page_is_pinned(&page) || self.workspace.as_ref().is_some_and(|w| w.id == id) {
             return;
         }
         let target = if id.is_empty() {
@@ -620,8 +632,13 @@ impl Shell {
                 tab.state.borrow_mut().title = title.clone();
                 tab.page.set_title(title);
             }
-            self.tab_view.set_page_pinned(&tab.page, true);
-            tab.page.set_icon(Some(&gio::ThemedIcon::new("web-browser-symbolic")));
+            if p.size == crate::workspace::PinnedTabSize::Full {
+                tab.full_pin.set(true);
+                pinned_tabs::protect_full_pin(&self.tab_bar, &tab.page);
+            } else {
+                self.tab_view.set_page_pinned(&tab.page, true);
+                tab.page.set_icon(Some(&gio::ThemedIcon::new("web-browser-symbolic")));
+            }
             tab.page.set_tooltip(p.title.as_deref().unwrap_or(&p.url));
             if i == 0 {
                 self.tab_view.set_selected_page(&tab.page);
@@ -629,6 +646,44 @@ impl Shell {
         }
         if !pinned.is_empty() {
             self.on_selected();
+        }
+    }
+
+    fn page_is_pinned(&self, page: &adw::TabPage) -> bool {
+        page.is_pinned() || self.tab_for_page(page).is_some_and(|tab| tab.full_pin.get())
+    }
+
+    fn pinned_prefix_len(&self) -> i32 {
+        let full = self.tabs.borrow().iter().filter(|tab| tab.full_pin.get()).count() as i32;
+        self.tab_view.n_pinned_pages() + full
+    }
+
+    fn schedule_pin_order(self: &Rc<Self>, page: &adw::TabPage, position: i32) {
+        let native = self.tab_view.n_pinned_pages();
+        let prefix = self.pinned_prefix_len();
+        if prefix == native || page.is_pinned() || (position >= prefix && !self.page_is_pinned(page)) {
+            return;
+        }
+        // Let the tab box finish handling the change before correcting the order.
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(shell) = weak.upgrade() {
+                shell.keep_full_pins_first();
+            }
+        });
+    }
+
+    /// Restore the configured full pins to the front of the ordinary tab strip
+    /// after an ordinary tab is dragged or moved with the keyboard.
+    fn keep_full_pins_first(&self) {
+        let pins: Vec<_> = self.tabs.borrow().iter().filter(|tab| tab.full_pin.get())
+            .map(|tab| tab.page.clone()).collect();
+        let start = self.tab_view.n_pinned_pages();
+        for (i, page) in pins.iter().enumerate() {
+            let position = start + i as i32;
+            if self.tab_view.page_position(page) != position {
+                self.tab_view.reorder_page(page, position);
+            }
         }
     }
 
@@ -646,12 +701,12 @@ impl Shell {
     }
 
     /// Save a tab's last frame as its screenshot (workspace windows; a sleeping tab keeps its old
-    /// one). The frame is copied at once and the PNG encoded when the main loop is idle.
+    /// one). The frame is copied at once and the PNG made on a background thread.
     fn snapshot(&self, tab: &Rc<Tab>) {
         self.snapshot_with(tab, false);
     }
 
-    /// `now`: encode before returning (the window is closing, so there is no later).
+    /// `now`: encode before returning (the caller needs the file at once); otherwise on a thread.
     fn snapshot_with(&self, tab: &Rc<Tab>, now: bool) {
         let Some(path) = self.screenshot_path(tab.uid) else { return };
         let view = tab.view();
@@ -665,19 +720,28 @@ impl Shell {
             return;
         };
         let uid = tab.uid;
+        // Copy the pixels out now (the frame is a GPU buffer CEF may release); shrinking and encoding are the slow part.
+        let (w, h) = (frame.width(), frame.height());
+        let stride = w as usize * 4;
+        let mut pixels = vec![0u8; stride * h as usize];
+        frame.download(&mut pixels, stride);
+        let started = std::time::Instant::now();
         let encode = move || {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let ok = frame.save_to_png(&path).is_ok();
+            let ok = write_screenshot(pixels, w as usize, h as usize, &path);
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
-                eprintln!("browsah: screenshot of tab {uid}: {}", if ok { "saved" } else { "not saved" });
+                eprintln!("browsah: screenshot of tab {uid}: {} in {:?}", if ok { "saved" } else { "not saved" }, started.elapsed());
             }
         };
         if now {
-            encode();
+            encode(); // the caller needs the file at once (a sleeping tab shows it)
         } else {
-            glib::idle_add_local_once(encode);
+            // On a thread, so the window stays responsive; closing waits for them (`finish_encodes`).
+            let handle = std::thread::spawn(encode);
+            ENCODES.with(|e| {
+                let mut e = e.borrow_mut();
+                e.retain(|h| !h.is_finished());
+                e.push(handle);
+            });
         }
     }
 
@@ -690,7 +754,7 @@ impl Shell {
             if s.address.is_empty() || s.address == "about:blank" {
                 return None;
             }
-            Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: tab.page.is_pinned(), selected, usage: tab.usage.borrow().to_text(), group: tab.group.get() })
+            Some(TabRecord { uid: tab.uid, url: s.address.clone(), title: s.title.clone(), pinned: tab.is_pinned(), selected, usage: tab.usage.borrow().to_text(), group: tab.group.get() })
         };
         let mut out = Vec::new();
         for i in 0..self.tab_view.n_pages() {
@@ -741,7 +805,7 @@ impl Shell {
     /// Take the screenshot of the selected tab and save the tabs, for when the window closes.
     fn save_on_close(&self) {
         if let Some(t) = self.current() {
-            self.snapshot_with(&t, true);
+            self.snapshot_with(&t, false); // written on a thread; the process waits for it before it ends
         }
         self.save_now();
     }
@@ -782,6 +846,7 @@ impl Shell {
         let tab = self.add_tab(view, cell, state, false, rec.uid);
         tab.page.set_title(&tab_title(&tab.state.borrow()));
         self.favicon_for_address(&tab); // the site's remembered icon, before anything has loaded
+        self.refresh_tab_icon(&tab); // a sleeping tab is dimmed even with no icon to redraw
         // Use is remembered across runs: a tab unused for a week while the browser was closed is idle for a week.
         if !rec.usage.is_empty() {
             *tab.usage.borrow_mut() = crate::sweep::Usage::from_text(&rec.usage);
@@ -847,6 +912,7 @@ impl Shell {
         self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
             self.apply_view_settings(&t.view());
+            self.refresh_tab_icon(t);
         }
         for m in self.modals.borrow().iter() {
             self.apply_view_settings(&m.view);
@@ -993,7 +1059,9 @@ impl Shell {
         let state = Rc::new(RefCell::new(State::default()));
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let view = self.make_view(&cell, url);
-        self.add_tab(view, cell, state, select, uid)
+        let tab = self.add_tab(view, cell, state, select, uid);
+        *tab.first_url.borrow_mut() = url.to_owned();
+        tab
     }
 
     /// Put a view in a new tab.
@@ -1017,7 +1085,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -1032,21 +1100,28 @@ impl Shell {
     /// The tab's view delivered no accelerated frame in time: switch to readback (for this tab
     /// and every later one) by replacing the view with a new one on the same address.
     fn fall_back(self: &Rc<Self>, tab: &Rc<Tab>) {
-        eprintln!("browsah: no accelerated frame within {FIRST_FRAME_WATCHDOG:?}; falling back to readback rendering");
+        crate::log_warn!("no accelerated frame within {FIRST_FRAME_WATCHDOG:?}; falling back to readback rendering");
         self.mode.set(Mode::Paint);
         let url = {
             let s = tab.state.borrow();
-            if s.address.is_empty() { "about:blank".to_owned() } else { s.address.clone() }
+            if !s.address.is_empty() {
+                s.address.clone()
+            } else if !tab.first_url.borrow().is_empty() {
+                tab.first_url.borrow().clone() // the page had not reported an address yet: not a blank tab
+            } else {
+                "about:blank".to_owned()
+            }
         };
         // Find this tab's event cell again through the closure chain: a fresh cell is simplest.
         let cell: Rc<OnceCell<Weak<Tab>>> = Rc::new(OnceCell::new());
         let _ = cell.set(Rc::downgrade(tab));
         let old = tab.view();
         let new = self.make_view(&cell, &url);
+        new.set_scope(old.scope()); // a pinned tab keeps its scope
         tab.holder.prepend(&new.widget);
         tab.holder.remove(&old.widget);
         *tab.view.borrow_mut() = new;
-        old.close();
+        old.retire();
         {
             let mut s = tab.state.borrow_mut();
             s.ready = false;
@@ -1085,7 +1160,10 @@ impl Shell {
             *self.last_selected.borrow_mut() = Rc::downgrade(&t);
             if !self.restoring.get() {
                 t.usage.borrow_mut().record(now_secs(), 1.0); // being shown is use
-                t.view().wake(); // a restored tab comes to life when it is first shown
+                if t.view().is_dormant() {
+                    t.view().wake(); // a restored tab comes to life when it is first shown
+                    self.refresh_tab_icon(&t);
+                }
             }
             t.view().widget.grab_focus();
         }
@@ -1151,6 +1229,10 @@ impl Shell {
             return false;
         }
         self.closing.borrow_mut().push(page.clone());
+        if let Some(reason) = self.pending_close_reason.borrow().clone() {
+            self.close_reasons.borrow_mut().push((page.clone(), reason)); // the sweep clears its note before the page answers
+        }
+        crate::log_debug!("tab close asks the page first: {}", tab.state.borrow().address);
         view.ask_close();
         // A page that never answers (hung renderer) must not make its tab unclosable: if no question is showing
         // after a moment, close it for good.
@@ -1175,7 +1257,12 @@ impl Shell {
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
-            let reason = self.pending_close_reason.borrow_mut().take().unwrap_or_else(|| "user".to_owned());
+            let deferred = {
+                let mut reasons = self.close_reasons.borrow_mut();
+                reasons.iter().position(|(p, _)| p == page).map(|i| reasons.remove(i).1)
+            };
+            let reason = self.pending_close_reason.borrow_mut().take().or(deferred).unwrap_or_else(|| "user".to_owned());
+            crate::log_info!("tab closed: {} (workspace {:?}, reason {reason}, {} left)", tab.state.borrow().address, self.workspace_id(), self.tabs.borrow().len());
             self.record_closed(&tab, &reason, None);
             tab.view().close();
         }
@@ -1184,6 +1271,13 @@ impl Shell {
         if self.tabs.borrow().is_empty() {
             self.window.close();
         }
+    }
+
+    fn finish_window_close(self: &Rc<Self>) {
+        self.record_window_closed();
+        self.end_session_cookies();
+        self.save_on_close(); // before the browsers close
+        self.close_all();
     }
 
     /// Ask CEF to close every browser. Call before shutting CEF down.
@@ -1334,7 +1428,13 @@ impl Shell {
                 tab.view().widget.set_visible(false);
             }
             ViewEvent::Address(a) => {
-                tab.state.borrow_mut().address = a;
+                {
+                    let mut s = tab.state.borrow_mut();
+                    if a == "about:blank" && !s.address.is_empty() && s.address != "about:blank" {
+                        crate::log_warn!("tab address became about:blank (was {}, title {:?}, workspace {:?}, asleep {})", s.address, s.title, self.workspace_id(), tab.view().is_dormant());
+                    }
+                    s.address = a;
+                }
                 // Navigating to another host resets the zoom: put back the person's zoom for this site.
                 self.restore_site_zoom(tab);
                 self.favicon_for_address(tab);
@@ -1526,6 +1626,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let shell = Rc::new(Shell {
         window: window.clone(),
         tab_view: tab_view.clone(),
+        tab_bar: tab_bar.clone(),
         entry: entry.clone(),
         header: header.clone(),
         back,
@@ -1549,6 +1650,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         sweeps_done: Cell::new(0),
         last_sweep: RefCell::new(Vec::new()),
         pending_close_reason: RefCell::new(None),
+        close_reasons: RefCell::new(Vec::new()),
         private: Cell::new(false),
         suggest: suggest::Popup::new(&entry),
         downloads: downloads_ui.clone(),
@@ -1938,17 +2040,27 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     });
     tab_view.connect_page_attached({
         let weak = weak.clone();
-        move |_, page, _| {
+        move |_, page, position| {
             if let Some(s) = weak.upgrade() {
                 s.attach_page(page);
+                s.schedule_pin_order(page, position);
+            }
+        }
+    });
+    tab_view.connect_page_reordered({
+        let weak = weak.clone();
+        move |_, page, position| {
+            if let Some(s) = weak.upgrade() {
+                s.schedule_pin_order(page, position);
             }
         }
     });
     tab_view.connect_close_page({
         let weak = weak.clone();
         move |tv, page| {
+            let shell = weak.upgrade();
             // A collapsed group's stand-in: closing it opens the group (nothing is lost).
-            if let Some(s) = weak.upgrade() {
+            if let Some(s) = &shell {
                 if let Some(gid) = s.placeholder_group(page) {
                     tv.close_page_finish(page, false);
                     s.expand_group(gid);
@@ -1956,11 +2068,11 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 }
             }
             // Pinned tabs (a workspace's always-present tabs) are not closable.
-            if page.is_pinned() {
+            if page.is_pinned() || shell.as_ref().is_some_and(|s| s.page_is_pinned(page)) {
                 tv.close_page_finish(page, false);
                 return glib::Propagation::Stop;
             }
-            if let Some(s) = weak.upgrade() {
+            if let Some(s) = shell {
                 if s.begin_close(page) {
                     return glib::Propagation::Stop; // the page may ask first; the tab goes when it agrees
                 }
@@ -2108,10 +2220,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 if !s.close_confirmed.get() && s.confirm_window_close() {
                     return glib::Propagation::Stop; // asking; the window closes again when the person agrees
                 }
-                s.record_window_closed();
-                s.end_session_cookies();
-                s.save_on_close(); // before the browsers close
-                s.close_all();
+                s.finish_window_close();
             }
             glib::Propagation::Proceed
         }
@@ -2303,8 +2412,24 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                     WINDOWS.with(|w| w.borrow_mut().retain(|s| Some(&s.window) != window.upgrade().as_ref()));
                     // Closing one of several windows forgets its workspace; the last window's
                     // stays remembered, so the next plain start brings it back.
-                    if let (Some(id), true) = (id, more) {
-                        remember_workspace(&profile, &id, false);
+                    // A desktop "Quit" (the dock's menu) closes the windows one after another, so those closed in
+                    // the same burst as the last window are remembered too.
+                    if let Some(id) = id.filter(|id| crate::workspace::Workspace::resolve(&profile, id).is_ok()) {
+                        let now = std::time::Instant::now();
+                        RECENTLY_CLOSED.with(|r| {
+                            let mut r = r.borrow_mut();
+                            r.retain(|(_, t)| now.duration_since(*t) < QUIT_BURST);
+                            if more {
+                                r.push((id.clone(), now));
+                            }
+                        });
+                        if more {
+                            remember_workspace(&profile, &id, false);
+                        } else {
+                            for earlier in RECENTLY_CLOSED.with(|r| r.borrow().iter().map(|(i, _)| i.clone()).collect::<Vec<_>>()) {
+                                remember_workspace(&profile, &earlier, true);
+                            }
+                        }
                     }
                     glib::Propagation::Proceed
                 }
@@ -2379,6 +2504,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 if let Some(u) = url.filter(|u| !u.is_empty()) {
                     s.open_tab(u, true);
                 }
+                s.window.unminimize();
                 s.window.present();
                 return Ok(s);
             }
@@ -2470,6 +2596,41 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
     app.add_action(&open_ws_action);
 
+    let quit = gio::SimpleAction::new("quit-profile", None);
+    quit.connect_activate({
+        let app = app.clone();
+        let pending = Rc::new(Cell::new(false));
+        move |_, _| {
+            if pending.replace(true) {
+                return;
+            }
+            let finish = {
+                let (app, pending) = (app.clone(), pending.clone());
+                move |agreed| {
+                    pending.set(false);
+                    if agreed {
+                        // The state already tracks open workspaces. Skip individual
+                        // close requests, which would remove them from that state.
+                        for shell in windows() {
+                            shell.finish_window_close();
+                        }
+                        app.quit();
+                    }
+                }
+            };
+            let active = app.active_window().and_downcast::<adw::ApplicationWindow>();
+            if let Some(window) = active.or_else(|| windows().last().map(|s| s.window.clone())) {
+                let tabs: Vec<_> = windows().iter().flat_map(|shell| shell.tabs()).collect();
+                if jsdialog::confirm_close(&window, &tabs, "Quit this profile?", "Quit profile", finish.clone()) {
+                    return;
+                }
+            }
+            finish(true);
+        }
+    });
+    app.add_action(&quit);
+    app.set_accels_for_action("app.quit-profile", &["<Ctrl>q"]);
+
     let activated = Rc::new(Cell::new(false));
     app.connect_activate({
         let (opts, cfg, profile, new_window, open_workspace, activated) = (opts.clone(), cfg.clone(), profile.clone(), new_window.clone(), open_workspace.clone(), activated);
@@ -2492,13 +2653,12 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             } else {
                 opts.url.as_deref().map(|u| nav::resolve(u, &cfg.borrow().search_url))
             };
-            // Which workspaces to open: the one asked for, else those open at last exit, else the
-            // profile's default; with none of those, an ephemeral window.
-            let ids = activation_workspaces(first, opts.workspace.as_deref(), test_run || (first && opts.new_window), || startup_workspaces(&profile));
+            let named = first.then_some(opts.workspace.as_deref()).flatten();
+            let ids = activation_workspaces(named, first && opts.app, test_run || (first && opts.new_window), || startup_workspaces(&profile, named.is_none()));
             let mut opened = false;
             for (i, id) in ids.iter().enumerate() {
-                // A link given on the command line goes to the first workspace.
-                match open_workspace(app, id, if i == 0 { url.as_deref() } else { None }) {
+                let takes_url = named.map_or(i == 0, |named| id == named);
+                match open_workspace(app, id, if takes_url { url.as_deref() } else { None }) {
                     Ok(_) => opened = true,
                     Err(e) => eprintln!("browsah: {e}"),
                 }
@@ -2577,6 +2737,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     });
 
     app.run_with_args::<&str>(&[]);
+    finish_encodes();
     exit.get()
 }
 
@@ -2706,6 +2867,7 @@ fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let windows = gio::Menu::new();
     windows.append(Some("New window"), Some("app.new-window"));
+    windows.append(Some("Quit profile"), Some("app.quit-profile"));
     if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
         let mut list = crate::workspace::Workspace::list(&profile);
         list.extend(crate::workspace::Workspace::list_apps(&profile));
@@ -2754,20 +2916,15 @@ mod activation_tests {
     use super::activation_workspaces;
 
     #[test]
-    fn the_first_activation_follows_the_command_line() {
-        let startup = || vec!["remembered".to_owned()];
-        assert_eq!(activation_workspaces(true, Some("figma"), false, startup), ["figma"]);
-        assert_eq!(activation_workspaces(true, None, false, startup), ["remembered"]);
-        assert!(activation_workspaces(true, None, true, startup).is_empty(), "--new-window or a test run opens a plain window");
+    fn activation_restores_every_workspace_and_raises_the_one_requested() {
+        let startup = || vec!["mail".to_owned(), "work".to_owned()];
+        assert_eq!(activation_workspaces(None, false, false, startup), ["mail", "work"]);
+        assert_eq!(activation_workspaces(Some("mail"), false, false, startup), ["work", "mail"]);
+        assert_eq!(activation_workspaces(Some("home"), false, false, startup), ["mail", "work", "home"]);
+        assert_eq!(activation_workspaces(Some("figma"), true, false, startup), ["figma"]);
+        assert!(activation_workspaces(None, false, true, startup).is_empty());
     }
 
-    #[test]
-    fn a_later_activation_is_a_plain_launch_of_the_profile() {
-        let startup = || vec!["remembered".to_owned()];
-        // The process was started for a web app (`--app=figma`): launching the profile again does not mean that app.
-        assert_eq!(activation_workspaces(false, Some("figma"), false, startup), ["remembered"]);
-        assert_eq!(activation_workspaces(false, None, true, startup), ["remembered"]);
-    }
 }
 
 #[cfg(test)]
@@ -2857,25 +3014,90 @@ fn remember_app_window(window: &adw::ApplicationWindow, id: &str) {
     });
 }
 
-/// Which workspaces a plain start opens: those open at last exit that still exist, else the
-/// profile's `default_workspace`, else none.
-/// The workspaces an activation of the profile opens. At start (`first`) the one named on the command line, else (unless a plain
-/// window is wanted) `startup`; a later activation is a plain launch of the profile and ignores the command line.
-fn activation_workspaces(first: bool, named: Option<&str>, plain_window: bool, startup: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    match (first, named, plain_window) {
-        (true, Some(id), _) => vec![id.to_owned()],
-        (true, None, true) => Vec::new(),
-        _ => startup(),
+/// Restore remembered windows on a browser launch. A named workspace opens
+/// last so it is raised, and an explicitly launched web app opens on its own.
+fn activation_workspaces(named: Option<&str>, app_only: bool, plain_window: bool, startup: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    if app_only || plain_window {
+        return named.into_iter().map(str::to_owned).collect();
     }
+    let mut ids = startup();
+    if let Some(id) = named {
+        ids.retain(|saved| saved != id);
+        ids.push(id.to_owned());
+    }
+    ids
 }
 
-fn startup_workspaces(profile: &crate::profile::Profile) -> Vec<String> {
+fn startup_workspaces(profile: &crate::profile::Profile, use_default: bool) -> Vec<String> {
     let exists = |id: &String| crate::workspace::Workspace::resolve(profile, id).is_ok();
     let remembered: Vec<String> = profile.load_state().open_workspaces.into_iter().filter(exists).collect();
-    if !remembered.is_empty() {
+    if !remembered.is_empty() || !use_default {
         return remembered;
     }
     profile.config.default_workspace.clone().filter(exists).into_iter().collect()
+}
+
+thread_local! {
+    /// Screenshot encodes started while closing windows.
+    static ENCODES: RefCell<Vec<std::thread::JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The longest side of a saved screenshot, in pixels. The picture only stands in (blurred) for a sleeping tab.
+const SCREENSHOT_MAX_SIDE: usize = 1024;
+
+/// Shrink BGRA pixels by a whole factor (averaging blocks) so the longest side is at most `SCREENSHOT_MAX_SIDE`.
+fn shrink(pixels: &[u8], w: usize, h: usize) -> (Vec<u8>, usize, usize) {
+    let f = w.max(h).div_ceil(SCREENSHOT_MAX_SIDE).max(1);
+    if f == 1 {
+        return (pixels.to_vec(), w, h);
+    }
+    let (nw, nh) = (w / f, h / f);
+    let mut out = vec![0u8; nw * nh * 4];
+    let n = (f * f) as u32;
+    for y in 0..nh {
+        for x in 0..nw {
+            let mut sum = [0u32; 4];
+            for dy in 0..f {
+                let row = ((y * f + dy) * w + x * f) * 4;
+                for dx in 0..f {
+                    for c in 0..4 {
+                        sum[c] += pixels[row + dx * 4 + c] as u32;
+                    }
+                }
+            }
+            for c in 0..4 {
+                out[(y * nw + x) * 4 + c] = (sum[c] / n) as u8;
+            }
+        }
+    }
+    (out, nw, nh)
+}
+
+fn write_screenshot(pixels: Vec<u8>, w: usize, h: usize, path: &std::path::Path) -> bool {
+    let (pixels, w, h) = shrink(&pixels, w, h);
+    if w == 0 || h == 0 {
+        return false;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let texture = gtk::gdk::MemoryTexture::new(w as i32, h as i32, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &glib::Bytes::from_owned(pixels), w * 4);
+    texture.save_to_png(path).is_ok()
+}
+
+/// Wait for the screenshots being written as windows close (call before the process ends).
+pub fn finish_encodes() {
+    for handle in ENCODES.with(|e| std::mem::take(&mut *e.borrow_mut())) {
+        let _ = handle.join();
+    }
+}
+
+/// Windows closed within this long of each other count as one quit.
+const QUIT_BURST: Duration = Duration::from_secs(3);
+
+thread_local! {
+    /// Workspaces whose windows were closed lately (not by quitting), with when.
+    static RECENTLY_CLOSED: RefCell<Vec<(String, std::time::Instant)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Record that a workspace's window is open (or no longer).
@@ -2968,5 +3190,21 @@ fn reload(cfg: &Rc<RefCell<Config>>, app_file: &std::path::Path, profile_file: &
     *cfg.borrow_mut() = process.config;
     if stop {
         *watcher.borrow_mut() = None;
+    }
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    use super::shrink;
+
+    #[test]
+    fn a_large_frame_is_shrunk_by_a_whole_factor_and_averaged() {
+        let (w, h) = (2048, 1024);
+        let pixels = vec![200u8; w * h * 4];
+        let (out, nw, nh) = shrink(&pixels, w, h);
+        assert_eq!((nw, nh), (1024, 512));
+        assert!(out.iter().all(|&b| b == 200));
+        let (same, sw, sh) = shrink(&vec![1u8; 100 * 50 * 4], 100, 50);
+        assert_eq!((sw, sh, same.len()), (100, 50, 100 * 50 * 4));
     }
 }

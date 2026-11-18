@@ -53,8 +53,9 @@ configuration option, and config files are reloaded when they change (`watch_con
 see [docs/config/README.md](docs/config/README.md#layers-and-reloading).
 
 Workspaces: a workspace is a named window of tabs inside a profile, with its own colour, optional
-locked-down controls, pinned tabs limited to certain sites, bookmarks, and its tabs remembered between
-runs (sleeping behind a blurred screenshot until shown).
+locked-down controls, pinned tabs with optional titles in the tab bar and site restrictions,
+bookmarks, and its tabs remembered between runs (sleeping behind a blurred screenshot until shown).
+Use **Quit profile** (`Ctrl+Q`) to restore all open workspaces when you next start the profile.
 
 ```bash
 browsah workspace add mail --profile=work --name "Mail" --color "#2a6f97 #61a5c2"
@@ -83,7 +84,7 @@ See [docs/config/history.md](docs/config/history.md).
 Tab sweeping: rules (in a workspace, or in `profile.yaml` or `config.yaml` for all of them to inherit) can tidy up tabs you no longer use (idle for how long, a decaying use
 score, which sites), closing them (recoverable with `Ctrl+Shift+T`, recorded as swept) or putting them to
 sleep. `sleep_tabs_after: 30m` (at any level, also for web apps) simply puts background tabs to sleep after that idle time, never the one
-you are looking at. Tabs with unsaved form input or playing media are never swept. See
+you are looking at. Sleeping tabs are dimmed with a grey icon (`sleeping_tabs`). Tabs with unsaved form input or playing media are never swept. See
 [docs/config/sweep.md](docs/config/sweep.md).
 
 Permissions and downloads: pages that ask to use the camera, microphone, location, notifications and so on are
@@ -105,6 +106,8 @@ and are remembered with a workspace's tabs. See [docs/config/workspace.md](docs/
 Cookies and storage: `cookies:` rules (any layer) allow or deny cookies per site, and a workspace with
 `storage: isolated` keeps all its cookies and site data apart from the rest of the profile. See
 [docs/config/options.md](docs/config/options.md).
+
+Log: browsah logs to the system journal (`journalctl -t browsah`, or `browsah log`; why a tab was swept, closed or put to sleep is in it; `logging.level` sets how much). See [docs/config/log.md](docs/config/log.md).
 
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key
 press (with the focused widget); `BROWSAH_DEBUG_SCROLL=1` logs each scroll event.

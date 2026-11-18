@@ -77,7 +77,7 @@ impl Shell {
 
     /// Put a tab in a group, next to the group's other tabs.
     pub fn assign_group(self: &Rc<Self>, tab: &Rc<Tab>, id: u32) {
-        if self.group(id).is_none() || tab.page.is_pinned() {
+        if self.group(id).is_none() || tab.is_pinned() {
             return;
         }
         if self.group(id).is_some_and(|g| g.collapsed) {
@@ -86,7 +86,7 @@ impl Shell {
         let old = tab.group.replace(id);
         let order = self.page_groups();
         let from = self.tab_view.page_position(&tab.page) as usize;
-        let to = join_position(&order, id, from, self.tab_view.n_pinned_pages() as usize);
+        let to = join_position(&order, id, from, self.pinned_prefix_len() as usize);
         if to != from {
             self.tab_view.reorder_page(&tab.page, to as i32);
         }
@@ -335,7 +335,7 @@ impl Shell {
             menu.append_section(None, &own);
             let _ = id;
         }
-        if !is_placeholder && !page.is_pinned() {
+        if !is_placeholder && !self.page_is_pinned(page) {
             let add = gio::Menu::new();
             add.append(Some("Add to new group\u{2026}"), Some("win.group-new"));
             let others: Vec<Group> = self.groups().into_iter().filter(|g| Some(g.id) != gid).collect();

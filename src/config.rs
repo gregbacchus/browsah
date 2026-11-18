@@ -50,6 +50,10 @@ pub struct Config {
     /// Put a background tab to sleep (free its page, keep the tab) after this much idle time (`30m`, `2h`): no value is off.
     /// Never the tab being looked at.
     pub sleep_tabs_after: Option<String>,
+    /// How a sleeping tab looks in the tab strip (dimmed, icon without colour).
+    pub sleeping_tabs: SleepingTabsConfig,
+    /// The program's log in the system journal (see `browsah log`).
+    pub logging: LoggingConfig,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
     pub storage: Storage,
     /// The colour scheme pages see (`prefers-color-scheme`): `system` follows the desktop, like the rest of the window.
@@ -161,6 +165,8 @@ impl Default for Config {
             workspace_picker: true,
             sweep: Default::default(),
             sleep_tabs_after: None,
+            sleeping_tabs: Default::default(),
+            logging: Default::default(),
             storage: Storage::Shared,
             theme: Theme::System,
             search_url: DEFAULT_SEARCH_URL.into(),
@@ -234,6 +240,7 @@ impl Config {
             eprintln!("config: search_url has no {{query}} placeholder; using the default");
             self.search_url = DEFAULT_SEARCH_URL.into();
         }
+        self.sleeping_tabs.opacity = if self.sleeping_tabs.opacity.is_finite() { self.sleeping_tabs.opacity.clamp(0.2, 1.0) } else { 0.6 };
         if let Some(text) = self.sleep_tabs_after.as_deref() {
             if let Err(e) = crate::sweep::parse_duration(text) {
                 eprintln!("config: sleep_tabs_after: {e}; tabs are not put to sleep");
@@ -364,6 +371,38 @@ impl Paper {
     }
 }
 
+/// The `sleeping_tabs:` section: how a sleeping tab (no page behind it yet) is drawn in the tab strip.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct SleepingTabsConfig {
+    /// Opacity of a sleeping tab, 0.2 to 1 (1 leaves it as it is).
+    pub opacity: f64,
+    /// Show the icon of a sleeping tab without colour.
+    pub grayscale_icon: bool,
+}
+
+impl Default for SleepingTabsConfig {
+    fn default() -> Self {
+        Self { opacity: 0.6, grayscale_icon: true }
+    }
+}
+
+/// The `logging:` section: what the program writes to the system journal (`journalctl -t browsah`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct LoggingConfig {
+    /// `error`, `warn`, `info` or `debug`.
+    pub level: crate::log::Level,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self { level: crate::log::Level::Info }
+    }
+}
+
 /// The `print:` section: printing and saving a page as a PDF.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -394,10 +433,10 @@ pub const APP_ONLY: &[&str] = &["watch_config", "default_profile"];
 /// Options fixed per process, so a workspace (a window of the process) cannot set them; a profile
 /// (which is a process) can.
 #[cfg_attr(not(test), allow(dead_code))] // documentation of what `WORKSPACE_IGNORED` contains
-pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "logging", "rendering.mode", "rendering.device_resolution"];
 
 /// What a workspace file may not set: the application-only and the process-only options.
-pub(crate) const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "rendering.mode", "rendering.device_resolution"];
+pub(crate) const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "logging", "rendering.mode", "rendering.device_resolution"];
 
 /// One layer merged over the application file.
 pub struct Layer<'a> {
@@ -535,7 +574,7 @@ pub struct Changes {
 }
 
 /// Options that are fixed when the process or a window starts.
-const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "rendering.mode", "rendering.device_resolution", "window.width", "window.height"];
+const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "logging.", "rendering.mode", "rendering.device_resolution", "window.width", "window.height"];
 
 pub fn changes(old: &Config, new: &Config) -> Changes {
     let flat = |c: &Config| -> std::collections::BTreeMap<String, Value> {
@@ -600,6 +639,8 @@ mod tests {
         add("downloads", field_names::<crate::downloads::DownloadsConfig>());
         add("cookies", field_names::<crate::cookies::CookiesConfig>());
         add("print", field_names::<PrintConfig>());
+        add("sleeping_tabs", field_names::<SleepingTabsConfig>());
+        add("logging", field_names::<LoggingConfig>());
         add("sweep", field_names::<crate::sweep::SweepConfig>());
         add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
         add("sweep.rules[].match", field_names::<crate::sweep::MatchConfig>());
@@ -635,7 +676,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

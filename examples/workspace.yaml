@@ -21,6 +21,7 @@ tabs:
   pinned:                   # always present, first, cannot be closed
     - url: https://mail.example.com/
       title: Mail
+      size: full          # icon and title, with no close button (default: icon)
       scope: ["mail.example.com", "accounts.example.com/signin/*"]   # navigation limits
 
 modals:

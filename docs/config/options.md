@@ -198,6 +198,20 @@ print:
   backgrounds: false
 ```
 
+## `logging`
+
+The log, written to the system journal ([log.md](log.md)). Fixed for the running process: applies at the next start, and is ignored in a workspace's or app's
+file.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `logging.level` | `error`, `warn`, `info` or `debug` | `info` | What is written. `debug` adds why sweeping kept each tab. `BROWSAH_LOG=debug` overrides it for one run. |
+
+```yaml
+logging:
+  level: info
+```
+
 ## `gpu`
 
 | Key | Type | Default | Description |

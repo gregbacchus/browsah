@@ -11,6 +11,7 @@ The *Type* column of every option table uses these names.
 | text | any string; quote it when it contains `:`, `#`, `{` or starts with a special character |
 | list of text | `["a", "b"]` or one entry per line with `- `. |
 | `allow` / `deny` / `ask` | one of those words |
+| `icon` or `full` | pinned tab size: icon only or icon and title at regular tab width |
 
 ## Colours
 

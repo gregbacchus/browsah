@@ -38,8 +38,8 @@ pub(super) fn background_sweep(profile: &crate::profile::Profile, app_file: &std
             all.extend(notes.into_iter().map(|n| format!("{}: {n}", ws.id)));
         }
     }
-    if !all.is_empty() && std::env::var_os("BROWSAH_DEBUG").is_some() {
-        eprintln!("browsah: background sweep: {all:?}");
+    if !all.is_empty() {
+        crate::log_info!("background sweep of closed workspaces: {all:?}");
     }
     all
 }
@@ -141,6 +141,7 @@ impl Shell {
     fn finish_sweep(self: &Rc<Self>, probes: Vec<(Rc<Tab>, i32)>) {
         let Some(sweeper) = self.sweeper.borrow().clone() else { return };
         // What the probes found. A tab that did not answer is "unknown": not swept.
+        crate::log_debug!("sweep pass in {:?}: {} tab(s), {} rule(s), {} probed", self.workspace_id(), self.tabs.borrow().len(), sweeper.rules.len(), probes.len());
         let mut unknown = std::collections::HashSet::new();
         for (tab, id) in &probes {
             match tab.view().cdp_result(*id).and_then(|(ok, json)| ok.then_some(json)).and_then(|j| parse_probe(&j)) {
@@ -168,15 +169,46 @@ impl Shell {
                 || tab.playing.get()
                 || tab.state.borrow().loading
                 || unknown.contains(&tab.uid) && !tab.view().is_dormant();
+            let url = tab.state.borrow().address.clone();
             if protected {
+                if crate::log::enabled(crate::log::Level::Debug) {
+                    let why = if selected.as_ref().is_some_and(|s| Rc::ptr_eq(s, &tab)) {
+                        "selected"
+                    } else if tab.dirty.get() {
+                        "unsaved form input"
+                    } else if tab.playing.get() {
+                        "playing media"
+                    } else if tab.state.borrow().loading {
+                        "still loading"
+                    } else {
+                        "probe gave no answer"
+                    };
+                    crate::log_debug!("sweep keeps {url}: {why}");
+                }
                 continue;
             }
             // The last tab of a workspace is never closed (the selected tab is safe anyway; this makes it explicit).
             if self.tabs.borrow().len() <= 1 {
+                crate::log_debug!("sweep keeps {url}: the last tab of the window");
                 continue;
             }
-            let url = tab.state.borrow().address.clone();
-            let Some(rule) = sweeper.decide(&url, &tab.usage.borrow(), now, tab.created.get(), tab.page.is_pinned()) else { continue };
+            let usage = tab.usage.borrow().clone();
+            let Some(rule) = sweeper.decide(&url, &usage, now, tab.created.get(), tab.is_pinned()) else {
+                if crate::log::enabled(crate::log::Level::Debug) {
+                    crate::log_debug!("sweep keeps {url}: no rule fires ({})", sweeper.explain(&url, &usage, now, tab.created.get(), tab.is_pinned()));
+                }
+                continue;
+            };
+            let idle = crate::sweep::short_duration(now - usage.last_used().unwrap_or(tab.created.get()));
+            crate::log_info!(
+                "sweep {:?}: rule {:?} {:?} {url} (title {:?}, idle {idle}, pinned {}, {})",
+                self.workspace_id(),
+                rule.name,
+                rule.action,
+                tab.state.borrow().title,
+                tab.is_pinned(),
+                if tab.view().is_dormant() { "already asleep" } else { "awake" }
+            );
             match rule.action {
                 Action::Close => {
                     *self.pending_close_reason.borrow_mut() = Some(format!("sweep:{}", rule.name));
@@ -207,9 +239,7 @@ impl Shell {
             }
             self.toast(&format!("Swept: {} (Ctrl+Shift+T brings closed tabs back)", parts.join(", ")));
         }
-        if std::env::var_os("BROWSAH_DEBUG").is_some() {
-            eprintln!("browsah: sweep of {:?}: {notes:?}", self.workspace_id());
-        }
+        crate::log_info!("sweep pass in {:?} done: {} closed, {} put to sleep, notes {notes:?}", self.workspace_id(), closed, discarded);
         *self.last_sweep.borrow_mut() = notes;
         self.sweeps_done.set(self.sweeps_done.get() + 1);
         self.schedule_save();
@@ -233,7 +263,16 @@ impl Shell {
     /// closed, and a sleeping view takes its place until it is shown again.
     pub(super) fn discard_tab(self: &Rc<Self>, tab: &Rc<Tab>) {
         use super::view::BrowserView;
-        let url = tab.state.borrow().address.clone();
+        let mut url = tab.state.borrow().address.clone();
+        if url.is_empty() {
+            url = tab.first_url.borrow().clone(); // the page had not reported an address yet
+        }
+        if url.is_empty() || url == "about:blank" {
+            // A sleeping tab comes back from its address: with none it would wake blank, so a blank tab stays as it is.
+            crate::log_info!("tab not put to sleep: it has no address (title {:?}, workspace {:?})", tab.state.borrow().title, self.workspace_id());
+            return;
+        }
+        crate::log_info!("tab put to sleep: {url:?} (title {:?}, workspace {:?})", tab.state.borrow().title, self.workspace_id());
         self.snapshot_with(tab, true);
         let cell: Rc<std::cell::OnceCell<std::rc::Weak<Tab>>> = Rc::new(std::cell::OnceCell::new());
         let _ = cell.set(Rc::downgrade(tab));
@@ -247,7 +286,7 @@ impl Shell {
         tab.holder.prepend(&new.widget);
         tab.holder.remove(&old.widget);
         *tab.view.borrow_mut() = new;
-        old.close();
+        old.retire();
         {
             let mut s = tab.state.borrow_mut();
             s.ready = false;
@@ -257,6 +296,7 @@ impl Shell {
         tab.dirty.set(false);
         tab.playing.set(false);
         self.mark_tab(tab);
+        self.refresh_tab_icon(tab);
     }
 
     /// What the last sweep did (the self-test).

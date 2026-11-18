@@ -25,52 +25,63 @@ fn probe_says_unsaved(json: &str) -> bool {
         .is_some_and(|inner| inner.contains("\"unsaved\":true"))
 }
 
+/// Check all the affected pages before closing a window or quitting a profile.
+pub(super) fn confirm_close(
+    window: &adw::ApplicationWindow,
+    tabs: &[Rc<super::Tab>],
+    heading: &'static str,
+    close_label: &'static str,
+    done: impl FnOnce(bool) + 'static,
+) -> bool {
+    if super::prompts::ui_test() {
+        return false;
+    }
+    let probes: Vec<_> = tabs.iter().filter(|t| t.view().is_live())
+        .map(|t| (t.clone(), t.view().cdp_eval(UNLOAD_PROBE))).collect();
+    if probes.is_empty() {
+        return false;
+    }
+    let window = window.downgrade();
+    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+        let Some(window) = window.upgrade() else { done(false); return };
+        let unsaved: Vec<_> = probes.iter()
+            .filter(|(t, id)| t.view().cdp_result(*id).is_some_and(|(ok, json)| ok && probe_says_unsaved(&json)))
+            .map(|(t, _)| t.state.borrow().title.clone())
+            .collect();
+        if unsaved.is_empty() {
+            done(true);
+            return;
+        }
+        let body = if unsaved.len() == 1 {
+            format!("“{}” may have unsaved changes.", unsaved[0])
+        } else {
+            format!("{} tabs may have unsaved changes:\n{}", unsaved.len(), unsaved.iter().map(|t| format!("• {t}")).collect::<Vec<_>>().join("\n"))
+        };
+        let dialog = adw::AlertDialog::new(Some(heading), Some(&body));
+        dialog.add_response("cancel", "Stay");
+        dialog.add_response("close", close_label);
+        dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        dialog.choose(Some(&window), gio::Cancellable::NONE, move |response| done(response.as_str() == "close"));
+    });
+    true
+}
+
 impl Shell {
     /// The window is being closed: ask the pages whether they have unsaved changes (their `beforeunload` handlers)
     /// and, if any do, ask the person. Returns true when the close is on hold (the window closes again on agreement).
     pub(super) fn confirm_window_close(self: &Rc<Self>) -> bool {
-        if super::prompts::ui_test() {
-            return false;
-        }
-        let probes: Vec<(Rc<super::Tab>, i32)> = self.tabs.borrow().iter().filter(|t| t.view().is_live()).map(|t| (t.clone(), t.view().cdp_eval(UNLOAD_PROBE))).collect();
-        if probes.is_empty() {
-            return false;
-        }
         let window = self.window.downgrade();
-        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-            let Some(s) = window.upgrade().and_then(|w| super::shell_of(&w)) else { return };
-            let unsaved: Vec<String> = probes
-                .iter()
-                .filter(|(t, id)| t.view().cdp_result(*id).is_some_and(|(ok, json)| ok && probe_says_unsaved(&json)))
-                .map(|(t, _)| t.state.borrow().title.clone())
-                .collect();
-            if unsaved.is_empty() {
-                s.close_confirmed.set(true);
-                s.window.close();
-                return;
-            }
-            let body = if unsaved.len() == 1 {
-                format!("\u{201c}{}\u{201d} may have unsaved changes.", unsaved[0])
-            } else {
-                format!("{} tabs may have unsaved changes:\n{}", unsaved.len(), unsaved.iter().map(|t| format!("\u{2022} {t}")).collect::<Vec<_>>().join("\n"))
-            };
-            let dialog = adw::AlertDialog::new(Some("Close this window?"), Some(&body));
-            dialog.add_response("cancel", "Stay");
-            dialog.add_response("close", "Close window");
-            dialog.set_response_appearance("close", adw::ResponseAppearance::Destructive);
-            dialog.set_default_response(Some("cancel"));
-            dialog.set_close_response("cancel");
-            let weak = Rc::downgrade(&s);
-            dialog.choose(Some(&s.window), gio::Cancellable::NONE, move |response| {
-                if response.as_str() == "close" {
-                    if let Some(s) = weak.upgrade() {
-                        s.close_confirmed.set(true);
-                        s.window.close();
-                    }
+        let tabs = self.tabs.borrow().clone();
+        confirm_close(&self.window, &tabs, "Close this window?", "Close window", move |agreed| {
+            if agreed {
+                if let Some(s) = window.upgrade().and_then(|w| super::shell_of(&w)) {
+                    s.close_confirmed.set(true);
+                    s.window.close();
                 }
-            });
-        });
-        true
+            }
+        })
     }
 
     /// A page opened a dialog: show it now, or after the ones before it.

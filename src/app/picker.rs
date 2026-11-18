@@ -132,14 +132,16 @@ impl Ui {
             if is_current {
                 row.append(&gtk::Image::from_icon_name("object-select-symbolic"));
             }
-            let b = gtk::Button::builder().child(&row).has_frame(false).action_name("app.open-workspace").action_target(&e.id.to_variant()).tooltip_text(e.id.as_str()).build();
+            let b = gtk::Button::builder().child(&row).has_frame(false).tooltip_text(e.id.as_str()).build();
             b.set_widget_name(&e.id);
             b.connect_clicked({
                 let popover = self.popover.downgrade();
-                move |_| {
+                move |button| {
+                    // Release the popover's input grab before asking Wayland to raise the window.
                     if let Some(p) = popover.upgrade() {
                         p.popdown();
                     }
+                    let _ = gtk::prelude::WidgetExt::activate_action(button, "app.open-workspace", Some(&e.id.to_variant()));
                 }
             });
             self.list.append(&b);

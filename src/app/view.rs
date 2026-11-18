@@ -1908,6 +1908,10 @@ impl BrowserView {
     }
 
     /// Limit where this view may navigate (see `workspace::scope_matches`); empty means anywhere.
+    pub fn scope(&self) -> Vec<String> {
+        self.shared.scope.lock().unwrap().clone()
+    }
+
     pub fn set_scope(&self, patterns: Vec<String>) {
         *self.shared.scope.lock().unwrap() = patterns;
     }
@@ -2420,6 +2424,14 @@ impl BrowserView {
     /// agrees, or `CloseCancelled` when the person stays).
     pub fn ask_close(&self) {
         self.with_host(|h| h.close_browser(0));
+    }
+
+    /// Close a view that another has replaced (a tab put to sleep, a rendering fall-back). Its events no longer reach the tab:
+    /// a closing browser still reports an address, a title and loading changes, and these would overwrite the tab's own
+    /// (a slept tab's address turning into `about:blank` is what it would wake and be saved as).
+    pub fn retire(&self) {
+        self.set_event_handler(Rc::new(|_| {}));
+        self.close();
     }
 
     /// Ask CEF to close the browser. Call before shutting CEF down.

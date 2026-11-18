@@ -26,6 +26,8 @@ Wayland is a hard requirement and is met.
 | **Text scaling is an extra device scale factor** (`text-scaling-factor` from GNOME's Large Text: CEF gets display scale x text scale and a window-divided-by-text view) | The page follows the desktop's text size, sharp, with scrollbars and input right; GTK itself only scales fonts. Measured with a forced factor, not yet on a Large Text machine. | [text-scale.md](text-scale.md) |
 | **Bridge the clipboard through GTK** (copy/cut from `on_text_selection_changed`, paste via `ime_commit_text`) | Windowless Chromium's own clipboard never reaches the Wayland clipboard | [input](cef-input.md) |
 | **One CEF browser per tab; hide background tabs (`was_hidden`)** | Hidden tabs cost ~0 W and ~0 CPU; only memory (~45 MB each here) | [multi-tab](cef-multi-tab-cost.md) ; built in the app ([tabs](browser-tabs.md)) |
+| **Use an ordinary tab to display full workspace pins** | Share libadwaita's normal tab layout and keep pin behaviour in the workspace | [pinned tab size](pinned-tab-size.md) |
+| **Preserve open workspaces on profile quit** | Keep the restore list when quitting the profile and use it on cold launches that name a workspace | [workspace restart](workspace-restart.md) |
 | **Cap the frame rate of visible, unfocused tabs** (about 15 fps, 5 for tiny panes), raise on input | 10 busy tabs: 28 W at 60 fps vs 22 W (focused 60 + 9 at 15) vs 15 W (+9 at 5); ramp back to 60 fps in 3-110 ms | [frame rate](cef-variable-frame-rate.md) |
 
 ## Workarounds that are required
@@ -83,6 +85,11 @@ Multiple profiles (one process and app id each), workspaces (a window of tabs) a
 app id, defaults from the web manifest), per-profile URL routing, cascading config and tab sweeping
 are designed in [profiles-workspaces-design.md](profiles-workspaces-design.md). Measured there:
 this CEF build plays VP8/VP9/AV1/Opus/MP3 but not H.264 or AAC.
+The original capability probe did not play media. A third-party prebuilt CEF subsequently decoded
+H.264 and AAC in an isolated test, but is older than browsah's bindings and is not yet verified
+as a release dependency ([codec options](codec-options.md)).
+Building a codec-enabled CEF may fit below upstream's 200 GB recommendation, but Linux peak space
+and build time have not been measured here ([build resources](cef-build-resources.md)).
 
 ## Where things are
 

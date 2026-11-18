@@ -15,6 +15,7 @@ mod downloads;
 mod gpu;
 mod groups;
 mod history;
+mod log;
 mod manifest;
 mod permissions;
 mod picker;
@@ -78,6 +79,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("history") {
         std::process::exit(history::cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("log") {
+        std::process::exit(log::cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
@@ -158,6 +162,8 @@ fn main() {
         std::process::exit(1);
     }
 
+    log::init(&profile.id, cfg.logging.level);
+    log_info!("profile {:?}, {}", profile.id, if test_run { "test run" } else { "normal start" });
     // Must happen before CEF starts: its child processes inherit the environment.
     if cfg.gpu.workarounds && std::env::var_os("BROWSAH_NO_GPU_WORKAROUNDS").is_none() {
         for w in gpu::apply_workarounds() {

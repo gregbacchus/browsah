@@ -117,6 +117,15 @@ impl Default for TabsConfig {
     }
 }
 
+/// How a workspace pin appears in the tab bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PinnedTabSize {
+    #[default]
+    Icon,
+    Full,
+}
+
 /// A tab that is always present (`tabs.pinned` in `workspace.yaml`).
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
@@ -125,6 +134,9 @@ pub struct PinnedTab {
     /// Label until the page gives its own title.
     #[serde(default)]
     pub title: Option<String>,
+    /// Whether the tab bar shows only the icon or also the title.
+    #[serde(default)]
+    pub size: PinnedTabSize,
     /// Where the tab may navigate (see `scope_matches`). Empty: anywhere.
     #[serde(default)]
     pub scope: Vec<String>,
@@ -533,12 +545,17 @@ mod tests {
 
     #[test]
     fn nav_and_tabs_parse() {
-        let c = parse_config("nav: { back: false, address_bar: readonly, tab_bar: false }\ntabs:\n  allow_new: false\n  pinned:\n    - url: https://a.example/\n      scope: [a.example]\n    - url: https://b.example/\n").unwrap();
+        let c = parse_config("nav: { back: false, address_bar: readonly, tab_bar: false }\ntabs:\n  allow_new: false\n  pinned:\n    - url: https://a.example/\n      scope: [a.example]\n      size: full\n    - url: https://b.example/\n").unwrap();
         assert!(!c.nav.back && c.nav.forward && c.nav.reload && c.nav.new_tab_button && !c.nav.tab_bar);
         assert_eq!(c.nav.address_bar, AddressBar::Readonly);
         assert!(!c.tabs.allow_new);
         assert_eq!(c.tabs.pinned.len(), 2);
         assert_eq!(c.tabs.pinned[0].scope, ["a.example"]);
+        assert_eq!(c.tabs.pinned[0].size, PinnedTabSize::Full);
+        assert_eq!(c.tabs.pinned[1].size, PinnedTabSize::Icon);
+        let explicit = parse_config("tabs: { pinned: [ { url: 'https://a.example/', size: icon } ] }").unwrap();
+        assert_eq!(explicit.tabs.pinned[0].size, PinnedTabSize::Icon);
+        assert!(parse_config("tabs: { pinned: [ { url: 'https://a.example/', size: large } ] }").is_err());
         assert!(c.tabs.pinned[1].scope.is_empty() && c.tabs.pinned[1].title.is_none());
         assert!(parse_config("nav: { address_bar: sideways }").is_err());
         assert!(parse_config("tabs: { pinned: [ { title: no url } ] }").is_err());

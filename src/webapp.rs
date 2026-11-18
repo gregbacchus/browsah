@@ -4,7 +4,7 @@
 //! window itself is the shell's ordinary window, given the controls and tab rules `window_config` derives.
 
 use crate::profile::{self, ColorPair, Profile};
-use crate::workspace::{first_positional, AddressBar, ModalsConfig, NavConfig, PinnedTab, PopupPolicy, Workspace, WorkspaceConfig};
+use crate::workspace::{first_positional, AddressBar, ModalsConfig, NavConfig, PinnedTab, PinnedTabSize, PopupPolicy, Workspace, WorkspaceConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -108,7 +108,7 @@ pub fn parse_app(text: &str) -> Result<AppConfig, String> {
 pub fn window_config(app: AppConfig) -> WorkspaceConfig {
     let mut c = WorkspaceConfig { name: app.name.clone(), color: app.color.clone(), modals: app.modals.clone(), ..WorkspaceConfig::default() };
     let scope = if app.scope.is_empty() { vec![crate::cookies::host_of(&app.url)] } else { app.scope.clone() };
-    c.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, scope });
+    c.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, size: PinnedTabSize::Icon, scope });
     c.tabs.allow_new = app.multiple_tabs;
     c.tabs.popups = PopupPolicy::Modal;
     c.nav = match app.display {
@@ -469,12 +469,12 @@ pub fn create(profile: &Profile, id: Option<&str>, spec: &NewApp, exe: &Path, li
 // ---- reading a site without a browser ------------------------------------------------------------
 
 /// A fetched address (after redirects) and what it said.
-struct Fetched {
-    url: String,
-    body: Vec<u8>,
+pub(crate) struct Fetched {
+    pub(crate) url: String,
+    pub(crate) body: Vec<u8>,
 }
 
-fn fetch(url: &str, limit: u64) -> Result<Fetched, String> {
+pub(crate) fn fetch(url: &str, limit: u64) -> Result<Fetched, String> {
     use ureq::tls::{RootCerts, TlsConfig};
     use ureq::ResponseExt;
     static PROVIDER: std::sync::Once = std::sync::Once::new();

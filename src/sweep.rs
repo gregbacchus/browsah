@@ -184,17 +184,36 @@ impl Rule {
     /// Does the rule apply to this tab now? All its conditions must hold. A tab with no recorded use
     /// counts as idle since `fallback` (when it was created).
     pub fn fires(&self, url: &str, usage: &Usage, now: i64, fallback: i64) -> bool {
+        self.verdict(url, usage, now, fallback).is_ok()
+    }
+
+    /// Like `fires`, but says which condition stopped the rule (for the log).
+    pub fn verdict(&self, url: &str, usage: &Usage, now: i64, fallback: i64) -> Result<(), String> {
         if !self.urls.is_empty() && !self.urls.iter().any(|p| scope_matches(p, url)) {
-            return false;
+            return Err("address does not match".into());
         }
         let last = usage.last_used().unwrap_or(fallback);
-        if self.idle_for.is_some_and(|d| now - last < d) {
-            return false;
+        if let Some(d) = self.idle_for.filter(|d| now - last < *d) {
+            return Err(format!("idle {} < {}", short_duration(now - last), short_duration(d)));
         }
-        if self.score_below.is_some_and(|s| usage.score(now, self.half_life) >= s) {
-            return false;
+        if let Some(limit) = self.score_below {
+            let score = usage.score(now, self.half_life);
+            if score >= limit {
+                return Err(format!("score {score:.2} >= {limit}"));
+            }
         }
-        true
+        Ok(())
+    }
+}
+
+/// `90` is `1m30s`, `7500` is `2h5m`: a duration for a log line.
+pub fn short_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m{}s", secs / 60, secs % 60),
+        3600..=86399 => format!("{}h{}m", secs / 3600, secs % 3600 / 60),
+        _ => format!("{}d{}h", secs / 86400, secs % 86400 / 3600),
     }
 }
 
@@ -238,6 +257,22 @@ impl Sweeper {
     }
 
     /// The first rule that fires for a tab (a pinned tab only by a rule that may take pinned tabs).
+    /// For the log: how each rule judged the tab ("Stale: idle 5m0s < 1h0m; Everything: fires").
+    pub fn explain(&self, url: &str, usage: &Usage, now: i64, created: i64, pinned: bool) -> String {
+        if self.rules.is_empty() {
+            return "no rules".into();
+        }
+        self.rules
+            .iter()
+            .map(|r| match (pinned && !r.pinned_ok, r.verdict(url, usage, now, created)) {
+                (true, _) => format!("{}: not for pinned tabs", r.name),
+                (false, Ok(())) => format!("{}: fires", r.name),
+                (false, Err(why)) => format!("{}: {why}", r.name),
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     pub fn decide(&self, url: &str, usage: &Usage, now: i64, created: i64, pinned: bool) -> Option<&Rule> {
         self.rules.iter().find(|r| (!pinned || r.pinned_ok) && r.fires(url, usage, now, created))
     }
@@ -290,11 +325,14 @@ pub fn sweep_stored(profile: &Profile, ws: &Workspace, store: &Store, app_file: 
     }
     let history = crate::config::load_window(app_file, &profile.dir.join("profile.yaml"), Some(&ws.dir.join("workspace.yaml"))).map(|l| l.config.history).unwrap_or_default();
     let mut notes = Vec::new();
+    crate::log_info!("sweep of closed workspace {:?}: {} remembered tab(s), {} to close, {} kept{}", ws.id, records.len(), result.swept.len(), result.kept.len(), if apply { "" } else { " (dry run)" });
     for (rec, rule) in &result.swept {
+        crate::log_info!("sweep of closed workspace {:?}: rule {rule:?} {} {:?} (last used {:?}, pinned {})", ws.id, if apply { "closes" } else { "would close" }, rec.url, Usage::from_text(&rec.usage).last_used(), rec.pinned);
         notes.push(format!("{} {} ({rule})", if apply { "closed" } else { "would close" }, rec.url));
     }
     if apply {
         if store.save_tabs(&ws.id, &result.kept).is_err() {
+            crate::log_error!("sweep of closed workspace {:?}: cannot save the remaining tabs; nothing was swept", ws.id);
             return vec!["cannot save the workspace's tabs; nothing was swept".into()];
         }
         for (rec, rule) in &result.swept {
@@ -374,6 +412,14 @@ pub fn cli(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn durations_for_the_log() {
+        assert_eq!(super::short_duration(45), "45s");
+        assert_eq!(super::short_duration(90), "1m30s");
+        assert_eq!(super::short_duration(7500), "2h5m");
+        assert_eq!(super::short_duration(200_000), "2d7h");
+    }
+
     use super::*;
 
     fn rule(yaml: &str) -> Result<Rule, String> {

@@ -9,6 +9,8 @@ Next steps are in [../roadmap.md](../roadmap.md).
 
 | Note | Date | Question | Short answer |
 |---|---|---|---|
+| [cef-build-resources.md](cef-build-resources.md) | 2026-11-18 | How much space and time would a codec-enabled CEF build need? | 200 GB is upstream guidance, not a proven minimum; budget 150–200 GB and several hours pending a measured Linux build. |
+| [codec-options.md](codec-options.md) | 2026-11-18 | How can browsah use H.264 and AAC? | A third-party prebuilt CEF decoded both in an isolated test; it is older than browsah's bindings and is not yet suitable as a verified release dependency. |
 | [cef-osr-wayland-spike.md](cef-osr-wayland-spike.md) | 2026-11-16 | Can a custom GTK4 shell on Wayland display CEF's windowless output fast enough that CEF never owns a window? | Yes, with zero-copy dmabuf at 60 fps. Needs a Mesa DCC workaround on AMD and a HiDPI backing-scale fix. |
 | [cef-multi-tab-cost.md](cef-multi-tab-cost.md) | 2026-11-16 | What do many windowless tabs cost, and how fast can sleeping tabs wake? | Hidden tabs cost ~0 W and ~45 MB each; each extra visible busy tab ~+2.7 W; wake 8-14 ms (hidden/frozen), 70-80 ms (discarded). Found and fixed a 100 % CPU main-thread spin (~10 W at idle): run CEF on its own thread. |
 | [cef-input.md](cef-input.md) | 2026-11-16 | Can a windowless CEF page get full input (mouse, keyboard, IME, clipboard, popups, menus) and how fast? | Yes (46 scripted checks pass). Input to next frame at GTK ~7-8 ms (dmabuf), ~11 ms (readback). Wayland clipboard needs a GTK bridge. Real-device input unverified. |
@@ -20,6 +22,8 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [hidpi-scale.md](hidpi-scale.md) | 2026-11-17 | Why were scrollbars half size on a scale-2 display, and why did CEF ignore the device scale factor? | Chromium's Wayland fractional-scale feature overrides the scale a windowless CEF browser reports; `--disable-features=WaylandFractionalScaleV1` makes it honoured (measured), so pages render at the real scale with correct scrollbars and no zoom workaround. Also: the old workaround left saved zoom levels that made DevTools twice as large (cleared at start). |
 | [profiles-workspaces-design.md](profiles-workspaces-design.md) | 2026-11-17 | How should profiles, workspaces, web apps, routing and cascading config work, and what are the hard limits? | Design agreed, spikes listed. One process per profile (Chromium locks the cache dir); the default browser is just a profile's `.desktop`; the stock CEF build has **no H.264/AAC** (measured); source app of an external link is not reliably known. Spikes: per-window app id, manifest read, popup with opener and cookie filter work; no permission prompts or WebAuthn UI yet. |
 | [web-apps-own-config.md](web-apps-own-config.md) | 2026-11-18 | Should a web app be a workspace with an `app:` section? | No: its own `apps/<id>/app.yaml`, sharing the window code; shared storage by default; link delivery by `multiple_windows`/`multiple_tabs`. |
+| [pinned-tab-size.md](pinned-tab-size.md) | 2026-11-18 | How can a titled workspace pin match the ordinary tabs? | Use the ordinary tab strip and keep workspace pin rules in the app. Verified on libadwaita 1.9.1. |
+| [workspace-restart.md](workspace-restart.md) | 2026-11-18 | Why did some workspaces disappear on restart? | Quit preserves the open list and cold launches restore it, including launches that name a workspace. |
 
 ## Conventions
 
