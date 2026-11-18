@@ -321,7 +321,7 @@ impl Shared {
     fn new(id: u64, device_resolution: bool, accel: bool, frame_rate: i32) -> Arc<Shared> {
         Arc::new(Shared {
             id,
-            view: Mutex::new(View { size: (1280, 800), scale: std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0), backing: device_resolution }),
+            view: Mutex::new(View { size: (1280, 800), scale: std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0), text: crate::frames::text_scale(), backing: device_resolution }),
             browser: Mutex::new(None),
             host: Mutex::new(None),
             frames: AtomicU64::new(0),
@@ -1996,12 +1996,15 @@ impl BrowserView {
                 let (pw, ph) = (w.width(), w.height());
                 // BROWSAH_FORCE_SCALE=2 pretends the display is scale 2 (to test HiDPI on a 1x screen).
                 let scale = std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).or_else(|| w.native().and_then(|n| n.surface()).map(|s| s.scale() as f32)).unwrap_or(1.0);
+                // The desktop's text scaling ("Large Text"): an extra scale factor for the page, followed live.
+                let text = crate::frames::text_scale();
                 let changed = {
                     let mut v = view.shared.view.lock().unwrap();
-                    let changed = pw > 0 && ph > 0 && (v.size != (pw, ph) || v.scale != scale);
+                    let changed = pw > 0 && ph > 0 && (v.size != (pw, ph) || v.scale != scale || v.text != text);
                     if changed {
                         v.size = (pw, ph);
                         v.scale = scale;
+                        v.text = text;
                     }
                     changed
                 };

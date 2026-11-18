@@ -49,7 +49,7 @@ fn with_ui<R>(f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
 }
 
 
-static VIEW: Mutex<View> = Mutex::new(View { size: (1280, 800), scale: 1.0, backing: true });
+static VIEW: Mutex<View> = Mutex::new(View { size: (1280, 800), scale: 1.0, text: 1.0, backing: true });
 
 // Paint statistics, updated from whichever thread CEF paints on and drained by the GTK tick.
 static PAINTS: AtomicU64 = AtomicU64::new(0);
@@ -280,7 +280,7 @@ fn on_tick(widget: &gtk::Picture, clock: &gdk::FrameClock, seconds: u64, app: &g
     });
 
     if resized {
-        if let Some(view) = with_ui(|u| View { size: u.size, scale: u.scale, backing: u.backing }) {
+        if let Some(view) = with_ui(|u| View { size: u.size, scale: u.scale, text: 1.0, backing: u.backing }) {
             *VIEW.lock().unwrap() = view;
         }
         if w > 0 && h > 0 {
@@ -352,7 +352,7 @@ pub fn run(opts: Rc<Options>) {
         };
         let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
         let mut client = PageClient::new(PageRender::new(), PageLife::new());
-        *VIEW.lock().unwrap() = View { size: (1280, 800), scale: 1.0, backing };
+        *VIEW.lock().unwrap() = View { size: (1280, 800), scale: 1.0, text: 1.0, backing };
         browser_host_create_browser(
             Some(&window_info),
             Some(&mut client),

@@ -9,27 +9,56 @@ use gtk::gdk;
 pub struct View {
     pub size: (i32, i32),
     pub scale: f32,
+    /// The desktop's text scaling factor (GNOME's "Large Text" is 1.25), an extra scale on top of `scale`: 1 when unset.
+    /// It is applied like a display scale (see `dsf`), so text, layout and scrollbars all grow and stay sharp.
+    pub text: f32,
     /// Render at device resolution (see `dsf`).
     pub backing: bool,
 }
 
+/// The range of text scaling factors honoured (GNOME offers 0.5 to 3).
+const TEXT_RANGE: (f32, f32) = (0.5, 3.0);
+
+/// A text scaling factor from a setting, or 1 when it is missing or not a sensible number.
+pub fn sane_text_scale(v: f64) -> f32 {
+    if v.is_finite() && v > 0.0 { (v as f32).clamp(TEXT_RANGE.0, TEXT_RANGE.1) } else { 1.0 }
+}
+
+/// The desktop's text scaling factor: `BROWSAH_FORCE_TEXT_SCALE` (to test), else GNOME's `text-scaling-factor` (what the
+/// accessibility "Large Text" switch and the Tweaks slider set), else 1. Cheap to call often (dconf caches the value).
+pub fn text_scale() -> f32 {
+    use gtk::prelude::SettingsExt;
+    thread_local! {
+        static SETTINGS: Option<gtk::gio::Settings> = {
+            let source = gtk::gio::SettingsSchemaSource::default();
+            source.and_then(|s| s.lookup("org.gnome.desktop.interface", true)).filter(|schema| schema.has_key("text-scaling-factor")).map(|_| gtk::gio::Settings::new("org.gnome.desktop.interface"))
+        };
+    }
+    if let Some(v) = std::env::var("BROWSAH_FORCE_TEXT_SCALE").ok().and_then(|s| s.parse::<f64>().ok()) {
+        return sane_text_scale(v);
+    }
+    SETTINGS.with(|s| s.as_ref().map_or(1.0, |s| sane_text_scale(s.double("text-scaling-factor"))))
+}
+
 impl View {
-    /// Factor between logical pixels and the units of input coordinates, popup rectangles and menu positions: 1.
-    /// CEF is given the real device scale factor (`dsf`) and a logical view size, paints at device resolution and
-    /// works in logical (DIP) coordinates, so nothing needs converting.
+    /// Factor between the window's logical pixels and the units CEF uses for input coordinates, popup rectangles and
+    /// menu positions. CEF works in its own logical (DIP) pixels, which are the window's divided by the text scale, so
+    /// this is `1 / text` (1 without text scaling: nothing needs converting).
     pub fn k(&self) -> f32 {
-        1.0
+        1.0 / self.text
     }
 
-    /// The view's size as CEF is told it (logical pixels; the frames are this times `dsf`).
+    /// The view's size as CEF is told it (CEF's logical pixels: the window's divided by the text scale; the frames are
+    /// this times `dsf`, which is the window's size times the display scale).
     pub fn device_size(&self) -> (i32, i32) {
-        (self.size.0.max(1), self.size.1.max(1))
+        (((self.size.0 as f32 / self.text).round() as i32).max(1), ((self.size.1 as f32 / self.text).round() as i32).max(1))
     }
 
-    /// The device scale factor CEF is told: the screen's, when rendering at device resolution (sharp), else 1
-    /// (CEF renders at 1x and the picture is stretched, which looks blurry).
+    /// The device scale factor CEF is told: the screen's times the text scale, when rendering at device resolution
+    /// (sharp), else 1 (CEF renders at 1x and the picture is stretched, which looks blurry).
     pub fn dsf(&self) -> f32 {
-        if self.backing && self.scale > 1.0 { self.scale } else { 1.0 }
+        let total = self.scale * self.text;
+        if self.backing && total > 1.0 { total } else { 1.0 }
     }
 }
 
@@ -98,5 +127,55 @@ pub fn import_frame(display: &gdk::Display, frame: DmabufFrame) -> Option<gdk::T
             fds.iter().for_each(|&f| unsafe { libc::close(f); });
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(scale: f32, text: f32, backing: bool) -> View {
+        View { size: (1000, 600), scale, text, backing }
+    }
+
+    #[test]
+    fn without_text_scaling_nothing_changes() {
+        let v = view(2.0, 1.0, true);
+        assert_eq!((v.k(), v.device_size(), v.dsf()), (1.0, (1000, 600), 2.0));
+        let v = view(1.0, 1.0, true);
+        assert_eq!((v.k(), v.device_size(), v.dsf()), (1.0, (1000, 600), 1.0));
+    }
+
+    #[test]
+    fn text_scaling_is_an_extra_scale_factor() {
+        // Large Text (1.25) on a 1x screen: CEF gets a smaller logical view and a 1.25 scale, so the page is 1.25 times
+        // bigger on screen; the frame is still the window's size in device pixels (800 * 1.25 = 1000).
+        let v = view(1.0, 1.25, true);
+        assert_eq!(v.device_size(), (800, 480));
+        assert_eq!(v.dsf(), 1.25);
+        assert_eq!(v.k(), 0.8, "a window position times k is CEF's position");
+        let (w, h) = v.device_size();
+        assert_eq!(((w as f32 * v.dsf()).round() as i32, (h as f32 * v.dsf()).round() as i32), (1000, 600));
+        // On a 2x screen the scales multiply: frame 2000 device pixels wide.
+        let v = view(2.0, 1.5, true);
+        // (the logical size is rounded to a whole pixel, so the frame can be a pixel or two off the window)
+        assert!(((v.device_size().0 as f32 * v.dsf()).round() as i32 - 2000).abs() <= 2);
+        assert_eq!(v.dsf(), 3.0);
+    }
+
+    #[test]
+    fn the_logical_size_never_reaches_zero() {
+        let v = View { size: (0, 1), scale: 1.0, text: 3.0, backing: true };
+        assert_eq!(v.device_size(), (1, 1));
+    }
+
+    #[test]
+    fn text_scales_are_made_sane() {
+        assert_eq!(sane_text_scale(1.25), 1.25);
+        assert_eq!(sane_text_scale(0.0), 1.0);
+        assert_eq!(sane_text_scale(-2.0), 1.0);
+        assert_eq!(sane_text_scale(f64::NAN), 1.0);
+        assert_eq!(sane_text_scale(10.0), 3.0);
+        assert_eq!(sane_text_scale(0.1), 0.5);
     }
 }

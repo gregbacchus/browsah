@@ -153,6 +153,9 @@ take minutes.
   to fake a scale: scrollbars would stay 1x. Only the person's own zoom is applied (`apply_zoom`, re-applied after navigation, since CEF
   resets zoom when the host changes). Chromium saves per-host zoom in the profile's `Preferences`; start-up clears it
   (`cef_rt::forget_saved_zoom`) because hosts browsah never sets a zoom for (DevTools, error pages) would otherwise keep a stale one.
+  **Text scaling** (GNOME "Large Text", `text-scaling-factor`) is an extra scale factor in `View::text` (`frames::text_scale`, read each
+  tick): CEF gets `scale * text` as its device scale and a view of the window divided by `text`; input goes through `View::k() = 1/text`
+  (docs/research/text-scale.md). `BROWSAH_FORCE_TEXT_SCALE=1.25` pretends it; only the `hidpi` section is text-scale aware.
   Test aids: `BROWSAH_FORCE_SCALE=2` pretends a display scale; `BROWSAH_NO_SCALE_FIX=1` leaves the Wayland feature on (the `hidpi` section
   then fails, which is the point); `scripts/devtools-probe.py` asks the DevTools frontend its own scale (see the note).
 - **Window colour:** `workspace_css` writes the style sheet; the page is inside a `.browsah-frame` box so the colour can frame it

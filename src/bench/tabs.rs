@@ -606,7 +606,7 @@ pub fn run(app: gtk::Application, window: gtk::ApplicationWindow, picture: gtk::
         mode: opts.mode.unwrap_or(Mode::Accel),
         tabs,
         active: 0,
-        view: View { size: (0, 0), scale: 1.0, backing: opts.backing.unwrap_or(true) },
+        view: View { size: (0, 0), scale: 1.0, text: 1.0, backing: opts.backing.unwrap_or(true) },
     });
     G.with(|g| {
         *g.borrow_mut() = Some(G {

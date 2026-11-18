@@ -3088,7 +3088,10 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     let dpr = num("String(window.devicePixelRatio)").await;
     let bar_css = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
     let scale = std::env::var("BROWSAH_FORCE_SCALE").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or_else(|| shell.window.native().and_then(|n| n.surface()).map(|s| s.scale()).unwrap_or(1.0));
-    println!("hidpi: scale {scale}, devicePixelRatio {dpr}, scrollbar {bar_css} CSS px, so {} device px (a logical 15 px bar is {} device px)", bar_css * dpr, 15.0 * scale);
+    // The desktop's text scaling ("Large Text") is an extra scale factor (BROWSAH_FORCE_TEXT_SCALE=1.25 pretends it).
+    let text = crate::frames::text_scale() as f64;
+    let total = scale * text;
+    println!("hidpi: scale {scale}, text scale {text}, devicePixelRatio {dpr}, scrollbar {bar_css} CSS px, so {} device px (a logical 15 px bar is {} device px)", bar_css * dpr, 15.0 * total);
     let sw = num("String(screen.width)").await;
     let sh = num("String(screen.height)").await;
     println!("hidpi: page sees screen {sw}x{sh}, depth {}", num("String(screen.colorDepth)").await);
@@ -3098,10 +3101,18 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     let (pw, ph) = shell.view().widget_size();
     let frame = shell.view().frame_size();
     println!("hidpi: view {pw}x{ph} logical; page innerWidth x innerHeight {iw}x{ih} CSS px; body font {fs} CSS px; frame {frame:?} px (expected about {}x{} px)", (pw as f64 * scale).round(), (ph as f64 * scale).round());
-    r.check("the page's layout width is the window's logical width", (iw - pw as f64).abs() < 20.0, || format!("innerWidth {iw}, view {pw}"));
+    r.check("the page's layout width is the window's logical width (divided by the text scale)", (iw - pw as f64 / text).abs() < 20.0, || format!("innerWidth {iw}, view {pw}, text scale {text}"));
     r.check("frames are rendered at device resolution (not blurry)", frame.is_some_and(|(w, h)| (w as f64 - pw as f64 * scale).abs() < 4.0 && (h as f64 - ph as f64 * scale).abs() < 4.0), || format!("{frame:?} vs {}x{}", pw as f64 * scale, ph as f64 * scale));
-    r.check("the page's devicePixelRatio is the display scale", (dpr - scale).abs() < 0.05, || format!("{dpr} vs {scale}"));
-    r.check("the scrollbar is as thick in device pixels as on a 1x screen scaled up (15 logical px)", (bar_css * dpr - 15.0 * scale).abs() < 1.5, || format!("{} device px, expected {}", bar_css * dpr, 15.0 * scale));
+    r.check("the page's devicePixelRatio is the display scale times the text scale", (dpr - total).abs() < 0.05, || format!("{dpr} vs {total}"));
+    r.check("the scrollbar is as thick in device pixels as on a 1x screen scaled up (15 logical px)", (bar_css * dpr - 15.0 * total).abs() < 1.5, || format!("{} device px, expected {}", bar_css * dpr, 15.0 * total));
+    // A click on a point of the window reaches the page at that point divided by the text scale (CSS px), also with the
+    // display scale, so pointer input lines up with what is drawn.
+    let _ = eval_string(&tab, "window.__m = null; addEventListener('mousedown', e => { window.__m = [e.clientX, e.clientY]; }, true); 'ok'").await;
+    let (cx, cy) = (pw as f64 * 0.5, ph as f64 * 0.4);
+    Driver { shell }.click(cx, cy);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let seen = eval_string(&tab, "JSON.stringify(window.__m)").await.and_then(|j| serde_yaml_ng::from_str::<Vec<f64>>(&j).ok());
+    r.check("a click is delivered to the page at the window point divided by the text scale", seen.as_ref().is_some_and(|m| m.len() == 2 && (m[0] - cx / text).abs() < 2.0 && (m[1] - cy / text).abs() < 2.0), || format!("page saw {seen:?}, expected [{}, {}]", cx / text, cy / text));
     shot(&shell.window, "hidpi-tall-page");
     // The page frame exactly as CEF delivered it (device pixels), to look at the sharpness of text.
     if let (Some(dir), Some(tex)) = (std::env::var_os("BROWSAH_SHOTS"), shell.view().picture_texture()) {
@@ -3130,7 +3141,7 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(1500)).await;
     let dpr2 = num("String(window.devicePixelRatio)").await;
     let bar2 = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
-    r.check("another site gets the same scale and scrollbar", (dpr2 - scale).abs() < 0.05 && (bar2 * dpr2 - 15.0 * scale).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
+    r.check("another site gets the same scale and scrollbar", (dpr2 - total).abs() < 0.05 && (bar2 * dpr2 - 15.0 * total).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
 }
 
 /// A coloured window shows its colour around the page (sides and bottom, with rounded page corners), maximized or not; in
