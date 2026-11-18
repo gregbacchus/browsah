@@ -5,6 +5,7 @@ mod history;
 mod downloads;
 mod extensions;
 mod favicon;
+mod ctxmenu;
 mod find;
 mod groups;
 mod fullscreen;
@@ -1413,7 +1414,7 @@ impl Shell {
                     s.menu = req.items.iter().map(|i| if i.separator { "-".into() } else { i.label.clone() }).collect();
                     s.menus += 1;
                 }
-                tab.view().show_context_menu(req);
+                self.show_page_menu(&tab.view(), req, false);
             }
             ViewEvent::Popup(spec) => {
                 if self.popup_policy == crate::workspace::PopupPolicy::Modal {

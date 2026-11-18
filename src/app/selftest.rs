@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "newtab", "extensions",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "newtab", "extensions",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -450,6 +450,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     if wants("navhistory") {
         run_navhistory(shell, r).await;
     }
+    if wants("ctxmenu") {
+        run_ctxmenu(shell, r).await;
+    }
     if wants("picker") {
         run_picker(shell, r).await;
     }
@@ -546,10 +549,25 @@ fn find_popover(v: &Rc<super::view::BrowserView>) -> Option<gtk::Popover> {
     None
 }
 
+/// The text of the first label in or at `w` (a menu row is an icon, a label and maybe a shortcut).
+fn first_label_text(w: &gtk::Widget) -> Option<String> {
+    if let Some(l) = w.downcast_ref::<gtk::Label>() {
+        return Some(l.text().to_string());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(t) = first_label_text(&c) {
+            return Some(t);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
 /// A button anywhere below `root` whose label text is `label` (case-insensitive).
 fn find_button(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
     if let Ok(b) = root.clone().downcast::<gtk::Button>() {
-        let text = b.child().and_then(|c| c.downcast::<gtk::Label>().ok()).map(|l| l.text().to_string());
+        let text = b.child().and_then(|c| first_label_text(&c));
         if text.is_some_and(|t| t.eq_ignore_ascii_case(label)) {
             return Some(b);
         }
@@ -1122,6 +1140,11 @@ fn start_test_server() -> u16 {
                 "/fav.html" => ("200 OK", String::new(), "<!doctype html><title>Fav</title><link rel=icon href=/icon.png>fav".to_owned()),
                 "/svgfav.html" => ("200 OK", String::new(), "<!doctype html><title>SvgFav</title><link rel=icon href=/icon.svg>svg".to_owned()),
                 "/b.html" => ("200 OK", String::new(), "<!doctype html><title>Page B</title><p>b</p>".to_owned()),
+                "/menus.html" => (
+                    "200 OK",
+                    String::new(),
+                    format!("<!doctype html><title>Menus</title><body style=\"margin:0;font:20px sans-serif\"><a id=l href=\"http://localhost:{port}/b.html?utm_source=x&id=7\" style=\"position:absolute;left:20px;top:20px\">Link text here</a><img id=i src=\"/icon.png\" style=\"position:absolute;left:20px;top:80px;width:64px;height:64px\"><a id=il href=\"http://localhost:{port}/b.html\" style=\"position:absolute;left:120px;top:80px\"><img src=\"/icon.png\" width=64 height=64></a><p id=t style=\"position:absolute;left:20px;top:170px\">Some words to select here</p><input id=f style=\"position:absolute;left:20px;top:240px\" value=\"field text\">"),
+                ),
                 "/cookie-set" => ("200 OK", "Set-Cookie: ck=1; Path=/\r\n".to_owned(), "<!doctype html><title>Cookie set</title>".to_owned()),
                 "/cookie-show" => {
                     let c = req.lines().find(|l| l.to_ascii_lowercase().starts_with("cookie:")).map(|l| l[7..].trim().to_owned()).unwrap_or_default();
@@ -4466,4 +4489,207 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || find().is_none()).await;
     let _ = store().delete_workspace("nh");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The page's context menu: what it offers for a link, an image, an image that is a link, selected text, an editable field and
+/// the page itself, and that the items do what they say. (The menu is drawn by `app/ctxmenu.rs`; the model is `ctxmenu.rs`.)
+async fn run_ctxmenu(shell: &Rc<Shell>, r: &mut Report) {
+    let st = &shell.state();
+    let v = &shell.view();
+    let port = start_test_server();
+    // A 16x16 red PNG for the page's images.
+    let px: Vec<u8> = (0..16 * 16).flat_map(|_| [255u8, 0, 0, 255]).collect();
+    let red = gdk::MemoryTexture::new(16, 16, gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(px), 64);
+    *TEST_ICON_PNG.lock().unwrap() = red.save_to_png_bytes().to_vec();
+    shell.entry.set_text(&format!("http://localhost:{port}/menus.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || {
+        let s = st.borrow();
+        !s.loading && s.title == "Menus"
+    })
+    .await;
+    r.check("the menu test page loads", ok, || st.borrow().title.clone());
+    if !ok {
+        return;
+    }
+    glib::timeout_future(Duration::from_millis(1200)).await;
+    let none = ModifierType::empty();
+    let clipboard = gdk::Display::default().expect("display").clipboard();
+    let read = || async { clipboard.read_text_future().await.ok().flatten().map(|s| s.to_string()).unwrap_or_default() };
+
+    // Right-click at (x, y) and return the popover of the menu.
+    let open_menu = |x: f64, y: f64| {
+        let before = st.borrow().menus;
+        async move {
+            v.click(3, 1, x, y, none, false);
+            v.click(3, 1, x, y, none, true);
+            let ok = wait_until(5_000, || st.borrow().menus > before).await;
+            glib::timeout_future(Duration::from_millis(300)).await;
+            if ok { find_popover(v) } else { None }
+        }
+    };
+    let has = |p: &gtk::Popover, labels: &[&str]| labels.iter().all(|l| find_button(p.upcast_ref(), l).is_some() || find_button_by_tooltip(p.upcast_ref(), l).is_some() || find_button_by_tooltip_prefix(p.upcast_ref(), l).is_some());
+    let missing = |p: &gtk::Popover, labels: &[&str]| labels.iter().filter(|l| find_button(p.upcast_ref(), l).is_none() && find_button_by_tooltip(p.upcast_ref(), l).is_none() && find_button_by_tooltip_prefix(p.upcast_ref(), l).is_none()).map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // A link.
+    let menu = open_menu(40.0, 30.0).await;
+    let link_items = ["Open in new tab", "Open in new window", "Open as popup", "Copy link address", "Copy clean link", "Copy link text", "Save link as\u{2026}", "Inspect"];
+    r.check("a link's menu has the open and copy items", menu.as_ref().is_some_and(|p| has(p, &link_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &link_items))));
+    r.check("a link's menu is not the page menu", menu.as_ref().is_some_and(|p| find_button_by_tooltip_prefix(p.upcast_ref(), "Reload").is_none() && find_button(p.upcast_ref(), "Find in page").is_none()), || "page items on a link".into());
+    if let Some(p) = &menu {
+        shot(p, "ctxmenu-link");
+    }
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy clean link")) {
+        clipboard.set_text("before");
+        b.emit_clicked();
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let got = read().await;
+        r.check("Copy clean link drops the tracking parameter", got == format!("http://localhost:{port}/b.html?id=7"), || format!("{got:?}"));
+    }
+    let menu = open_menu(40.0, 30.0).await;
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy link address")) {
+        b.emit_clicked();
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let got = read().await;
+        r.check("Copy link address copies the address as it is", got == format!("http://localhost:{port}/b.html?utm_source=x&id=7"), || format!("{got:?}"));
+    }
+    let menu = open_menu(40.0, 30.0).await;
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy link text")) {
+        clipboard.set_text("before");
+        b.emit_clicked();
+        let ok = wait_until(5_000, || false).await; // (give the page time to answer)
+        let _ = ok;
+        glib::timeout_future(Duration::from_millis(1500)).await;
+        let got = read().await;
+        r.check("Copy link text copies what the link says", got == "Link text here", || format!("{got:?}"));
+    }
+    let tabs = shell.tabs().len();
+    let selected = shell.current().map(|t| t.uid);
+    let menu = open_menu(40.0, 30.0).await;
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Open in new tab")) {
+        b.emit_clicked();
+    }
+    let ok = wait_until(10_000, || shell.tabs().len() == tabs + 1).await;
+    r.check("Open in new tab opens a tab and stays on this page", ok && shell.current().map(|t| t.uid) == selected, || format!("{} tabs (was {tabs}), selection moved: {}", shell.tabs().len(), shell.current().map(|t| t.uid) != selected));
+
+    // An image, and an image that is a link.
+    let menu = open_menu(50.0, 110.0).await;
+    let image_items = ["Open image in new tab", "Save image as\u{2026}", "Copy image", "Copy image address", "Inspect"];
+    r.check("an image's menu has the image items", menu.as_ref().is_some_and(|p| has(p, &image_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &image_items))));
+    r.check("and no image search while it is not configured", menu.as_ref().is_some_and(|p| find_button(p.upcast_ref(), "Search for this image").is_none()), || "offered".into());
+    if let Some(p) = &menu {
+        shot(p, "ctxmenu-image");
+    }
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy image")) {
+        b.emit_clicked();
+    }
+    let ok = wait_until(8_000, || clipboard.formats().contains_type(gdk::Texture::static_type())).await;
+    r.check("Copy image puts the picture on the clipboard", ok, || format!("{:?}", clipboard.formats().to_str()));
+    let menu = open_menu(50.0, 110.0).await;
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy image address")) {
+        b.emit_clicked();
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let got = read().await;
+        r.check("Copy image address copies the image's address", got == format!("http://localhost:{port}/icon.png"), || format!("{got:?}"));
+    }
+    // With an image search address configured the item appears.
+    let mut cfg = shell.settings.borrow().clone();
+    cfg.context_menu.image_search_url = Some("https://search.example/?u={url}".into());
+    shell.apply_config(&cfg);
+    let menu = open_menu(50.0, 110.0).await;
+    r.check("image search appears once an address is configured", menu.as_ref().is_some_and(|p| find_button(p.upcast_ref(), "Search for this image").is_some()), || "missing".into());
+    if let Some(p) = &menu {
+        p.popdown();
+    }
+    cfg.context_menu.image_search_url = None;
+    cfg.context_menu.hide = vec!["inspect".into()];
+    cfg.context_menu.developer = true;
+    shell.apply_config(&cfg);
+    let menu = open_menu(140.0, 110.0).await;
+    let both = ["Open in new tab", "Copy link address", "Open image in new tab", "Copy image"];
+    r.check("an image that is a link has both menus, and a hidden item is left out", menu.as_ref().is_some_and(|p| has(p, &both) && find_button(p.upcast_ref(), "Inspect").is_none()), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &both))));
+    if let Some(p) = &menu {
+        p.popdown();
+    }
+    cfg.context_menu.hide.clear();
+    shell.apply_config(&cfg);
+
+    // Selected text.
+    // Click into the page and select everything.
+    let d = Driver { shell };
+    d.click(400.0, 400.0);
+    d.key(Key::a, ModifierType::CONTROL_MASK);
+    let _ = wait_until(5_000, || v.selection().contains("Some words")).await;
+    let menu = open_menu(60.0, 200.0).await;
+    let sel_items = ["Copy", "Copy link to selected text", "Select all"];
+    let search = menu.as_ref().and_then(|p| find_button_starting(p.upcast_ref(), "Search for \u{201c}Link text here"));
+    r.check("selected text has copy, search and a link to it", menu.as_ref().is_some_and(|p| has(p, &sel_items)) && search.is_some(), || format!("missing {:?}; search {}", menu.as_ref().map(|p| missing(p, &sel_items)), search.is_some()));
+    if let Some(p) = &menu {
+        shot(p, "ctxmenu-selection");
+    }
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "Copy link to selected text")) {
+        b.emit_clicked();
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let got = read().await;
+        r.check("the link to selected text is a text fragment", got.contains("#:~:text=Link%20text%20here") && got.starts_with(&format!("http://localhost:{port}/menus.html")), || format!("{got:?}"));
+    }
+
+    // An editable field.
+    let menu = open_menu(60.0, 252.0).await;
+    let edit_items = ["Cut", "Copy", "Paste", "Select all", "Undo"];
+    r.check("an editable field has the edit items", menu.as_ref().is_some_and(|p| has(p, &edit_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &edit_items))));
+    if let Some(p) = &menu {
+        shot(p, "ctxmenu-edit");
+        p.popdown();
+    }
+
+    // The page itself.
+    let id = v.cdp_eval("(() => { getSelection().removeAllRanges(); document.activeElement.blur(); return 'ok'; })()");
+    let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
+    let menu = open_menu(400.0, 400.0).await;
+    let page_items = ["Back", "Forward", "Reload", "Reload ignoring the cache", "Find in page", "Save as PDF\u{2026}", "Print\u{2026}", "Copy page address", "View page source", "Inspect"];
+    r.check("the page's menu has navigation, page actions and developer items", menu.as_ref().is_some_and(|p| has(p, &page_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &page_items))));
+    if let Some(p) = &menu {
+        shot(p, "ctxmenu-page");
+    }
+    let tabs = shell.tabs().len();
+    if let Some(b) = menu.as_ref().and_then(|p| find_button(p.upcast_ref(), "View page source")) {
+        b.emit_clicked();
+    }
+    let ok = wait_until(10_000, || shell.tabs().len() == tabs + 1 && shell.current().is_some_and(|t| t.state.borrow().title.starts_with("view-source:"))).await;
+    r.check("View page source opens the source in a tab", ok, || format!("{} tabs; {:?}", shell.tabs().len(), shell.tabs().iter().map(|t| (t.state.borrow().address.clone(), t.state.borrow().title.clone(), t.state.borrow().loading)).collect::<Vec<_>>()));
+}
+
+/// A button whose label starts with `prefix`.
+fn find_button_starting(root: &gtk::Widget, prefix: &str) -> Option<gtk::Button> {
+    if let Ok(b) = root.clone().downcast::<gtk::Button>() {
+        if b.child().and_then(|c| first_label_text(&c)).is_some_and(|t| t.starts_with(prefix)) {
+            return Some(b);
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(w) = child {
+        if let Some(b) = find_button_starting(&w, prefix) {
+            return Some(b);
+        }
+        child = w.next_sibling();
+    }
+    None
+}
+
+/// A button whose tooltip starts with `prefix` (the navigation row's tooltips carry the shortcut).
+fn find_button_by_tooltip_prefix(root: &gtk::Widget, prefix: &str) -> Option<gtk::Button> {
+    if let Ok(b) = root.clone().downcast::<gtk::Button>() {
+        if b.tooltip_text().is_some_and(|t| t == prefix || t.starts_with(&format!("{prefix} ("))) {
+            return Some(b);
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(w) = child {
+        if let Some(b) = find_button_by_tooltip_prefix(&w, prefix) {
+            return Some(b);
+        }
+        child = w.next_sibling();
+    }
+    None
 }

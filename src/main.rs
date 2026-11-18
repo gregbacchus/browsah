@@ -7,6 +7,7 @@ mod bench;
 mod cef_rt;
 mod cli;
 mod config;
+mod ctxmenu;
 mod cookies;
 mod crx;
 mod frames;

@@ -222,7 +222,10 @@ impl Modal {
                     self.view.apply_zoom();
                 }
             }
-            ViewEvent::ContextMenu(req) => self.view.show_context_menu(req),
+            ViewEvent::ContextMenu(req) => match self.owner.upgrade() {
+                Some(o) => o.show_page_menu(&self.view, req, true),
+                None => self.view.show_context_menu(req),
+            },
             // Questions and downloads from a modal's page are the window's business.
             ViewEvent::Permission(req) => {
                 if let Some(o) = self.owner.upgrade() {

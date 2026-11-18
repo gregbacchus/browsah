@@ -35,6 +35,10 @@ pub struct MenuRequest {
     pub x: f64,
     pub y: f64,
     pub items: Vec<MenuItem>,
+    /// What the click was on, as far as CEF says (the shell adds what it knows: bookmarks, workspaces).
+    pub ctx: crate::ctxmenu::Context,
+    /// Where it was, in the page's own coordinates (for "Inspect" and the element under the pointer).
+    pub point: (i32, i32),
     callback: Mutex<Option<MenuCallback>>,
 }
 
@@ -46,7 +50,7 @@ impl std::fmt::Debug for MenuRequest {
 
 impl MenuRequest {
     /// Answer with a command for CEF to run. Posted to CEF's UI thread.
-    fn run(&self, id: i32) {
+    pub(super) fn run(&self, id: i32) {
         if let Some(cb) = self.callback.lock().unwrap().take() {
             on_ui(move || {
                 let cb = cb; // whole wrapper, not its field, so the closure stays Send
@@ -56,7 +60,7 @@ impl MenuRequest {
     }
 
     /// Dismiss the menu without choosing anything (a no-op if already answered).
-    fn cancel(&self) {
+    pub(super) fn cancel(&self) {
         if let Some(cb) = self.callback.lock().unwrap().take() {
             on_ui(move || {
                 let cb = cb;
@@ -942,6 +946,8 @@ wrap_context_menu_handler! {
         ) -> ::std::os::raw::c_int {
             let (Some(params), Some(model), Some(callback)) = (params, model, callback) else { return 0 };
             let mut items: Vec<MenuItem> = Vec::new();
+            let mut spelling: Vec<(i32, String)> = Vec::new();
+            let mut add_word = None;
             for i in 0..model.count() {
                 let id = model.command_id_at(i);
                 if model.type_at(i) == MenuItemType::SEPARATOR {
@@ -952,20 +958,69 @@ wrap_context_menu_handler! {
                 } else if model.is_visible_at(i) != 0 && supported(id) {
                     let label = CefString::from(&model.label_at(i)).to_string().replace('&', "");
                     items.push(MenuItem { id, label, enabled: model.is_enabled_at(i) != 0, separator: false });
+                } else if model.is_visible_at(i) != 0 && (sys::cef_menu_id_t::MENU_ID_SPELLCHECK_SUGGESTION_0 as i32..=sys::cef_menu_id_t::MENU_ID_SPELLCHECK_SUGGESTION_LAST as i32).contains(&id) {
+                    spelling.push((id, CefString::from(&model.label_at(i)).to_string().replace('&', "")));
+                } else if model.is_visible_at(i) != 0 && id == sys::cef_menu_id_t::MENU_ID_ADD_TO_DICTIONARY as i32 {
+                    add_word = Some(id);
                 }
             }
             while items.last().is_some_and(|l| l.separator) {
                 items.pop();
             }
-            if items.is_empty() {
-                callback.cancel();
-                return 1;
-            }
             let k = self.shared.view.lock().unwrap().k() as f64;
+            let s = |v: CefStringUserfree| CefString::from(&v).to_string();
+            let types: sys::cef_context_menu_type_flags_t = params.type_flags().into();
+            let (link_flag, media_flag, editable_flag) = (types.0 & 4 != 0, types.0 & 8 != 0, types.0 & 32 != 0);
+            let media = match params.media_type() {
+                ContextMenuMediaType::IMAGE => crate::ctxmenu::Media::Image,
+                ContextMenuMediaType::VIDEO => crate::ctxmenu::Media::Video,
+                ContextMenuMediaType::AUDIO => crate::ctxmenu::Media::Audio,
+                ContextMenuMediaType::NONE => crate::ctxmenu::Media::None,
+                _ => crate::ctxmenu::Media::Other,
+            };
+            let state: sys::cef_context_menu_media_state_flags_t = params.media_state_flags().into();
+            let edit: sys::cef_context_menu_edit_state_flags_t = params.edit_state_flags().into();
+            let flag = |bits: u32, f: u32| bits & f != 0;
+            let link = {
+                let l = s(params.link_url());
+                if l.is_empty() { s(params.unfiltered_link_url()) } else { l }
+            };
+            let ctx = crate::ctxmenu::Context {
+                page_url: s(params.page_url()),
+                frame_url: s(params.frame_url()),
+                link_url: if link_flag { link } else { String::new() },
+                media: if media_flag { media } else { crate::ctxmenu::Media::None },
+                media_state: crate::ctxmenu::MediaState {
+                    paused: flag(state.0, 2),
+                    muted: flag(state.0, 4),
+                    looped: flag(state.0, 8),
+                    can_save: flag(state.0, 16),
+                    has_audio: flag(state.0, 32),
+                    can_toggle_controls: flag(state.0, 64),
+                    controls: flag(state.0, 128),
+                },
+                source_url: if media_flag { s(params.source_url()) } else { String::new() },
+                selection: s(params.selection_text()),
+                editable: editable_flag || params.is_editable() != 0,
+                edit: crate::ctxmenu::EditState {
+                    undo: flag(edit.0, 1),
+                    redo: flag(edit.0, 2),
+                    cut: flag(edit.0, 4),
+                    copy: flag(edit.0, 8),
+                    paste: flag(edit.0, 16),
+                    delete: flag(edit.0, 32),
+                    select_all: flag(edit.0, 64),
+                },
+                spelling,
+                add_word,
+                ..Default::default()
+            };
             let req = Arc::new(MenuRequest {
                 x: params.xcoord() as f64 / k,
                 y: params.ycoord() as f64 / k,
                 items,
+                ctx,
+                point: (params.xcoord(), params.ycoord()),
                 callback: Mutex::new(Some(MenuCallback(callback.clone()))),
             });
             send(self.shared.id, ViewEvent::ContextMenu(req));
@@ -2271,6 +2326,80 @@ impl BrowserView {
         self.cdp_eval_as(&code, true);
     }
 
+    pub fn reload_ignore_cache(&self) {
+        self.with_browser(|b| b.reload_ignore_cache());
+    }
+
+    /// Download `url` as if from a link ("Save link as"): CEF's download handler asks where, or saves to the folder, as set up.
+    pub fn start_download(&self, url: &str) {
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let url = url.to_owned();
+            on_ui(move || {
+                let h = h;
+                h.0.start_download(Some(&CefString::from(url.as_str())));
+            });
+        }
+    }
+
+    /// Open developer tools with the element at (`x`, `y`) in the page's coordinates selected ("Inspect").
+    pub fn inspect_at(&self, x: i32, y: i32) {
+        let shared = self.shared.clone();
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            on_ui(move || {
+                let h = h;
+                let window_info = WindowInfo::default();
+                h.0.show_dev_tools(Some(&window_info), None, Some(&BrowserSettings::default()), Some(&Point { x, y }));
+                shared.dev_tools.store(h.0.has_dev_tools() != 0, Ordering::Relaxed);
+            });
+        }
+    }
+
+    /// Evaluate an expression that gives a string in the page and hand the string to `done` (`None`: no answer in 3 seconds, or not
+    /// a string). `done` runs on the GTK thread.
+    pub fn eval_string_async(&self, expression: &str, done: impl FnOnce(Option<String>) + 'static) {
+        let id = self.cdp_eval(expression);
+        let shared = self.shared.clone();
+        let mut done = Some(done);
+        let mut waited = 0;
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            let answer = shared.cdp_results.lock().unwrap().get(&id).cloned();
+            waited += 1;
+            match answer {
+                Some((ok, json)) => {
+                    let text = ok.then(|| serde_json::from_str::<serde_json::Value>(&json).ok()).flatten().and_then(|v| v.get("result")?.get("value")?.as_str().map(str::to_owned));
+                    if let Some(d) = done.take() {
+                        d(text);
+                    }
+                    glib::ControlFlow::Break
+                }
+                None if waited > 60 => {
+                    if let Some(d) = done.take() {
+                        d(None);
+                    }
+                    glib::ControlFlow::Break
+                }
+                None => glib::ControlFlow::Continue,
+            }
+        });
+    }
+
+    /// Fetch an image at full size through the page's network stack (`image_png` has it once it arrives).
+    pub fn fetch_image(&self, url: &str) {
+        self.shared.image_data.lock().unwrap().remove(url);
+        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
+            let h = HostHandle(h.0.clone());
+            let url = url.to_owned();
+            let shared = self.shared.clone();
+            on_ui(move || {
+                let h = h;
+                let mut cb = ViewImage::new(shared);
+                h.0.download_image(Some(&CefString::from(url.as_str())), 0, 0, 0, Some(&mut cb));
+            });
+        }
+    }
+
     /// Drop every entry of the browser's list except the current page.
     pub fn forget_other_entries(&self) {
         self.cdp("Page.resetNavigationHistory");
@@ -3157,7 +3286,7 @@ impl BrowserView {
         popover.popup();
     }
 
-    fn paste_from_clipboard(self: &Rc<Self>) {
+    pub(super) fn paste_from_clipboard(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.widget.display().clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
             if let (Ok(Some(text)), Some(v)) = (res, weak.upgrade()) {

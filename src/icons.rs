@@ -40,10 +40,47 @@ icon!(SWATCH_BOOK, "swatch-book", "view-app-grid-symbolic");
 icon!(ROTATE_CCW_CLOCK, "rotate-ccw-clock", "document-open-recent-symbolic");
 icon!(TRASH, "trash", "user-trash-symbolic");
 icon!(SWEPT_BROOM, "swept-broom", "edit-clear-all-symbolic");
+icon!(EXTERNAL_LINK, "external-link", "document-open-symbolic");
+icon!(APP_WINDOW, "app-window", "window-new-symbolic");
+icon!(USERS, "users", "system-users-symbolic");
+icon!(PICTURE_IN_PICTURE_2, "picture-in-picture-2", "window-new-symbolic");
+icon!(LINK, "link", "insert-link-symbolic");
+icon!(LINK_2, "link-2", "insert-link-symbolic");
+icon!(TEXT_CURSOR, "text-cursor", "edit-select-all-symbolic");
+icon!(DOWNLOAD, "download", "document-save-symbolic");
+icon!(IMAGE, "image", "image-x-generic-symbolic");
+icon!(COPY, "copy", "edit-copy-symbolic");
+icon!(SEARCH, "search", "edit-find-symbolic");
+icon!(TEXT_SELECT, "text-select", "edit-select-all-symbolic");
+icon!(BOOK_PLUS, "book-plus", "list-add-symbolic");
+icon!(UNDO_2, "undo-2", "edit-undo-symbolic");
+icon!(REDO_2, "redo-2", "edit-redo-symbolic");
+icon!(SCISSORS, "scissors", "edit-cut-symbolic");
+icon!(CLIPBOARD_PASTE, "clipboard-paste", "edit-paste-symbolic");
+icon!(TRASH_2, "trash-2", "edit-delete-symbolic");
+icon!(X, "x", "process-stop-symbolic");
+icon!(REFRESH_CW_OFF, "refresh-cw-off", "view-refresh-symbolic");
+icon!(FILE_DOWN, "file-down", "document-save-symbolic");
+icon!(PRINTER, "printer", "document-print-symbolic");
+icon!(CODE_XML, "code-xml", "text-x-generic-symbolic");
+icon!(BUG, "bug", "dialog-information-symbolic");
+icon!(PLAY, "play", "media-playback-start-symbolic");
+icon!(PAUSE, "pause", "media-playback-pause-symbolic");
+icon!(VOLUME_X, "volume-x", "audio-volume-muted-symbolic");
+icon!(VOLUME_2, "volume-2", "audio-volume-high-symbolic");
+icon!(REPEAT, "repeat", "media-playlist-repeat-symbolic");
+icon!(SLIDERS_HORIZONTAL, "sliders-horizontal", "preferences-system-symbolic");
+icon!(CHEVRON_RIGHT, "chevron-right", "go-next-symbolic");
+icon!(CHEVRON_LEFT, "chevron-left", "go-previous-symbolic");
 /// The bookmarked star: Lucide's star painted in.
 pub const STAR_FILLED: Icon = Icon { id: "star-filled", filled: true, ..STAR };
 
-pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, SWATCH_BOOK, ROTATE_CCW_CLOCK, TRASH, SWEPT_BROOM];
+pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, SWATCH_BOOK, ROTATE_CCW_CLOCK, TRASH, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
+
+/// The icon with this Lucide id.
+pub fn by_id(id: &str) -> Option<Icon> {
+    ALL.iter().find(|i| i.id == id).copied()
+}
 
 /// The SVG for `icon` in `color`: Lucide's file with its stroke width and colour set (and the first shape painted for a filled icon).
 pub fn render(icon: &Icon, color: &str) -> String {
@@ -131,6 +168,18 @@ mod tests {
         assert!(svg.contains("stroke=\"#abcdef\"") && svg.contains("stroke-width=\"1.5\"") && svg.contains("width=\"24\" height=\"24\""), "{svg}");
         assert!(!svg.contains("currentColor") && !svg.contains("<!--") && !svg.contains("stroke-width=\"2\""), "{svg}");
         assert_eq!(svg.matches("<svg").count(), 1);
+    }
+
+    #[test]
+    fn every_icon_has_its_file_and_a_unique_id() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons/lucide");
+        let mut seen = std::collections::HashSet::new();
+        for i in ALL {
+            assert!(seen.insert(i.id), "{} twice", i.id);
+            let file = i.id.strip_suffix("-filled").unwrap_or(i.id);
+            assert!(dir.join(format!("{file}.svg")).is_file(), "{file}.svg");
+            assert_eq!(by_id(i.id).map(|x| x.id), Some(i.id));
+        }
     }
 
     #[test]

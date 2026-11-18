@@ -111,6 +111,8 @@ Cookies and storage: `cookies:` rules (any layer) allow or deny cookies per site
 `storage: isolated` keeps all its cookies and site data apart from the rest of the profile. See
 [docs/config/options.md](docs/config/options.md).
 
+Right-click menus offer the commands that fit what you click: links (open in a tab, window, workspace, app, other profile or popup; copy a clean link), images (save, copy, search), media, selected text, fields and the page (with developer items), each with an icon. See [docs/config/context-menu.md](docs/config/context-menu.md).
+
 Log: browsah logs to the system journal (`journalctl -t browsah`, or `browsah log`; why a tab was swept, closed or put to sleep is in it; `logging.level` sets how much). See [docs/config/log.md](docs/config/log.md).
 
 Diagnostics: `BROWSAH_DEBUG=1` logs the render scale, zoom level, address-bar input and every key

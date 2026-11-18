@@ -112,6 +112,12 @@ sleeping_tabs:
   opacity: 0.6              # 0.2 to 1: how opaque a sleeping tab is in the tab strip (1 leaves it undimmed)
   grayscale_icon: true      # show a sleeping tab's icon without colour
 
+context_menu:
+  developer: true           # View page source and Inspect in the right-click menu
+  links_in_background: true # "Open in new tab" leaves the current page selected
+  image_search_url: null    # "Search for this image": an address with {url}, e.g. "https://lens.google.com/uploadbyurl?url={url}"; null leaves it out
+  hide: []                  # menu items to leave out, by id (docs/config/context-menu.md)
+
 recently_swept:
   enabled: true             # a broom button next to reload lists tabs a sweep closed lately, to restore them
   within: 1d                # how far back they are listed (30m, 6h, 1d)

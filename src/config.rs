@@ -54,6 +54,8 @@ pub struct Config {
     pub sleeping_tabs: SleepingTabsConfig,
     /// The "recently swept" button next to the reload button: tabs a sweep closed lately, to restore.
     pub recently_swept: RecentlySweptConfig,
+    /// What the page's right-click menu offers.
+    pub context_menu: ContextMenuConfig,
     /// The program's log in the system journal (see `browsah log`).
     pub logging: LoggingConfig,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
@@ -193,6 +195,7 @@ impl Default for Config {
             sleep_tabs_after: None,
             sleeping_tabs: Default::default(),
             recently_swept: Default::default(),
+            context_menu: Default::default(),
             logging: Default::default(),
             storage: Storage::Shared,
             theme: Theme::System,
@@ -269,6 +272,7 @@ impl Config {
             self.search_url = DEFAULT_SEARCH_URL.into();
         }
         self.sleeping_tabs.opacity = if self.sleeping_tabs.opacity.is_finite() { self.sleeping_tabs.opacity.clamp(0.2, 1.0) } else { 0.6 };
+        self.context_menu.normalize();
         self.recently_swept.max_tabs = self.recently_swept.max_tabs.clamp(1, 50);
         if let Err(e) = crate::sweep::parse_duration(&self.recently_swept.within) {
             eprintln!("config: recently_swept.within: {e}; using 1d");
@@ -418,6 +422,49 @@ pub struct SleepingTabsConfig {
 impl Default for SleepingTabsConfig {
     fn default() -> Self {
         Self { opacity: 0.6, grayscale_icon: true }
+    }
+}
+
+/// The `context_menu:` section: what the right-click menu of a page offers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct ContextMenuConfig {
+    /// Show "View page source" and "Inspect".
+    pub developer: bool,
+    /// "Open in new tab" and the other open-a-tab items leave the page you are on (`true`), or switch to the new tab.
+    pub links_in_background: bool,
+    /// Where "Search for this image" goes, with `{url}` for the image's address. Not set: the item is not offered.
+    pub image_search_url: Option<String>,
+    /// Items to leave out, by id (see docs/config/context-menu.md).
+    pub hide: Vec<String>,
+}
+
+impl Default for ContextMenuConfig {
+    fn default() -> Self {
+        Self { developer: true, links_in_background: true, image_search_url: None, hide: Vec::new() }
+    }
+}
+
+impl ContextMenuConfig {
+    /// Drop what cannot work, saying so on the terminal.
+    fn normalize(&mut self) {
+        if self.image_search_url.as_deref().is_some_and(|u| !u.contains("{url}")) {
+            eprintln!("config: context_menu.image_search_url has no {{url}} placeholder; image search is off");
+            self.image_search_url = None;
+        }
+        self.hide.retain(|id| {
+            let known = crate::ctxmenu::ITEM_IDS.contains(&id.as_str());
+            if !known {
+                eprintln!("config: context_menu.hide: {id:?} is not a menu item (see docs/config/context-menu.md)");
+            }
+            known
+        });
+    }
+
+    /// The model's options for a menu, with the configured search address.
+    pub fn options(&self, search_url: &str) -> crate::ctxmenu::Options {
+        crate::ctxmenu::Options { search_url: search_url.to_owned(), image_search_url: self.image_search_url.clone(), developer: self.developer, links_in_background: self.links_in_background, hide: self.hide.clone() }
     }
 }
 
@@ -701,6 +748,7 @@ mod tests {
         add("print", field_names::<PrintConfig>());
         add("sleeping_tabs", field_names::<SleepingTabsConfig>());
         add("recently_swept", field_names::<RecentlySweptConfig>());
+        add("context_menu", field_names::<ContextMenuConfig>());
         add("logging", field_names::<LoggingConfig>());
         add("sweep", field_names::<crate::sweep::SweepConfig>());
         add("sweep.rules[]", field_names::<crate::sweep::RuleConfig>());
@@ -737,7 +785,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "context_menu", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
