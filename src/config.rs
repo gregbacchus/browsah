@@ -41,6 +41,9 @@ pub struct Config {
     pub home_page: String,
     /// What a new tab opens: `home` (the home page), an address, or nothing (null: a blank tab).
     pub new_tab_page: Option<String>,
+    /// Show the workspace picker (a button at the start of the window's header bar with a list of the profile's workspaces).
+    /// Never shown in a web app's window. Set it per profile or workspace to hide it in those windows.
+    pub workspace_picker: bool,
     /// Where a workspace keeps cookies and site data: `shared` with the profile's other windows or `isolated`.
     pub storage: Storage,
     /// The colour scheme pages see (`prefers-color-scheme`): `system` follows the desktop, like the rest of the window.
@@ -149,6 +152,7 @@ impl Default for Config {
             default_profile: None,
             home_page: DEFAULT_HOME_PAGE.into(),
             new_tab_page: None,
+            workspace_picker: true,
             storage: Storage::Shared,
             theme: Theme::System,
             search_url: DEFAULT_SEARCH_URL.into(),
@@ -614,7 +618,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

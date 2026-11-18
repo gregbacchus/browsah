@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Bump when the tables change and add a migration to `migrate`.
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// A tab as remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,7 +233,38 @@ impl Store {
         if version < 10 {
             self.conn.execute_batch("CREATE TABLE IF NOT EXISTS app_windows (app TEXT PRIMARY KEY, width INTEGER NOT NULL, height INTEGER NOT NULL, maximized INTEGER NOT NULL DEFAULT 0);")?;
         }
+        if version < 11 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS workspace_use (workspace TEXT PRIMARY KEY, at INTEGER NOT NULL);
+                 CREATE TABLE IF NOT EXISTS prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    }
+
+    // ---- workspace use and small preferences --------------------------------------------------------
+
+    /// Note that a workspace was used (a window of it opened or was focused), at `at` seconds.
+    pub fn touch_workspace(&self, workspace: &str, at: i64) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO workspace_use (workspace, at) VALUES (?1, ?2) ON CONFLICT(workspace) DO UPDATE SET at = ?2", params![workspace, at])?;
+        Ok(())
+    }
+
+    /// When each workspace was last used.
+    pub fn workspace_last_used(&self) -> std::collections::HashMap<String, i64> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT workspace, at FROM workspace_use") else { return Default::default() };
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)));
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// A remembered setting of the profile (for example the workspace picker's order).
+    pub fn pref(&self, key: &str) -> Option<String> {
+        self.conn.query_row("SELECT value FROM prefs WHERE key = ?1", params![key], |r| r.get(0)).ok()
+    }
+
+    pub fn set_pref(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2", params![key, value])?;
+        Ok(())
     }
 
     // ---- web app windows ----------------------------------------------------------------------------
@@ -499,6 +530,7 @@ impl Store {
         self.conn.execute("DELETE FROM visits WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM closed_tabs WHERE workspace = ?1", params![workspace])?;
         self.conn.execute("DELETE FROM app_windows WHERE app = ?1", params![workspace])?;
+        self.conn.execute("DELETE FROM workspace_use WHERE workspace = ?1", params![workspace])?;
         Ok(())
     }
 }
@@ -509,6 +541,23 @@ mod tests {
 
     fn rec(uid: u64, url: &str, selected: bool) -> TabRecord {
         TabRecord { uid, url: url.into(), title: format!("t{uid}"), pinned: uid == 1, selected, usage: format!("{uid}:1"), group: 0 }
+    }
+
+    #[test]
+    fn workspace_use_and_prefs_are_remembered() {
+        let s = Store::open_memory();
+        assert!(s.workspace_last_used().is_empty());
+        s.touch_workspace("mail", 100).unwrap();
+        s.touch_workspace("docs", 200).unwrap();
+        s.touch_workspace("mail", 300).unwrap();
+        let used = s.workspace_last_used();
+        assert_eq!((used.get("mail"), used.get("docs")), (Some(&300), Some(&200)));
+        s.delete_workspace("docs").unwrap();
+        assert!(!s.workspace_last_used().contains_key("docs"), "removing a workspace forgets its use");
+        assert_eq!(s.pref("workspace_order"), None);
+        s.set_pref("workspace_order", "alphabetical").unwrap();
+        s.set_pref("workspace_order", "last_used").unwrap();
+        assert_eq!(s.pref("workspace_order").as_deref(), Some("last_used"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ routing:
 theme: system             # system | light | dark: the colour scheme web pages see (prefers-color-scheme); system follows the desktop
 storage: shared           # shared | isolated: whether a workspace keeps its cookies and site data apart (set it in workspace.yaml)
 new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
+workspace_picker: true    # the workspace list button at the start of the header (never in a web app); false hides it, also per profile or workspace
 
 window:
   width: 1280   # initial size in logical pixels

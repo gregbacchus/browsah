@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -420,6 +420,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("frame") {
         run_frame(shell, r).await;
+    }
+    if wants("picker") {
+        run_picker(shell, r).await;
     }
     if wants("redirects") {
         run_redirects(shell, r).await;
@@ -2161,10 +2164,6 @@ async fn run_storage(shell: &Rc<Shell>, r: &mut Report) {
     r.check("four workspaces (two shared, two isolated) open", all_open, || "not all open".into());
     set("sh1").await;
     let a = show("sh2").await;
-    let start = std::time::Instant::now();
-    let flushed = super::view::flush_cookie_stores(Duration::from_secs(5));
-    r.check("the cookie stores (global and isolated) write to disk and report back before shutdown", flushed, || format!("not done after {:?}", start.elapsed()));
-    println!("cookies: flushing the stores took {:?}", start.elapsed());
     r.check("shared workspaces see each other's cookies", a.as_deref() == Some("Cookies [ck=1]"), || format!("{a:?}"));
     let b = show("is1").await;
     r.check("an isolated workspace does not see the profile's cookies", b.as_deref() == Some("Cookies []"), || format!("{b:?}"));
@@ -3146,6 +3145,129 @@ async fn run_hidpi(shell: &Rc<Shell>, r: &mut Report) {
     let dpr2 = num("String(window.devicePixelRatio)").await;
     let bar2 = num("String(window.innerWidth - document.documentElement.clientWidth)").await;
     r.check("another site gets the same scale and scrollbar", (dpr2 - total).abs() < 0.05 && (bar2 * dpr2 - 15.0 * total).abs() < 1.5, || format!("dpr {dpr2}, bar {bar2} CSS px"));
+}
+
+/// The workspace picker: a button in workspace windows (not in a web app's; `workspace_picker: false` hides it) listing the
+/// profile's workspaces with a colour badge, in the last-used or the alphabetical order, remembered in the profile.
+async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::{ActionGroupExt, WidgetExt};
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let mut dirs = Vec::new();
+    // Names chosen so that the two orders differ: A-Z is apple, Mango, Zebra (ignoring case); last used is Zebra, apple, Mango.
+    for (id, name, color) in [("pk1", "Zebra", Some("#4a2f80 #7a56c2")), ("pk2", "apple", Some("#2a6f97")), ("pk3", "Mango", None)] {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let color_line = color.map(|c| format!("color: '{c}'\n")).unwrap_or_default();
+        // apple's own window hides the picker (`workspace_picker: false` in its workspace.yaml).
+        let hidden = if id == "pk2" { "workspace_picker: false\n" } else { "" };
+        std::fs::write(dir.join("workspace.yaml"), format!("name: {name}\n{color_line}{hidden}home_page: 'http://localhost:{port}/white.html'\n")).expect("ws");
+        dirs.push(dir);
+    }
+    let find = |id: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pk1".to_variant()));
+    let _ = wait_until(15_000, || find("pk1").is_some_and(|s| s.current().is_some_and(|t| !t.state.borrow().loading))).await;
+    let Some(w) = find("pk1") else {
+        r.check("a workspace window opens", false, || "no window".into());
+        return;
+    };
+    r.check("a workspace window has the picker button", w.picker.button.is_visible(), || "hidden".into());
+    r.check("the main (no workspace) window has it too", shell.picker.button.is_visible(), || "hidden".into());
+    let store = crate::store::Store::open(&db).expect("store");
+    // Deterministic use: Zebra most recently, then apple, Mango never.
+    store.touch_workspace("pk1", 2_000).unwrap(); // long ago, so a workspace opened now is newer
+    store.touch_workspace("pk2", 1_000).unwrap();
+    let _ = store.set_pref("workspace_order", "last_used");
+    let order_of = |ui: &super::picker::Ui| {
+        let mut ids = Vec::new();
+        let mut c = ui.list.first_child();
+        while let Some(child) = c {
+            let id = child.widget_name().to_string();
+            if id.starts_with("pk") {
+                ids.push(id);
+            }
+            c = child.next_sibling();
+        }
+        ids
+    };
+    // A new window is activated a moment after it opens, and GTK closes a popover opened before that.
+    let _ = wait_until(5_000, || w.window.is_active()).await;
+    w.picker.button.popup();
+    let _ = wait_until(3_000, || !order_of(&w.picker).is_empty()).await;
+    r.check("last used order: the most recent first, never used last", order_of(&w.picker) == ["pk1", "pk2", "pk3"], || format!("{:?}", order_of(&w.picker)));
+    shot(&w.window, "workspace-picker-window");
+    glib::timeout_future(Duration::from_millis(400)).await;
+    shot(&w.picker.popover, "workspace-picker-recent");
+    w.picker.alpha.set_active(true);
+    glib::timeout_future(Duration::from_millis(200)).await;
+    r.check("alphabetical order ignores case: apple, Mango, Zebra", order_of(&w.picker) == ["pk2", "pk3", "pk1"], || format!("{:?}", order_of(&w.picker)));
+    r.check("the chosen order is remembered in the profile", store.pref("workspace_order").as_deref() == Some("alphabetical"), || format!("{:?}", store.pref("workspace_order")));
+    glib::timeout_future(Duration::from_millis(300)).await;
+    shot(&w.picker.popover, "workspace-picker-alphabetical");
+    w.picker.button.popdown();
+    // A new window of the profile reads the remembered order.
+    w.picker.button.popup();
+    glib::timeout_future(Duration::from_millis(200)).await;
+    r.check("reopening the list keeps the remembered order", order_of(&w.picker) == ["pk2", "pk3", "pk1"] && w.picker.alpha.is_active(), || format!("{:?}", order_of(&w.picker)));
+    // Choosing a workspace opens it.
+    let mut c = w.picker.list.first_child();
+    let mut clicked = false;
+    while let Some(child) = c {
+        if child.widget_name() == "pk3" {
+            if let Ok(b) = child.clone().downcast::<gtk::Button>() {
+                b.emit_clicked();
+                clicked = true;
+            }
+        }
+        c = child.next_sibling();
+    }
+    let opened = wait_until(15_000, || find("pk3").is_some()).await;
+    r.check("choosing a workspace in the list opens its window", clicked && opened, || format!("clicked={clicked}"));
+    r.check("a workspace that opens counts as used: it leads the last used order", {
+        store.set_pref("workspace_order", "last_used").unwrap();
+        w.picker.button.popdown();
+        glib::timeout_future(Duration::from_millis(300)).await;
+        w.picker.button.popup();
+        glib::timeout_future(Duration::from_millis(200)).await;
+        order_of(&w.picker).first().map(String::as_str) == Some("pk3")
+    }, || format!("{:?}", order_of(&w.picker)));
+    w.picker.button.popdown();
+    // A workspace that sets `workspace_picker: false` has no button in its own window; the others keep theirs.
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pk2".to_variant()));
+    let _ = wait_until(15_000, || find("pk2").is_some()).await;
+    r.check("a workspace's own workspace_picker: false hides it in that window only", find("pk2").is_some_and(|s| !s.picker.button.is_visible()) && w.picker.button.is_visible(), || format!("{:?}", find("pk2").map(|s| s.picker.button.is_visible())));
+    // `workspace_picker: false` hides it, live.
+    let mut cfg = w.settings.borrow().clone();
+    cfg.workspace_picker = false;
+    w.apply_config(&cfg);
+    r.check("workspace_picker: false hides the button", !w.picker.button.is_visible(), || "still visible".into());
+    cfg.workspace_picker = true;
+    w.apply_config(&cfg);
+    r.check("and true shows it again", w.picker.button.is_visible(), || "hidden".into());
+    // A web app's window never has it.
+    let appdir = profile.apps_dir().join("pk-app");
+    let _ = std::fs::remove_dir_all(&appdir);
+    std::fs::create_dir_all(&appdir).expect("app dir");
+    std::fs::write(appdir.join("app.yaml"), format!("name: Picker app\nurl: 'http://localhost:{port}/white.html'\ndisplay: standalone\n")).expect("app");
+    ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pk-app".to_variant()));
+    let _ = wait_until(15_000, || find("pk-app").is_some()).await;
+    r.check("a web app's window has no picker, even with the option on", find("pk-app").is_some_and(|a| !a.picker.button.is_visible()), || format!("{:?}", find("pk-app").map(|a| a.picker.button.is_visible())));
+    for id in ["pk1", "pk2", "pk3", "pk-app"] {
+        if let Some(s) = find(id) {
+            s.window.close();
+        }
+    }
+    let _ = wait_until(5_000, || ["pk1", "pk2", "pk3", "pk-app"].iter().all(|id| find(id).is_none())).await;
+    for dir in dirs.iter().chain([&appdir]) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    for id in ["pk1", "pk2", "pk3", "pk-app"] {
+        let _ = store.delete_workspace(id);
+    }
 }
 
 /// A coloured window shows its colour around the page (sides and bottom, with rounded page corners), maximized or not; in

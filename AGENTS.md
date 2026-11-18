@@ -237,8 +237,9 @@ take minutes.
   directory is deleted on upgrade), else this binary's canonical path. `webapp::refresh_launchers` (start-up thread) rewrites the
   running profile's entries, icons and apps in full, and any other profile's or the selector's entry only when its program no longer
   exists (`profile::entry_program_missing`), so a source build never repoints another install's entries.
-- **Shutdown:** `main` flushes the cookie stores (`app::flush_stores_on_exit`) and then `Runtime::shutdown` waits for the counted browsers
-  (`cef_rt::browser_created/closed`) to close, not a fixed sleep (docs/research/shutdown.md); the benchmarks, which do not count, keep 500 ms.
+- **Shutdown:** `Runtime::shutdown` waits for the counted browsers (`cef_rt::browser_created/closed`) to close, not a fixed sleep
+  (docs/research/shutdown.md); the benchmarks, which do not count, keep 500 ms. The `sqlite_persistent_store… Failed to post task`
+  warning at exit is Chromium's own teardown and harmless (data lands); do not try to "fix" it with flushes or delays.
 - **Config layers:** the effective configuration is `config.yaml` with the profile's `profile.yaml`
   and then, per window, the workspace's `workspace.yaml` merged over it (`config::load_layers`,
   `load_window`; process-only options are ignored in a workspace, see `WORKSPACE_IGNORED`; rules in `docs/config/README.md`). Option names are the

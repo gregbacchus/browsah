@@ -36,7 +36,7 @@ as `<name>.bak`; comments you wrote in the old file are not carried over). The s
 |---|---|
 | `home_page`, `search_url` | [Options](options.md#startup-and-search) |
 | `window` | [Options](options.md#window) |
-| `theme`, `storage`, `new_tab_page` | [Options](options.md#startup-and-search) |
+| `theme`, `storage`, `new_tab_page`, `workspace_picker` | [Options](options.md#startup-and-search) |
 | `watch_config`, `default_profile` | [Options](options.md#behaviour) |
 | `rendering` | [Options](options.md#rendering) |
 | `chromium` | [Options](options.md#chromium) |

@@ -1,6 +1,6 @@
 [package]
 name = "browsah"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "A custom web browser: a GTK4 shell around Chromium (CEF) windowless rendering, native Wayland"

@@ -93,6 +93,8 @@ workspace, optionally asking where to save each file. See [docs/config/permissio
 Web apps: `browsah app add --url https://mail.example.com/` reads the site's web manifest and makes a window for one site with its own
 launcher entry and icon (its own `app.yaml`, not a workspace). See [docs/config/webapp.md](docs/config/webapp.md).
 
+The workspace picker: a button at the start of the header lists the profile's workspaces with a badge in each one's colour, ordered by last use or by name; `workspace_picker: false` hides it (and a web app's window never has it).
+
 Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
 profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.
 

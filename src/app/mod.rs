@@ -17,6 +17,7 @@ mod jsdialog;
 mod suggest;
 mod latency;
 mod modal;
+mod picker;
 mod prompts;
 mod sweep;
 mod nav;
@@ -189,6 +190,8 @@ pub struct Shell {
     pub downloads: Rc<downloads::Ui>,
     /// The main menu's button.
     pub menu_button: gtk::MenuButton,
+    /// The workspace picker's button and list (hidden in web apps and when `workspace_picker` is off).
+    pub picker: Rc<picker::Ui>,
     /// Dialogs pages opened with script: waiting, the one showing, and (in tests) the one held.
     js_queue: RefCell<std::collections::VecDeque<Arc<view::JsDialogQuestion>>>,
     /// The person has agreed to close the window (or there was nothing to ask): the close request goes through.
@@ -825,6 +828,7 @@ impl Shell {
     /// frame rate, scrolling. Options fixed at start-up are applied by the next start.
     pub fn apply_config(&self, cfg: &Config) {
         *self.settings.borrow_mut() = cfg.clone();
+        self.picker.button.set_visible(cfg.workspace_picker && !self.workspace.as_ref().is_some_and(|w| w.is_app()));
         self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
             self.apply_view_settings(&t.view());
@@ -1395,6 +1399,10 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let clamp = adw::Clamp::builder().maximum_size(900).tightening_threshold(600).child(&entry).build();
 
     let header = adw::HeaderBar::new();
+    // The workspace picker, first: not in a web app's window, and `workspace_picker: false` hides it.
+    let picker_ui = picker::Ui::new(workspace.as_ref().map(|w| w.id.clone()));
+    picker_ui.button.set_visible(cfg.workspace_picker && !workspace.as_ref().is_some_and(|w| w.is_app()));
+    header.pack_start(&picker_ui.button);
     header.pack_start(&back);
     header.pack_start(&forward);
     header.pack_start(&reload);
@@ -1497,6 +1505,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         suggest: suggest::Popup::new(&entry),
         downloads: downloads_ui.clone(),
         menu_button: menu_button.clone(),
+        picker: picker_ui.clone(),
         js_queue: RefCell::new(std::collections::VecDeque::new()),
         closing: RefCell::new(Vec::new()),
         close_confirmed: std::cell::Cell::new(false),
@@ -2154,13 +2163,6 @@ fn browser_windows() -> Vec<Rc<Shell>> {
 
 /// Run the browser in this process, which owns its profile's application id. `app` is already
 /// registered (see `main`). Returns the process exit code.
-/// Write the cookie databases to disk before CEF shuts down (see `view::flush_cookie_stores`).
-pub fn flush_stores_on_exit() {
-    if !view::flush_cookie_stores(Duration::from_secs(3)) {
-        eprintln!("browsah: the cookie stores did not finish writing in 3 s");
-    }
-}
-
 pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
     let cfg0 = loaded.config;
     input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);
@@ -2224,6 +2226,9 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
                 move |w| {
                     if let (true, Some(s)) = (w.is_active(), shell.upgrade()) {
                         s.apply_input_tuning();
+                        if let Some(ws) = s.workspace.as_ref().filter(|w| !w.is_app()) {
+                            picker::touch(&ws.id); // for the picker's last-used order
+                        }
                     }
                 }
             });
@@ -2234,6 +2239,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             // (A web app's window is not part of what a plain start brings back.)
             if let Some(w) = workspace.as_ref().filter(|w| !w.is_app()) {
                 remember_workspace(&profile, &w.id, true);
+                picker::touch(&w.id);
             }
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: window opened (workspace {:?}) on {start}", workspace.as_ref().map(|w| &w.id));

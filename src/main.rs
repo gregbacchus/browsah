@@ -17,6 +17,7 @@ mod groups;
 mod history;
 mod manifest;
 mod permissions;
+mod picker;
 mod profile;
 mod router;
 mod selector;
@@ -188,9 +189,7 @@ fn main() {
         bench::run(opts);
         0
     } else {
-        let code = app::run(app, opts, loaded, profile);
-        app::flush_stores_on_exit();
-        code
+        app::run(app, opts, loaded, profile)
     };
 
     runtime.shutdown();

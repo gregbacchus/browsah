@@ -22,6 +22,10 @@ button at the right of the header) → *New window*; `browsah --profile=<id> --n
 profile that is not running starts with just this window instead of the remembered workspaces); and the *New Window* action
 of the profile's launcher entry (right-click its icon in the dash). The main menu also lists the profile's workspaces to open.
 
+**The workspace picker** is the button at the start of the header bar (not in a web app's window): a list of the profile's workspaces,
+each with a badge in its colour, to open one or bring its window forward, ordered by last use or by name (the switch at the foot of the
+list; remembered per profile). `workspace_picker: false` (in `config.yaml`, `profile.yaml` or this workspace's `workspace.yaml`) hides it, see [options.md](options.md#startup-and-search).
+
 **Sending tabs.** Right-click a tab and choose *Send to workspace* to move it, still running, to another
 workspace's window (opened if needed) or to a new window. Pinned tabs cannot be sent. A window whose
 last tab is sent away closes. The options below are read when the workspace's window opens unless stated otherwise; overrides of options from [options.md](options.md) follow [Layers and reloading](README.md#layers-and-reloading).
