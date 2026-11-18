@@ -1117,6 +1117,10 @@ wrap_request_handler! {
             self.shared.link_nav.store(false, Ordering::Relaxed);
             self.shared.blocked_cookies.lock().unwrap().clear(); // a new page: its blocked cookies start afresh
             let target = CefString::from(&request.url()).to_string();
+            // An extension's own pages (its popup, an options page) are never routed: they belong to the extension.
+            if target.starts_with("chrome-extension://") {
+                return 0;
+            }
             let current = CefString::from(&frame.url()).to_string();
             // The router: a clicked link (a user gesture on a GET) or any other navigation of a
             // page that is already showing something. A tab's own first load is never routed.

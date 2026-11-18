@@ -39,6 +39,11 @@ class Browsah < Formula
     <<~EOS
       browsah uses the system GTK 4 and libadwaita (Ubuntu 24.04 or newer, or a similar distro):
         sudo apt install libgtk-4-1 libadwaita-1-0
+
+      1Password's browser integration refuses a browser you could modify, and a Homebrew install is owned by you. For it, make a
+      root-owned copy (it prints what it will change and asks first):
+        sudo "$(command -v browsah)" system-install --1password
+      then start browsah as /usr/local/bin/browsah. Run it again after `brew upgrade browsah`.
     EOS
   end
 

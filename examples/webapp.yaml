@@ -23,6 +23,9 @@ modals:
 # Any option of config.yaml can follow, as in a workspace; for example this app keeps its cookies apart
 # (by default an app shares the profile's cookies and sign-ins):
 storage: isolated
+# An app's window shows no extension buttons unless they are listed (not at all with storage: isolated, where no extension is loaded):
+# extensions:
+#   show: ["aeblfdkhhhdcdjpifhhbdiojplfjncoa"]
 cookies:
   rules:
     - match: ["ads.example.net"]

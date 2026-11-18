@@ -114,6 +114,8 @@ take minutes.
 | `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest), `downloads.rs` (the downloads button and list; rows are the profile's, thread-local, remembered in the `downloads` table) |
 | `src/cef_rt.rs` | CEF start-up and settings, `HostHandle`/`BrowserHandle` |
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
+| `src/extensions.rs` | Chrome extensions: which folders to load (`extensions.*`, the profile's `extensions/<id>/<version>/`), the `--load-extension` switch, native messaging host discovery and copy, Web Store install and update (`browsah extension`), id derivation; `src/crx.rs` is the CRX3 package format (parse, signature check, unzip, add `key`); `src/app/extensions.rs` is the header button and popup popover (pure, tested; Chromium itself loads the extensions: CEF 156 has no extension API) |
+| `src/system_install.rs` | `sudo browsah system-install [--1password] [--dry-run] [--yes]` / `system-uninstall`: a root-owned copy of the program in `/opt/browsah` (the release tarball's file list), a start-up script in `/usr/local/bin`, optionally `browsah` in 1Password's `custom_allowed_browsers`; plans and copies are tested in temporary folders, what root adds (ownership) is not testable without sudo |
 | `src/gpu.rs` | Per-GPU environment workarounds (AMD: `AMD_DEBUG=nodcc`) |
 | `src/profile.rs` | Profiles: ids, directories, `profile.yaml`, `.desktop` entry and icon, the `browsah profile` command line (no CEF or window needed) |
 | `src/workspace.rs` | Workspaces: `workspace.yaml` schema (name, colour, `nav`, `tabs`, pinned tabs, `app`), scope patterns, the `browsah workspace` command line |
@@ -318,6 +320,14 @@ take minutes.
   is pure and tested; the answer's `manifest` object has resolved URLs, `data` the raw text with icon purposes),
   asks the user to confirm the name, downloads the icon with `download_image` and writes the same files as
   `browsah app add`. The self-test profile never writes launcher entries (`webapp::install` returns early for it).
+- **Chrome extensions** (`src/extensions.rs`, `src/crx.rs`, `src/app/extensions.rs`; docs/config/extensions.md, docs/research/chrome-extensions.md): CEF 156
+  has no extension API, so `main` builds one `--load-extension=a,b` switch (merged with a user's own: Chromium keeps only the last) from the profile's
+  `extensions/<id>/<version>/` folders and `extensions.paths`; this runs in the browser process only (child processes exit earlier in `main`). An unpacked
+  extension's id is its manifest `key` (else a hash of its folder path, which matches Chromium's); Web Store packages carry the key in the CRX header, so
+  `install_package` writes it into the manifest, otherwise 1Password's native host rejects the id. Native host manifests are copied (never edited) into
+  `<profile>/cef/NativeMessagingHosts/`. `chrome.tabs` is empty (no tab bridge). `extensions.paths`, `.disable` and `.native_hosts` are process-only (dotted entries in `PROCESS_ONLY`/`WORKSPACE_IGNORED`/`RESTART_REQUIRED`); `extensions.hide` (workspace windows: all but these) and `.show` (app windows: only these) are per-window and live (`Shell::refresh_extension_buttons`, `extensions::shown_in_window`), and only change what is *shown*: a `storage: isolated` window has no extensions at all, every other window gets every loaded extension's content scripts. The popup is a `BrowserView` in a popover: a page's `Picture` is as big as its
+  frame, so it needs a fixed-size `ScrolledWindow` holder with `Automatic` policies (`Never` ignores the minimum size and the popover collapses). The router is
+  skipped for `chrome-extension://` in `on_before_browse`. The `extensions` self-test section loads `bench/extensions/test-ext` only when it is named.
 - **CEF API gotchas:** `Image::as_png` returns nothing unless the pixel width/height out parameters are passed;
   `BinaryValue::data` needs a pre-sized buffer; setting the screen-capture content setting crashes Chromium;
   a cookie's `domain` field is read with `.to_string()`.

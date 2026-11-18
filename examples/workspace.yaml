@@ -48,8 +48,10 @@ routing:
       open: workspace:docs
 
 # Any per-window option from docs/config/options.md can be overridden for this workspace. Process-
-# wide ones (chromium, gpu, rendering.mode, rendering.device_resolution) cannot.
+# wide ones (chromium, gpu, extensions.paths, extensions.disable, extensions.native_hosts, rendering.mode, rendering.device_resolution) cannot.
 home_page: "https://mail.example.com/"
 search_url: "https://www.bing.com/search?q={query}"
 rendering:
   frame_rate: 30
+extensions:
+  hide: ["aeblfdkhhhdcdjpifhhbdiojplfjncoa"]   # no button for these extensions in this workspace's window (all others show)

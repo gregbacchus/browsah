@@ -42,6 +42,7 @@ as `<name>.bak`; comments you wrote in the old file are not carried over). The s
 | `chromium` | [Options](options.md#chromium) |
 | `input` | [Options](options.md#input) |
 | `gpu` | [Options](options.md#gpu) |
+| `extensions` | [Options](options.md#extensions), [Extensions](extensions.md) |
 | `logging` | [Options](options.md#logging), [Log](log.md) |
 | `history` | [Options](options.md#history), [History](history.md) |
 | `permissions`, `downloads` | [Options](options.md#permissions), [Permissions](permissions.md) |
@@ -67,11 +68,11 @@ A web app's file, `.../profiles/<id>/apps/<id>/app.yaml` ([webapp.md](webapp.md)
 - a key ending in `+` appends a list instead: `chromium: { flags+: ["--foo"] }` adds to the
   application's flags;
 - application-only options (`watch_config`) are ignored in a profile or workspace, and options fixed
-  per process (`chromium`, `gpu`, `logging`, `rendering.mode`, `rendering.device_resolution`) are ignored in a
+  per process (`chromium`, `gpu`, `extensions.paths`, `extensions.disable`, `extensions.native_hosts`, `logging`, `rendering.mode`, `rendering.device_resolution`) are ignored in a
   workspace, with a warning.
 
 A profile is its own process, so it may also set options that are fixed per process (`chromium`,
-`gpu`, `logging`, `rendering.mode`). See the result with `browsah config show --profile=<id>`, which also lists
+`gpu`, `extensions.paths`, `extensions.disable`, `extensions.native_hosts`, `logging`, `rendering.mode`). See the result with `browsah config show --profile=<id>`, which also lists
 the options the profile set.
 
 **Reloading.** Unless `watch_config` is `false` (or `--no-watch` is given), the files are watched
@@ -80,9 +81,9 @@ says what happened. An invalid file is reported and the running settings are kep
 
 | Takes effect | Options |
 |---|---|
-| immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*` |
+| immediately | `search_url`, `home_page` (new windows), `rendering.frame_rate`, `input.*`, `extensions.hide`, `extensions.show` |
 | next workspace open | `tabs.pinned` (defined only in `workspace.yaml`) |
-| next start (the message says so) | `chromium.*`, `gpu.*`, `logging.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
+| next start (the message says so) | `chromium.*`, `gpu.*`, `extensions.paths`, `extensions.disable`, `extensions.native_hosts`, `logging.*`, `rendering.mode`, `rendering.device_resolution`, `window.*` |
 
 Permissions and downloads are described in [permissions.md](permissions.md). Cookie rules and `storage` are in [options.md](options.md). Web apps (one site in a window of its own, with its own launcher entry; their own `app.yaml`) are in [webapp.md](webapp.md).
 

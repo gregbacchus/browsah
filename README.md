@@ -95,6 +95,10 @@ workspace, optionally asking where to save each file. See [docs/config/permissio
 Web apps: `browsah app add --url https://mail.example.com/` reads the site's web manifest and makes a window for one site with its own
 launcher entry and icon (its own `app.yaml`, not a workspace). See [docs/config/webapp.md](docs/config/webapp.md).
 
+Chrome extensions: `browsah extension add <id or Chrome Web Store address>` installs an extension (checked against its signing key), and a toolbar button
+opens its popup (`extensions.hide` / `extensions.show` choose which buttons a workspace or app window shows); the 1Password extension works with the desktop app. Chromium loads the extensions (CEF has no extension API of its own). See
+[docs/config/extensions.md](docs/config/extensions.md).
+
 The workspace picker: a button at the start of the header lists the profile's workspaces with a badge in each one's colour, ordered by last use or by name; `workspace_picker: false` hides it (and a web app's window never has it).
 
 Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
@@ -174,6 +178,10 @@ installed, debug info stripped) that uses the **system** GTK 4 and libadwaita (U
 launcher that sets `LD_LIBRARY_PATH` and tells browsah its stable `opt` paths (`BROWSAH_LAUNCHER`, `BROWSAH_LIBS`), so the
 desktop entries it writes keep working after `brew upgrade browsah`. Entries written by an earlier version (which named the
 versioned install directory) are repaired the next time any profile is started from the command line.
+
+**1Password (and anything else that insists on a root-owned browser):** a Homebrew install is owned by you, so 1Password refuses it.
+`sudo "$(command -v browsah)" system-install --1password` puts a root-owned copy in `/opt/browsah` and a start-up script in
+`/usr/local/bin`, after printing what it will change and asking; see [docs/config/extensions.md](docs/config/extensions.md#1password).
 
 **Releasing** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then
 

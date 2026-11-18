@@ -8,10 +8,12 @@ mod cef_rt;
 mod cli;
 mod config;
 mod cookies;
+mod crx;
 mod frames;
 mod fullconfig;
 mod docsite;
 mod downloads;
+mod extensions;
 mod gpu;
 mod groups;
 mod history;
@@ -26,6 +28,7 @@ mod selector;
 mod store;
 mod suggest;
 mod sweep;
+mod system_install;
 mod webapp;
 mod workspace;
 
@@ -86,6 +89,12 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
+    }
+    if matches!(args.first().map(String::as_str), Some("system-install" | "system-uninstall")) {
+        std::process::exit(system_install::cli(&args[0], &args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("extension") {
+        std::process::exit(extensions::cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("app") {
         std::process::exit(webapp::cli(&args[1..]));
@@ -175,6 +184,45 @@ fn main() {
     // `--ozone-platform=wayland` unless the user chose a platform themselves.
     let mut flags: Vec<String> = cfg.chromium.flags.clone();
     flags.extend(opts.flags.iter().cloned());
+    // Chrome extensions: Chromium loads the folders named by `--load-extension` (CEF 156 has no extension API of its own). The
+    // native messaging hosts an extension needs are copied from Chrome/Chromium's folders into this profile's.
+    if !is_bench {
+        let mut ext_cfg = cfg.extensions.clone();
+        // The `extensions` self-test section needs its fixture extension loaded when Chromium starts.
+        if opts.selftest && std::env::var("BROWSAH_SELFTEST_ONLY").is_ok_and(|l| l.split(',').any(|s| s.trim() == "extensions")) {
+            if let Ok(dir) = std::env::current_dir() {
+                ext_cfg.paths.push(dir.join("bench/extensions/test-ext").to_string_lossy().into_owned());
+            }
+        }
+        let (list, warnings) = extensions::collect(&profile.dir, &ext_cfg, &gtk::glib::home_dir());
+        for w in warnings {
+            log_warn!("extensions: {w}");
+        }
+        extensions::merge_load_flag(&mut flags, &list.iter().map(|e| e.dir.clone()).collect::<Vec<_>>());
+        for e in &list {
+            log_info!("extension loaded: {} {} ({}) from {}{}", e.name, e.version, e.id, e.dir.display(), if e.installed { "" } else { " (extensions.paths)" });
+        }
+        if ext_cfg.native_hosts && !list.is_empty() {
+            let ids: Vec<String> = list.iter().map(|e| e.id.clone()).collect();
+            for h in extensions::copy_hosts(&profile.cef_dir(), &extensions::matching_hosts(&extensions::host_search_dirs(&gtk::glib::user_config_dir()), &ids)) {
+                log_info!("extensions: copied the native messaging host {h}");
+            }
+        }
+        // An extension that talks to a program needs the program's host manifest: say so when none names it.
+        for e in list.iter().filter(|e| e.native_messaging) {
+            let found = extensions::matching_hosts(&[extensions::host_dir(&profile.cef_dir())], std::slice::from_ref(&e.id));
+            if found.is_empty() {
+                log_warn!("extension {} ({}) uses native messaging but no host manifest naming it was found in {}{}", e.name, e.id, extensions::host_dir(&profile.cef_dir()).display(), if ext_cfg.native_hosts { " or in Chrome's and Chromium's folders: install the program the extension talks to (1Password's desktop app)" } else { " (extensions.native_hosts is off)" });
+            } else {
+                log_debug!("extension {} ({}): native messaging host(s) {:?}", e.name, e.id, found.iter().map(|h| h.name.as_str()).collect::<Vec<_>>());
+                // Some programs (1Password's desktop app) only talk to a browser that is owned by root: say how to get one.
+                if !std::env::current_exe().is_ok_and(|p| system_install::root_owned_and_locked(&p)) {
+                    log_info!("extension {} uses native messaging and this browsah program is not owned by root: if the program it talks to refuses to connect (1Password does), install a root-owned copy with `sudo \"$(command -v browsah)\" system-install --1password`", e.name);
+                }
+            }
+        }
+        extensions::set_loaded(list);
+    }
     // BROWSAH_NO_SCALE_FIX=1 leaves Chromium's Wayland fractional-scale feature on (to reproduce the HiDPI problem).
     let flags = cef_rt::with_default_flags(flags, std::env::var_os("BROWSAH_NO_SCALE_FIX").is_none());
 

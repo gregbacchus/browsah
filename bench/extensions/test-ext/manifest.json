@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "browsah test extension",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0QMLYH/il1LxDmhQ+Nz/aMjQUbk1hzrnhltdtxkFOrEwG2ol7375sxsMK0uE/RUWLlzgH9j46AyRtqZhX0M94WSj66+jpCE8PJkvTHFeEm81WRzKDolpZ3llbSsAMSIVSTx4mMPTPDYMi0TqfVzvo0JnYHbAcphO+F2v1Jnq5/nUFhuF4PxFL4VuVZQbP2dB2onAUWqBW6zuzJ9pw1K6M1T8CpOPCjDzjg9UYXUidjjppPIyXbueCpf+WYWTbx8cKZ8tjusCWw7U/s39To1f8BnqNWZO5XExc9DRhyn/+UHbv6KytmQ+ba/+/W4mVFXZQTjda+Yj3+fNUzUQWmwFHQIDAQAB",
+  "description": "Used only by the extensions section of the self-test: a content script, a service worker, a popup and native messaging.",
+  "permissions": ["storage", "nativeMessaging"],
+  "host_permissions": ["http://localhost/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["http://localhost/*"], "js": ["content.js"] }],
+  "action": { "default_popup": "popup.html", "default_title": "browsah test extension" }
+}

@@ -52,7 +52,7 @@ a tab (without the home page). New tabs (`Ctrl+T`) open blank with the address b
 `workspace.yaml` can also contain options from [options.md](options.md); they are merged over the
 application and profile configuration **for this workspace's window only**, with the same rules as
 for a profile (maps merge, values and lists replace, `key+:` appends). Options that are fixed per
-process cannot be set here and are ignored with a warning: `chromium`, `gpu`, `rendering.mode`,
+process cannot be set here and are ignored with a warning: `chromium`, `gpu`, `extensions.paths`, `extensions.disable`, `extensions.native_hosts`, `rendering.mode`,
 `rendering.device_resolution` (set them in the profile), and the application-only `watch_config`.
 The window size (`window.*`) and the other options can differ per workspace. Scrolling settings
 (`input.*`) apply while the workspace's window is the active one.

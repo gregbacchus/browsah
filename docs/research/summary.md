@@ -28,6 +28,7 @@ Wayland is a hard requirement and is met.
 | **Page copy buttons: a per-frame script reports the text** (`writeText`, `execCommand('copy')`, `copy` handlers), used only within 5 s of input | Chromium's own clipboard never reaches Wayland; see [page-copy-buttons.md](page-copy-buttons.md) |
 | **Use Lucide icons: drawn from a 24 px grid, 1.5 px stroke, shown at the usual 16 px** | One consistent outline family with a permissive licence; GTK fills symbolic icons, so they are installed as ordinary icons per style (see [icons-lucide.md](icons-lucide.md)) |
 | **One CEF browser per tab; hide background tabs (`was_hidden`)** | Hidden tabs cost ~0 W and ~0 CPU; only memory (~45 MB each here) | [multi-tab](cef-multi-tab-cost.md) ; built in the app ([tabs](browser-tabs.md)) |
+| **Run Chrome extensions through Chromium's `--load-extension`** (CEF 156 has no extension API); install from the Web Store and check the package signature ourselves | Content scripts, MV3 service workers, native messaging and popups work unmodified; 1Password connected, unlocked and filled; the store download and RSA signature check worked against the real store | [chrome-extensions.md](chrome-extensions.md) |
 | **Use an ordinary tab to display full workspace pins** | Share libadwaita's normal tab layout and keep pin behaviour in the workspace | [pinned tab size](pinned-tab-size.md) |
 | **Preserve open workspaces on profile quit** | Keep the restore list when quitting the profile and use it on cold launches that name a workspace | [workspace restart](workspace-restart.md) |
 | **Cap the frame rate of visible, unfocused tabs** (about 15 fps, 5 for tiny panes), raise on input | 10 busy tabs: 28 W at 60 fps vs 22 W (focused 60 + 9 at 15) vs 15 W (+9 at 5); ramp back to 60 fps in 3-110 ms | [frame rate](cef-variable-frame-rate.md) |
@@ -78,7 +79,8 @@ All at 2880x1568, native Wayland, zero-copy, single run each.
    cross-checked with battery discharge or an external meter.
 5. **Sandbox and packaging.** The CEF sandbox is disabled in the spike; CEF's ~300 MB runtime
    needs a distribution plan (deb, Flatpak, tarball).
-6. **Upstream.** No CEF/Chromium maintainer statement or bug exists for the Mesa/Wayland
+6. **Extensions.** No tab bridge (`chrome.tabs` is empty), no extension keyboard shortcuts or context-menu items, and extensions load only into the profile's shared storage context (measured: none in `storage: isolated` windows, so they cannot be allowed or denied per window, only shown or hidden); 1Password needs a root-owned browser binary and an allowlist entry ([chrome-extensions.md](chrome-extensions.md)).
+7. **Upstream.** No CEF/Chromium maintainer statement or bug exists for the Mesa/Wayland
    failure; a minimal bug report is worth filing.
 
 ## Planned direction

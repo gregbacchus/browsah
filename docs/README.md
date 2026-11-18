@@ -15,6 +15,7 @@ a worked example with a comment.
 | [Routing](config/routing.md) | Where links go: rules, redirectors, sign-ins, modals, `browsah route test` |
 | [Permissions and downloads](config/permissions.md) | What pages may do, remembered answers, the downloads folder |
 | [History](config/history.md) | What is remembered, retention, address-bar suggestions, the history window |
+| [Chrome extensions](config/extensions.md) | Loading extensions, installing from the Chrome Web Store, native messaging, 1Password |
 | [The log](config/log.md) | The log file, `browsah log`, what is logged at each level |
 | [Sweeping tabs](config/sweep.md) | Closing or discarding tabs that are not used |
 | [The profile selector](config/selector.md) | Which profile gets a link from another application |

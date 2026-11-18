@@ -3,6 +3,7 @@
 mod input;
 mod history;
 mod downloads;
+mod extensions;
 mod favicon;
 mod find;
 mod groups;
@@ -206,6 +207,8 @@ pub struct Shell {
     suggest: suggest::Popup,
     /// The downloads button and its list.
     pub downloads: Rc<downloads::Ui>,
+    /// The buttons of Chrome extensions that have a popup (`crate::extensions`), left of the bookmark star.
+    pub extensions: Rc<extensions::Ui>,
     /// The main menu's button.
     pub menu_button: gtk::MenuButton,
     /// The workspace picker's button and list (hidden in web apps and when `workspace_picker` is off).
@@ -913,6 +916,7 @@ impl Shell {
         *self.settings.borrow_mut() = cfg.clone();
         *self.sweeper.borrow_mut() = window_sweeper(self.workspace.is_some(), cfg); // sweep rules and sleeping follow the configuration
         self.picker.button.set_visible(cfg.workspace_picker && !self.workspace.as_ref().is_some_and(|w| w.is_app()));
+        self.refresh_extension_buttons();
         self.refresh_swept();
         self.refresh_color_css(); // the frame options can change while running
         for t in self.tabs.borrow().iter() {
@@ -1607,6 +1611,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let downloads_ui = downloads::Ui::new();
     header.pack_end(&downloads_ui.button);
     header.pack_end(&star);
+    let extensions_ui = extensions::Ui::new();
+    header.pack_end(&extensions_ui.bar);
     let bookmark_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).margin_start(6).margin_end(6).margin_top(2).margin_bottom(2).build();
     let bookmark_scroll = gtk::ScrolledWindow::builder().child(&bookmark_bar).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::Automatic).build();
     let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
@@ -1692,6 +1698,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         private: Cell::new(false),
         suggest: suggest::Popup::new(&entry),
         downloads: downloads_ui.clone(),
+        extensions: extensions_ui.clone(),
         menu_button: menu_button.clone(),
         picker: picker_ui.clone(),
         swept: swept_ui.clone(),
@@ -1738,6 +1745,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         programmatic: Cell::new(false),
     });
     let weak = Rc::downgrade(&shell);
+    extensions_ui.attach(&shell);
+    shell.refresh_extension_buttons();
 
     // Actions on the selected tab.
     let on_tab = |f: fn(&BrowserView)| {

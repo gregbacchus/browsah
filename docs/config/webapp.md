@@ -83,6 +83,12 @@ app and in a workspace (work Slack in an app, personal Slack in a tab). The cost
 disk, and sign-in flows that bounce through a page the routing rules open in the profile's storage rather than the app's.
 All windows of one app share the app's storage. It applies to tabs and windows opened after the change.
 
+### Extensions
+
+An app's window shows no Chrome extension buttons by default; [`extensions.show`](options.md#extensions) in `app.yaml` lists the ids to
+show. With `storage: isolated` there are none at all. The list decides what is shown, not what runs: see
+[extensions.md](extensions.md#per-window-buttons).
+
 ## Windows and tabs
 
 - `multiple_windows` (default `true`): the app may have several windows. The launcher gets a *New Window* action

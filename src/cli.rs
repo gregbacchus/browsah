@@ -28,6 +28,8 @@ commands (all take --profile ID where a profile matters; the default profile is 
   profile add <id> [--name NAME] [--color \"LIGHT [DARK]\"]     | list | install <id> | remove <id> --yes [--keep-data]
   workspace add <id> [--name NAME] [--color ...]               | list | remove <id> --yes
   app add [<id>] --url URL [--name N] [--scope P,...] [--display standalone|minimal|browser] [--color ...] [--icon FILE]
+  system-install [--1password] [--dry-run] [--yes] | system-uninstall      (run with sudo) a root-owned copy in /opt/browsah, for 1Password
+  extension add <id | Chrome Web Store address> | list | update [id] | remove <id> --yes     Chrome extensions
   app list | install <id> | route <id> [--write | --remove] | remove <id> --yes
   config show [--profile=ID] [--config=PATH]                  the effective configuration and where each value came from
   config full [--profile=ID [--workspace=ID]]                  a file with every option, explained

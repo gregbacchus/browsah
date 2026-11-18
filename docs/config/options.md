@@ -1,6 +1,6 @@
 # Options
 
-Defaults are shown; omit a key to get its default. Each option says when it applies: most apply as soon as the file is reloaded, and `chromium.*`, `gpu.*`, `rendering.mode`, `rendering.device_resolution`, `window.width` and `window.height` need a restart (the list is in [Layers and reloading](README.md#layers-and-reloading)). Every option can also be set in a [profile](profile.md) or [workspace](workspace.md) file, except the application-only ones (`watch_config`, `default_profile`), and the process-wide ones in a workspace. Types are explained in [value types](value-types.md).
+Defaults are shown; omit a key to get its default. Each option says when it applies: most apply as soon as the file is reloaded, and `chromium.*`, `gpu.*`, `extensions.paths`, `extensions.disable`, `extensions.native_hosts`, `rendering.mode`, `rendering.device_resolution`, `window.width` and `window.height` need a restart (the list is in [Layers and reloading](README.md#layers-and-reloading)). Every option can also be set in a [profile](profile.md) or [workspace](workspace.md) file, except the application-only ones (`watch_config`, `default_profile`), and the process-wide ones in a workspace. Types are explained in [value types](value-types.md).
 
 ## Startup and search
 
@@ -222,3 +222,24 @@ logging:
 gpu:
   workarounds: true
 ```
+
+## `extensions`
+
+Chrome extensions, loaded into Chromium at start-up ([extensions.md](extensions.md): installing from the Chrome Web Store, setting up 1Password, what works). Extensions installed in the profile load without being listed. `extensions.paths`, `extensions.disable` and `extensions.native_hosts` are fixed for the running process: they apply at the next start and are ignored in a workspace's or app's file. `extensions.hide` and `extensions.show` apply to one window and take effect when the file is reloaded.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `extensions.paths` | list of paths | `[]` | Folders of unpacked extensions to load, in addition to the ones installed in the profile (`~` is your home folder; `paths+:` appends to a lower layer's list). Each folder needs a `manifest.json`; one without is reported at start-up and skipped. An extension whose manifest has no `key` gets an id derived from its folder's path, so moving the folder changes the id. |
+| `extensions.disable` | list of extension ids | `[]` | Installed extensions not to load (the 32-letter id, as `browsah extension list` shows it). |
+| `extensions.native_hosts` | bool | `true` | At start-up, copy the native messaging host manifests that a loaded extension names in `allowed_origins` from Chrome's and Chromium's folders (`~/.config/google-chrome`, `chromium`, Brave, Edge, Vivaldi and `/etc/opt/chrome`) into the profile, so an extension that talks to a desktop program (1Password) finds it. The copies are overwritten when the original changes; set `false` to keep your own manifests in `<profile>/cef/NativeMessagingHosts/`. |
+
+| `extensions.hide` | list of extension ids | `[]` | Extensions whose toolbar button (and popup) a **workspace** window does not show. A workspace window shows all the profile's extensions by default, so this is the deny list; ignored in an app. Layers: a list in the workspace replaces the profile's, `hide+:` appends. This decides what browsah *shows*, not what runs: see [extensions.md](extensions.md#per-window-buttons). |
+| `extensions.show` | list of extension ids | `[]` | Extensions whose toolbar button (and popup) a **web app's** window shows. An app shows none by default, so this is the allow list; ignored in a workspace. Layers as for `hide`. A window with `storage: isolated` shows no extension buttons at all, whatever these lists say (extensions are not loaded there). |
+
+```yaml
+extensions:
+  paths: ["~/src/my-extension"]
+  disable: []
+  native_hosts: true
+  hide: []
+  show: []

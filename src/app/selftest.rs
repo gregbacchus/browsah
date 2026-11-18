@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "newtab",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "newtab", "extensions",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -458,6 +458,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("favicon") {
         run_favicon(shell, r).await;
+    }
+    if wants("extensions") {
+        run_extensions(shell, r).await;
     }
 }
 
@@ -2085,6 +2088,158 @@ async fn eval_string(tab: &Rc<super::Tab>, expression: &str) -> Option<String> {
     let (_, json) = v.cdp_result(id)?;
     let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json).ok()?;
     parsed.get("result")?.get("value")?.as_str().map(str::to_owned)
+}
+
+/// As `eval_string`, in any browser view (an extension's popup is not a tab).
+async fn eval_view(v: &Rc<super::view::BrowserView>, expression: &str) -> Option<String> {
+    let id = v.cdp_eval(expression);
+    let _ = wait_until(15_000, || v.cdp_result(id).is_some()).await;
+    let (_, json) = v.cdp_result(id)?;
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json).ok()?;
+    parsed.get("result")?.get("value")?.as_str().map(str::to_owned)
+}
+
+/// Chrome extensions (docs/config/extensions.md): Chromium loads the fixture extension `bench/extensions/test-ext` (`main` adds it
+/// only when this section is named), its content script runs in a page, its toolbar button opens the popup in a popover, the popup
+/// reaches the extension's service worker and a native messaging host, and a link the popup opens becomes a tab of the window.
+async fn run_extensions(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::WidgetExt;
+    let port = start_test_server();
+    let Some(ext) = crate::extensions::loaded().iter().find(|e| e.name == "browsah test extension") else {
+        r.check("the test extension is loaded", false, || format!("{:?}", crate::extensions::loaded()));
+        return;
+    };
+    r.check("the test extension is loaded with the id its key gives", ext.id == "lejbaaojahembfgeinddihjmgpecigml", || ext.id.clone());
+
+    // A content script runs in a page the extension matches.
+    let tab = shell.open_tab(&format!("http://localhost:{port}/white.html"), true);
+    let _ = wait_until(15_000, || !tab.state.borrow().loading && tab.state.borrow().address.contains("white.html")).await;
+    let marker = eval_string(&tab, "(async () => { for (let i = 0; i < 50 && !document.documentElement.hasAttribute('data-browsah-ext'); i++) await new Promise(r => setTimeout(r, 100)); return document.documentElement.getAttribute('data-browsah-ext') || 'none'; })()").await;
+    r.check("an extension's content script runs in a page", marker.as_deref() == Some("content-script"), || format!("{marker:?}"));
+
+    // The toolbar button and its popup.
+    let host = shell.extensions.host(&ext.id).cloned();
+    r.check("an extension with a popup gets a toolbar button", host.is_some() && shell.extensions.bar.is_visible(), || "no button".into());
+    let Some(host) = host else { return };
+    host.button.popup();
+    let opened = wait_until(10_000, || host.view().is_some()).await;
+    r.check("the button opens the popup in a popover", opened, || "no view".into());
+    let Some(view) = host.view() else { return };
+    // The page is still loading when the view appears: ask again until the script runs in the popup (not in about:blank).
+    let mut text = None;
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        text = eval_view(&view, "document.getElementById('t') ? document.getElementById('t').textContent : 'no page yet'").await.filter(|t| t.starts_with("popup ok"));
+        if text.is_some() {
+            break;
+        }
+        glib::timeout_future(Duration::from_millis(250)).await;
+    }
+    r.check("the popup page runs with the extension's APIs (chrome.runtime.id)", text.as_deref() == Some(&format!("popup ok {}", ext.id)), || format!("{text:?}"));
+    glib::timeout_future(Duration::from_millis(500)).await;
+    shot(&host.popover, "extension-popup");
+    let (w, h) = (view.widget.width(), view.widget.height());
+    r.check("the popup has its fixed size (400 x 600)", (w - 400).abs() <= 2 && (h - 600).abs() <= 2, || format!("{w} x {h}"));
+    let pong = eval_view(&view, "new Promise(r => chrome.runtime.sendMessage('ping', x => r(String(x))))").await;
+    r.check("the popup reaches the extension's service worker", pong.as_deref() == Some("pong"), || format!("{pong:?}"));
+
+    // Native messaging: a host manifest in the profile's folder, as the start-up copy would leave it.
+    let have_python = std::process::Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success());
+    if have_python {
+        let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+        let dir = crate::extensions::host_dir(&profile.cef_dir());
+        let program = std::env::current_dir().expect("current dir").join("bench/extensions/echo-host.py");
+        let _ = std::fs::create_dir_all(&dir);
+        let manifest = format!(r#"{{"name":"be.geee.browsah.selftest","description":"self-test","path":"{}","type":"stdio","allowed_origins":["chrome-extension://{}/"]}}"#, program.display(), ext.id);
+        std::fs::write(dir.join("be.geee.browsah.selftest.json"), manifest).expect("host manifest");
+        let echoed = eval_view(&view, "new Promise(r => chrome.runtime.sendNativeMessage('be.geee.browsah.selftest', {hi: 1}, x => r(JSON.stringify(x) || String(chrome.runtime.lastError && chrome.runtime.lastError.message))))").await;
+        r.check("the popup talks to a native messaging host", echoed.as_deref().is_some_and(|e| e.contains(r#""echo":{"hi":1}"#)), || format!("{echoed:?}"));
+    } else {
+        eprintln!("extensions: python3 not found, native messaging not checked");
+    }
+
+    // A link the popup opens is a tab of the window, and the popup goes.
+    let before = shell.tabs().len();
+    view.cdp_eval_as(&format!("window.open('http://localhost:{port}/b.html', '_blank'); 1"), true);
+    let opened_tab = wait_until(10_000, || shell.tabs().len() == before + 1).await;
+    r.check("a link the popup opens becomes a tab of the window", opened_tab, || format!("{} tabs, expected {}", shell.tabs().len(), before + 1));
+    let _ = wait_until(5_000, || host.view().is_none()).await;
+    r.check("the popup closes with its popover", host.view().is_none() && !host.popover.is_visible(), || "still open".into());
+
+    // Which buttons a window shows: a workspace window every extension except `extensions.hide`, an app's window only `extensions.show`,
+    // and a window with its own storage none (no extension is loaded there).
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let id = ext.id.clone();
+    let home = format!("http://localhost:{port}/white.html");
+    let ws_ids = ["exw1", "exw2", "exw3"];
+    let app_ids = ["exa1", "exa2", "exa3"];
+    let cleanup = || {
+        for x in super::windows() {
+            if !Rc::ptr_eq(&x, shell) && x.workspace.as_ref().is_some_and(|w| ws_ids.contains(&w.id.as_str()) || app_ids.contains(&w.id.as_str())) {
+                x.window.close();
+            }
+        }
+        for i in ws_ids {
+            let _ = std::fs::remove_dir_all(profile.workspaces_dir().join(i));
+            let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(i));
+        }
+        for i in app_ids {
+            let _ = std::fs::remove_dir_all(profile.apps_dir().join(i));
+            let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(i));
+        }
+    };
+    cleanup();
+    let workspaces = [
+        ("exw1", format!("extensions:\n  hide: ['{id}']\n")),
+        ("exw2", String::new()),
+        ("exw3", "storage: isolated\n".to_owned()),
+    ];
+    for (wid, extra) in &workspaces {
+        let dir = profile.workspaces_dir().join(wid);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        std::fs::write(dir.join("workspace.yaml"), format!("name: {wid}\nhome_page: '{home}'\n{extra}")).expect("workspace.yaml");
+    }
+    let apps = [
+        ("exa1", String::new()),
+        ("exa2", format!("extensions:\n  show: ['{id}']\n")),
+        ("exa3", format!("storage: isolated\nextensions:\n  show: ['{id}']\n")),
+    ];
+    for (aid, extra) in &apps {
+        let dir = profile.apps_dir().join(aid);
+        std::fs::create_dir_all(&dir).expect("app dir");
+        std::fs::write(dir.join("app.yaml"), format!("name: {aid}\nurl: 'http://localhost:{port}/scope.html'\n{extra}")).expect("app.yaml");
+    }
+    let find = |wid: &str| super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == wid));
+    let button_shown = |wid: &str| find(wid).and_then(|s| s.extensions.host(&id).map(|h| h.button.is_visible()));
+    for wid in ws_ids.iter().chain(app_ids.iter()) {
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&wid.to_variant()));
+        let _ = wait_until(20_000, || find(wid).is_some_and(|s| s.current().is_some_and(|t| !t.state.borrow().loading))).await;
+    }
+    r.check("a workspace window shows the extension's button by default", button_shown("exw2") == Some(true), || format!("{:?}", button_shown("exw2")));
+    r.check("extensions.hide hides it in that workspace's window", button_shown("exw1") == Some(false), || format!("{:?}", button_shown("exw1")));
+    r.check("a workspace with its own storage shows none (no extension is loaded there)", button_shown("exw3") == Some(false), || format!("{:?}", button_shown("exw3")));
+    r.check("an app window shows no extension button by default", button_shown("exa1") == Some(false), || format!("{:?}", button_shown("exa1")));
+    r.check("extensions.show gives the app the button", button_shown("exa2") == Some(true), || format!("{:?}", button_shown("exa2")));
+    r.check("an app with its own storage shows none even when listed", button_shown("exa3") == Some(false), || format!("{:?}", button_shown("exa3")));
+    r.check("the main window still shows it", shell.extensions.host(&id).is_some_and(|h| h.button.is_visible()), || "hidden".into());
+    // A reload of the configuration applies without reopening the window.
+    if let Some(w) = find("exw2") {
+        let mut cfg = w.settings.borrow().clone();
+        cfg.extensions.hide.push(id.clone());
+        w.apply_config(&cfg);
+        let hidden = button_shown("exw2") == Some(false);
+        cfg.extensions.hide.clear();
+        w.apply_config(&cfg);
+        r.check("changing extensions.hide applies live, both ways", hidden && button_shown("exw2") == Some(true), || format!("hidden {hidden}, then {:?}", button_shown("exw2")));
+    }
+    if let Some(w) = find("exw2") {
+        glib::timeout_future(Duration::from_millis(800)).await;
+        shot(&w.header, "extension-button-workspace");
+    }
+    cleanup();
 }
 
 /// Permissions: the configuration allows or denies (per kind and per site) without asking; `ask` puts a

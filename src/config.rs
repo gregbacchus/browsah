@@ -65,6 +65,7 @@ pub struct Config {
     pub rendering: RenderingConfig,
     pub chromium: ChromiumConfig,
     pub gpu: GpuConfig,
+    pub extensions: ExtensionsConfig,
     pub input: InputConfig,
     pub history: HistoryConfig,
     pub permissions: crate::permissions::PermissionsConfig,
@@ -116,6 +117,29 @@ pub struct RenderingConfig {
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
 pub struct ChromiumConfig {
     pub flags: Vec<String>,
+}
+
+/// Chrome extensions (docs/config/options.md `extensions`): loaded into Chromium at start-up.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct ExtensionsConfig {
+    /// Extra unpacked extension folders to load, on top of the ones installed in the profile (`~` is the home folder).
+    pub paths: Vec<String>,
+    /// Ids of installed extensions not to load.
+    pub disable: Vec<String>,
+    /// Copy the native messaging host manifests an extension uses from Chrome/Chromium's folders at start-up.
+    pub native_hosts: bool,
+    /// Extension ids whose toolbar button a workspace window does not show (it shows all the profile's extensions by default).
+    pub hide: Vec<String>,
+    /// Extension ids whose toolbar button a web app's window shows (it shows none by default).
+    pub show: Vec<String>,
+}
+
+impl Default for ExtensionsConfig {
+    fn default() -> Self {
+        Self { paths: Vec::new(), disable: Vec::new(), native_hosts: true, hide: Vec::new(), show: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +201,7 @@ impl Default for Config {
             rendering: RenderingConfig::default(),
             chromium: ChromiumConfig::default(),
             gpu: GpuConfig::default(),
+            extensions: ExtensionsConfig::default(),
             input: InputConfig::default(),
             history: HistoryConfig::default(),
             permissions: Default::default(),
@@ -467,10 +492,10 @@ pub const APP_ONLY: &[&str] = &["watch_config", "default_profile"];
 /// Options fixed per process, so a workspace (a window of the process) cannot set them; a profile
 /// (which is a process) can.
 #[cfg_attr(not(test), allow(dead_code))] // documentation of what `WORKSPACE_IGNORED` contains
-pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "logging", "rendering.mode", "rendering.device_resolution"];
+pub const PROCESS_ONLY: &[&str] = &["chromium", "gpu", "extensions.paths", "extensions.disable", "extensions.native_hosts", "logging", "rendering.mode", "rendering.device_resolution"];
 
 /// What a workspace file may not set: the application-only and the process-only options.
-pub(crate) const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "logging", "rendering.mode", "rendering.device_resolution"];
+pub(crate) const WORKSPACE_IGNORED: &[&str] = &["watch_config", "default_profile", "chromium", "gpu", "extensions.paths", "extensions.disable", "extensions.native_hosts", "logging", "rendering.mode", "rendering.device_resolution"];
 
 /// One layer merged over the application file.
 pub struct Layer<'a> {
@@ -608,7 +633,7 @@ pub struct Changes {
 }
 
 /// Options that are fixed when the process or a window starts.
-const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "logging.", "rendering.mode", "rendering.device_resolution", "window.width", "window.height"];
+const RESTART_REQUIRED: &[&str] = &["chromium.", "gpu.", "extensions.paths", "extensions.disable", "extensions.native_hosts", "logging.", "rendering.mode", "rendering.device_resolution", "window.width", "window.height"];
 
 pub fn changes(old: &Config, new: &Config) -> Changes {
     let flat = |c: &Config| -> std::collections::BTreeMap<String, Value> {
@@ -667,6 +692,7 @@ mod tests {
         add("rendering", field_names::<RenderingConfig>());
         add("chromium", field_names::<ChromiumConfig>());
         add("gpu", field_names::<GpuConfig>());
+        add("extensions", field_names::<ExtensionsConfig>());
         add("input", field_names::<InputConfig>());
         add("history", field_names::<HistoryConfig>());
         add("permissions", field_names::<crate::permissions::PermissionsConfig>());
@@ -711,7 +737,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

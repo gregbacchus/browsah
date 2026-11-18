@@ -124,5 +124,12 @@ print:
   paper: a4                 # a4 | letter
   backgrounds: true         # print background colours and images
 
+extensions:                 # Chrome extensions (docs/config/extensions.md); applies at the next start
+  paths: []                 # extra unpacked extension folders to load, e.g. ["~/src/my-extension"] (installed ones load without being listed)
+  disable: []               # ids of installed extensions not to load
+  native_hosts: true        # copy the native messaging hosts an extension needs (1Password) from Chrome's/Chromium's folders
+  hide: []                  # a workspace window shows every extension's button except these ids (this applies per window, live)
+  show: []                  # a web app's window shows no extension's button except these ids
+
 gpu:
   workarounds: true        # per-GPU environment fixes (AMD_DEBUG=nodcc on AMD, INTEL_DEBUG=noccs on Intel)

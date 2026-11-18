@@ -20,4 +20,8 @@ serde_yaml_ng = "0.10"
 # Reads a site's page and web manifest for `browsah app add`. The rustls provider is chosen here and certificates come from
 # the system (no bundled root list), so the licences stay MIT/Apache-2.0/ISC.
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier", "gzip"] }
+# Unpacks a downloaded extension (a CRX is a zip with a header). MIT licensed; deflate only.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# SHA-256 for extension ids and (later) the signature check of a downloaded extension; already in the tree through rustls.
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

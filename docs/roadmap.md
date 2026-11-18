@@ -148,6 +148,12 @@ per-profile instance with D-Bus URL handoff; layered config with a schema per le
 `route test`; workspaces; web apps; sweeping and history; permissions as cascading config.
 Password-manager integration (1Password) is a separate investigation.
 
+**Chrome extensions are built** (2026-11-19): installed from the Chrome Web Store with `browsah extension add|list|update|remove` (package signature
+checked), loaded through Chromium's `--load-extension`, native messaging hosts copied from Chrome's folders, a toolbar button with the popup in a
+popover, per-window button lists (`extensions.hide` for workspaces, `extensions.show` for apps; they decide what is shown, not what runs). The 1Password extension was measured to connect, unlock, suggest and fill. Not built: a bridge that shows browsah's tabs to `chrome.tabs`,
+extension keyboard shortcuts and context-menu items, background auto-update; extensions are absent from `storage: isolated` windows (measured). See
+[docs/config/extensions.md](config/extensions.md).
+
 ## Still open
 
 - **Name, repo layout:** the repo is `browsah`; the app id is `be.geee.browsah`.
