@@ -118,7 +118,7 @@ a different profile's browser and another build of the tree were running at the 
 `sudo browsah system-install [--1password]` copies the program to `/opt/browsah` (root-owned), writes `/usr/local/bin/browsah` and optionally adds
 `browsah` to 1Password's allow-list, after printing each change and asking. Tested as a normal user against temporary folders (plan, copy, replace,
 launcher, allow-list lines, refusals, uninstall) and as a dry run against the real paths. **Not tested:** a run under `sudo` (so that the copy really is
-root-owned), 1Password accepting that copy (it did accept the earlier hand-made `/opt/browsah-test` copy), and the Homebrew path. A source build copies about 1.6 GB
+root-owned), 1Password accepting that copy (it did accept the earlier hand-made `/opt/browsah-test` copy), and the Homebrew path. `browsah system-upgrade` (run from the installed copy, no sudo needed from the person) reads the `INSTALL` note, compares the program files with the copy it came from and runs that copy's `system-install` through `sudo env LD_LIBRARY_PATH=… BROWSAH_LIBS=…` (sudo removes the library path). Tested against temporary prefixes as a dry run (up to date, a changed copy, no note, missing source) and in unit tests; **not** run under sudo. A source build copies about 1.6 GB
 (its `libcef.so` is not stripped; the release tarball's is).
 
 ## Not yet known

@@ -91,7 +91,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
     }
-    if matches!(args.first().map(String::as_str), Some("system-install" | "system-uninstall")) {
+    if matches!(args.first().map(String::as_str), Some("system-install" | "system-uninstall" | "system-upgrade")) {
         std::process::exit(system_install::cli(&args[0], &args[1..]));
     }
     if args.first().map(String::as_str) == Some("extension") {
@@ -175,6 +175,10 @@ fn main() {
 
     log::init(&profile.id, cfg.logging.level);
     log_info!("profile {:?}, {}", profile.id, if test_run { "test run" } else { "normal start" });
+    // A root-owned copy made by `system-install` that the copy it came from has since moved past (`brew upgrade`).
+    if let Some(hint) = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).and_then(|p| system_install::stale_check(&p)) {
+        log_warn!("{hint}");
+    }
     // Must happen before CEF starts: its child processes inherit the environment.
     if cfg.gpu.workarounds && std::env::var_os("BROWSAH_NO_GPU_WORKAROUNDS").is_none() {
         for w in gpu::apply_workarounds() {

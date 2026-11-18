@@ -181,7 +181,7 @@ versioned install directory) are repaired the next time any profile is started f
 
 **1Password (and anything else that insists on a root-owned browser):** a Homebrew install is owned by you, so 1Password refuses it.
 `sudo "$(brew --prefix)/bin/browsah" system-install --1password` puts a root-owned copy in `/opt/browsah` and a start-up script in
-`/usr/local/bin`, after printing what it will change and asking; see [docs/config/extensions.md](docs/config/extensions.md#1password).
+`/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah system-upgrade` updates it; see [docs/config/extensions.md](docs/config/extensions.md#1password).
 
 **Releasing** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then
 

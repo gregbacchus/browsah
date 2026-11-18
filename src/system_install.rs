@@ -35,9 +35,17 @@ pub struct Plan {
     pub bin_dir: PathBuf,
     /// The 1Password allow-list file to add `browsah` to (only with `--1password`).
     pub allowlist: Option<PathBuf>,
+    /// Where `system-upgrade` will look for a newer copy: the stable path of the copy being installed (Homebrew's `opt` folder), which is
+    /// `source` unless the program was started through a launcher that names a steadier one.
+    pub record_source: PathBuf,
 }
 
 impl Plan {
+    pub fn with_recorded_source(mut self, source: PathBuf) -> Self {
+        self.record_source = source;
+        self
+    }
+
     pub fn launcher_path(&self) -> PathBuf {
         self.bin_dir.join("browsah")
     }
@@ -93,14 +101,14 @@ pub fn plan(source: &Path, prefix: &Path, bin_dir: &Path, allowlist: Option<&Pat
             return Err(format!("{} does not exist: is the 1Password desktop app installed? (nothing was changed)", list.display()));
         }
     }
-    Ok(Plan { source: source.to_path_buf(), files, bytes, prefix: prefix.to_path_buf(), bin_dir: bin_dir.to_path_buf(), allowlist: allowlist.map(Path::to_path_buf) })
+    Ok(Plan { source: source.to_path_buf(), files, bytes, prefix: prefix.to_path_buf(), bin_dir: bin_dir.to_path_buf(), allowlist: allowlist.map(Path::to_path_buf), record_source: source.to_path_buf() })
 }
 
 /// The plan in words: every file or folder that will be created or changed, and why.
 pub fn describe(p: &Plan) -> String {
     let mut s = String::new();
     s.push_str("browsah system-install will make these changes:\n\n");
-    s.push_str(&format!("  1. Copy the program ({} files, {:.0} MB) from\n       {}\n     to\n       {}\n     owned by root and not writable by anyone else. An older copy there is replaced.\n", p.files.len(), p.bytes as f64 / 1e6, p.source.display(), p.prefix.display()));
+    s.push_str(&format!("  1. Copy the program ({} files, {:.0} MB) from\n       {}\n     to\n       {}\n     owned by root and not writable by anyone else. An older copy there is replaced. A small note, INSTALL, records where it came from\n     so that `browsah system-upgrade` can update it later.\n", p.files.len(), p.bytes as f64 / 1e6, p.source.display(), p.prefix.display()));
     s.push_str(&format!("  2. Write the start-up script {} (sets the library path, then runs {}/browsah).\n     It replaces an earlier script of this command; any other file there is left alone and stops the install.\n", p.launcher_path().display(), p.prefix.display()));
     match &p.allowlist {
         Some(l) => s.push_str(&format!("  3. Add the line `browsah` to {}\n     (1Password's list of browsers it trusts; skipped if it is already there).\n", l.display())),
@@ -147,6 +155,137 @@ fn remove_from_allowlist(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The note `system-install` leaves in the install folder (`INSTALL`): where the copy came from, so `system-upgrade` can find a newer one.
+const RECORD_FILE: &str = "INSTALL";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Record {
+    /// The folder the program was copied from (Homebrew's stable `opt/browsah/libexec`, or a build's folder).
+    pub source: PathBuf,
+    pub version: String,
+    pub one_password: bool,
+    pub bin_dir: PathBuf,
+}
+
+pub fn record_text(source: &Path, version: &str, one_password: bool, bin_dir: &Path) -> String {
+    format!("source={}\nversion={version}\n1password={}\nbin_dir={}\n", source.display(), if one_password { "yes" } else { "no" }, bin_dir.display())
+}
+
+pub fn parse_record(text: &str) -> Option<Record> {
+    let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_owned));
+    let source = PathBuf::from(get("source")?);
+    let bin_dir = PathBuf::from(get("bin_dir")?);
+    if !source.is_absolute() || !bin_dir.is_absolute() {
+        return None;
+    }
+    Some(Record { source, version: get("version")?, one_password: get("1password")? == "yes", bin_dir })
+}
+
+pub fn read_record(prefix: &Path) -> Option<Record> {
+    parse_record(&std::fs::read_to_string(prefix.join(RECORD_FILE)).ok()?)
+}
+
+/// Do two files have the same contents?
+fn same_content(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let digest = |p: &Path| -> Option<Vec<u8>> {
+        let mut f = std::fs::File::open(p).ok()?;
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = f.read(&mut buf).ok()?;
+            if n == 0 {
+                break;
+            }
+            ctx.update(&buf[..n]);
+        }
+        Some(ctx.finish().as_ref().to_vec())
+    };
+    match (digest(a), digest(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The program started from the installed folder `exe`, if the copy it was installed from has changed since (`brew upgrade`, a new
+/// build): a sentence telling the person to run `browsah system-upgrade`. `None` when this is not an installed copy, or it is current.
+pub fn stale_check(exe: &Path) -> Option<String> {
+    let prefix = exe.parent()?;
+    let rec = read_record(prefix)?;
+    let other = rec.source.join("browsah");
+    if rec.source == prefix || !other.is_file() || same_content(exe, &other) {
+        return None;
+    }
+    Some(format!("the browsah in {} (version {}) differs from the copy it was installed from, {}: run `browsah system-upgrade` to update it", prefix.display(), rec.version, rec.source.display()))
+}
+
+/// What `system-upgrade` has `sudo` run: the newer copy's own `system-install`, with the same choices as the first install. `env` carries the
+/// library path, which sudo removes, and tells the program its stable folder (so the note it leaves names that, not a versioned folder).
+pub fn upgrade_command(source: &Path, rec: &Record, prefix: &Path, yes: bool, as_root: bool) -> Vec<String> {
+    let src = source.display().to_string();
+    let mut c: Vec<String> = Vec::new();
+    if !as_root {
+        c.push("sudo".into());
+    }
+    c.extend(["env".into(), format!("LD_LIBRARY_PATH={src}"), format!("BROWSAH_LIBS={src}"), format!("{src}/browsah"), "system-install".into()]);
+    if rec.one_password {
+        c.push("--1password".into());
+    }
+    if prefix != Path::new(DEFAULT_PREFIX) {
+        c.push(format!("--prefix={}", prefix.display()));
+    }
+    if rec.bin_dir != Path::new(DEFAULT_BIN_DIR) {
+        c.push(format!("--bin-dir={}", rec.bin_dir.display()));
+    }
+    if yes {
+        c.push("--yes".into());
+    }
+    c
+}
+
+/// The version a program folder says (`browsah --version`), for display; `None` if it cannot be run.
+fn version_of(source: &Path) -> Option<String> {
+    let out = std::process::Command::new(source.join("browsah")).arg("--version").env("LD_LIBRARY_PATH", source).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).split_whitespace().last().map(str::to_owned)
+}
+
+/// `browsah system-upgrade`: update the root-owned copy from the copy it was installed from (Homebrew's, after `brew upgrade`), asking for
+/// your password through sudo.
+fn upgrade_cli(args: &[String]) -> i32 {
+    let prefix = PathBuf::from(flag(args, "--prefix").unwrap_or_else(|| DEFAULT_PREFIX.into()));
+    let (yes, dry, force) = (args.iter().any(|a| a == "--yes"), args.iter().any(|a| a == "--dry-run"), args.iter().any(|a| a == "--force"));
+    let Some(rec) = read_record(&prefix) else {
+        eprintln!("{} has no INSTALL note: it was not made by `system-install` (or by an older version of it).\nRun system-install once from the copy you want to install, for Homebrew: sudo \"$(brew --prefix)/bin/browsah\" system-install --1password", prefix.display());
+        return 1;
+    };
+    let source = flag(args, "--from").map(PathBuf::from).unwrap_or_else(|| rec.source.clone());
+    if !source.join("browsah").is_file() {
+        eprintln!("the copy it was installed from, {}, is gone or has no browsah in it.\nGive the folder of the copy to install with --from=DIR, or run system-install from it.", source.display());
+        return 1;
+    }
+    let up_to_date = same_content(&prefix.join("browsah"), &source.join("browsah"));
+    let (have, want) = (rec.version.clone(), version_of(&source).unwrap_or_else(|| "unknown".into()));
+    if up_to_date && !force {
+        println!("browsah {have} in {} is up to date with {}.", prefix.display(), source.display());
+        return 0;
+    }
+    println!("Installed: browsah {have} in {}\nAvailable: browsah {want} in {}{}\n", prefix.display(), source.display(), if up_to_date { " (the same program; --force)" } else { "" });
+    let as_root = unsafe { libc::geteuid() } == 0;
+    let cmd = upgrade_command(&source, &rec, &prefix, yes, as_root);
+    println!("To update it, browsah runs this{}:\n  {}\n(system-install then prints what it will change and asks before doing it.)", if as_root { "" } else { " and sudo asks for your password" }, cmd.join(" "));
+    if dry {
+        println!("\n(dry run: nothing was run)");
+        return 0;
+    }
+    match std::process::Command::new(&cmd[0]).args(&cmd[1..]).status() {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("cannot run {}: {e}", cmd[0]);
+            1
+        }
+    }
+}
+
 /// Carry out the plan. Returns what was done, one line each. The copy is made beside the destination and renamed into place, so
 /// a failure part-way leaves the old install as it was.
 pub fn apply(p: &Plan) -> Result<Vec<String>, String> {
@@ -171,6 +310,9 @@ pub fn apply(p: &Plan) -> Result<Vec<String>, String> {
             std::fs::copy(p.source.join(rel), &to).map_err(|e| format!("copying {}: {e}", rel.display()))?;
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(*mode)).map_err(|e| permission_hint(&e, &to))?;
         }
+        let note = staging.join(RECORD_FILE);
+        std::fs::write(&note, record_text(&p.record_source, env!("CARGO_PKG_VERSION"), p.allowlist.is_some(), &p.bin_dir)).map_err(|e| permission_hint(&e, &note))?;
+        std::fs::set_permissions(&note, std::fs::Permissions::from_mode(0o644)).map_err(|e| permission_hint(&e, &note))?;
         std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).map_err(|e| permission_hint(&e, &staging))?;
         Ok(())
     })();
@@ -241,6 +383,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 const USAGE: &str = "usage: sudo BROWSAH system-install [--1password] [--dry-run] [--yes] [--prefix=DIR] [--bin-dir=DIR]
        sudo BROWSAH system-uninstall [--1password] [--yes] [--prefix=DIR] [--bin-dir=DIR]
+       browsah system-upgrade [--dry-run] [--yes] [--force] [--from=DIR]     (no sudo: it runs sudo itself)
 
 BROWSAH is the full path of the copy to install: \"$(brew --prefix)/bin/browsah\" for Homebrew, or ./target/release/browsah for a build
 (not /usr/local/bin/browsah, which is the installed copy).
@@ -261,6 +404,9 @@ pub fn cli(command: &str, args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return 0;
+    }
+    if command == "system-upgrade" {
+        return upgrade_cli(args);
     }
     let prefix = PathBuf::from(flag(args, "--prefix").unwrap_or_else(|| DEFAULT_PREFIX.into()));
     let bin_dir = PathBuf::from(flag(args, "--bin-dir").unwrap_or_else(|| DEFAULT_BIN_DIR.into()));
@@ -299,6 +445,11 @@ pub fn cli(command: &str, args: &[String]) -> i32 {
             eprintln!("{e}");
             return 1;
         }
+    };
+    // A launcher (Homebrew's) names the steady folder to update from later; otherwise it is the folder being copied.
+    let plan = match std::env::var_os("BROWSAH_LIBS").map(PathBuf::from).filter(|d| d.is_absolute() && d.join("browsah").is_file()) {
+        Some(stable) => plan.with_recorded_source(stable),
+        None => plan,
     };
     println!("{}", describe(&plan));
     if unsafe { libc::geteuid() } != 0 {
@@ -457,6 +608,55 @@ mod tests {
             assert!(!root_owned_and_locked(&d.join("f")), "a file you made is not root-owned");
         }
         assert!(!root_owned_and_locked(&d.join("missing")));
+    }
+
+    #[test]
+    fn system_upgrade_install_leaves_a_note_of_where_it_came_from() {
+        let (src, dst) = (temp("rec-src"), temp("rec-dst"));
+        fake_source(&src);
+        let stable = temp("rec-stable");
+        let (prefix, bin) = (dst.join("opt/browsah"), dst.join("bin"));
+        let list = dst.join("allowed");
+        std::fs::write(&list, "x\n").unwrap();
+        apply(&plan(&src, &prefix, &bin, Some(&list)).unwrap().with_recorded_source(stable.clone())).unwrap();
+        let rec = read_record(&prefix).expect("the note");
+        assert_eq!(rec, Record { source: stable.clone(), version: env!("CARGO_PKG_VERSION").into(), one_password: true, bin_dir: bin.clone() });
+        assert_eq!(std::fs::metadata(prefix.join("INSTALL")).unwrap().permissions().mode() & 0o777, 0o644);
+        // Without --1password the note says so, and the source defaults to the folder copied from.
+        apply(&plan(&src, &prefix, &bin, None).unwrap()).unwrap();
+        let rec = read_record(&prefix).unwrap();
+        assert!(!rec.one_password && rec.source == src);
+        assert!(parse_record("source=relative\nversion=1\n1password=no\nbin_dir=/x\n").is_none(), "paths must be absolute");
+        assert!(parse_record("version=1\n").is_none());
+    }
+
+    #[test]
+    fn system_upgrade_runs_the_new_copys_install_with_the_same_choices() {
+        let rec = Record { source: PathBuf::from("/brew/opt/browsah/libexec"), version: "0.2.0".into(), one_password: true, bin_dir: PathBuf::from(DEFAULT_BIN_DIR) };
+        let cmd = upgrade_command(&rec.source, &rec, Path::new(DEFAULT_PREFIX), false, false);
+        assert_eq!(cmd, ["sudo", "env", "LD_LIBRARY_PATH=/brew/opt/browsah/libexec", "BROWSAH_LIBS=/brew/opt/browsah/libexec", "/brew/opt/browsah/libexec/browsah", "system-install", "--1password"]);
+        let other = Record { one_password: false, bin_dir: PathBuf::from("/usr/bin"), ..rec.clone() };
+        let cmd = upgrade_command(&other.source, &other, Path::new("/srv/browsah"), true, true);
+        assert_eq!(cmd[0], "env", "no sudo when already root");
+        assert!(!cmd.contains(&"--1password".to_owned()) && cmd.contains(&"--prefix=/srv/browsah".to_owned()) && cmd.contains(&"--bin-dir=/usr/bin".to_owned()) && cmd.last().map(String::as_str) == Some("--yes"), "{cmd:?}");
+    }
+
+    #[test]
+    fn system_upgrade_notices_a_changed_source_but_not_an_unchanged_one_or_a_plain_copy() {
+        let (src, dst) = (temp("stale-src"), temp("stale-dst"));
+        fake_source(&src);
+        let (prefix, bin) = (dst.join("opt/browsah"), dst.join("bin"));
+        apply(&plan(&src, &prefix, &bin, None).unwrap()).unwrap();
+        let installed = prefix.join("browsah");
+        assert_eq!(stale_check(&installed), None, "the same program in both places");
+        std::fs::write(src.join("browsah"), "a newer build").unwrap();
+        let hint = stale_check(&installed).expect("the source changed");
+        assert!(hint.contains("browsah system-upgrade") && hint.contains(&src.display().to_string()), "{hint}");
+        std::fs::remove_file(src.join("browsah")).unwrap();
+        assert_eq!(stale_check(&installed), None, "the source is gone: nothing to compare");
+        // A program that is not an installed copy (no INSTALL note beside it) is never nagged.
+        assert_eq!(stale_check(&src.join("libcef.so")), None);
+        assert!(same_content(&prefix.join("libcef.so"), &prefix.join("libcef.so")) && !same_content(&prefix.join("libcef.so"), &prefix.join("resources.pak")) && !same_content(&prefix.join("libcef.so"), &prefix.join("missing")));
     }
 
     #[test]

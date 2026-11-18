@@ -95,7 +95,7 @@ modify** and whose file name is on its list. A build you made, or a Homebrew ins
 permission verification failed` in 1Password's log). browsah has one command for this, and it needs `sudo`:
 
 1. Install the 1Password desktop app and turn on *Settings, Browser, Integrate with 1Password*.
-2. Run, once (and again after you upgrade browsah):
+2. Run, once (after an upgrade you use `browsah system-upgrade` instead, below):
 
    ```bash
    sudo "$(brew --prefix)/bin/browsah" system-install --1password
@@ -120,9 +120,30 @@ permission verification failed` in 1Password's log). browsah has one command for
    1Password button appears in the header; its popup unlocks through the desktop app (no password is typed into browsah), and the
    inline menu on login forms offers saved logins.
 
-The system copy is a copy, and `brew upgrade browsah` does not touch it: after an upgrade (or a new build) run step 2 again to update it (the
-script, the allow-list line and your profiles stay as they are; without the `--1password` flag it leaves the allow-list alone). Until you do,
-`/usr/local/bin/browsah` keeps running the older version. The log of 1Password's browser
+### After `brew upgrade browsah`
+
+The system copy is a copy, and `brew upgrade browsah` does not touch it, so `/usr/local/bin/browsah` keeps running the older version until you
+update it. One command does that, run as yourself (it runs `sudo` for you):
+
+```bash
+browsah system-upgrade
+```
+
+`system-install` leaves a note, `/opt/browsah/INSTALL`, saying which copy it was installed from (Homebrew's `opt/browsah/libexec` folder, which
+always holds the newest version) and whether `--1password` was used. `system-upgrade` reads it, compares the two programs, and if they differ
+prints what it will run, for example
+
+```
+sudo env LD_LIBRARY_PATH=… BROWSAH_LIBS=… /home/linuxbrew/.linuxbrew/opt/browsah/libexec/browsah system-install --1password
+```
+
+and runs it: `sudo` asks for your password, and `system-install` then prints what it will change and asks before doing it, as the first time.
+If nothing is newer it says so and stops. Options: `--dry-run` prints without running, `--yes` skips `system-install`'s question,
+`--force` updates even when the programs are identical, `--from=DIR` updates from another copy (and remembers it). It needs the note, so
+a copy installed before this existed needs one more `sudo "$(brew --prefix)/bin/browsah" system-install --1password`.
+
+When you start the installed copy and the copy it came from has moved on, the [log](log.md) gets a warning that says to run
+`browsah system-upgrade` (`browsah log --grep=system-upgrade`). The log of 1Password's browser
 connection is `~/.config/1Password/logs/BrowserSupport/` and says why a browser was refused (if browsah runs with `XDG_CONFIG_HOME`
 changed, the log is under that folder instead). When an extension that uses native messaging starts without a root-owned program,
 the [log](log.md) says so (`browsah log --grep=root`).
