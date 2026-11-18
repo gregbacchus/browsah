@@ -76,7 +76,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `nav.forward` | bool | `true` | Show the forward button (and allow `Alt+Right`). |
 | `nav.reload` | bool | `true` | Show the reload and stop buttons (`Ctrl+R` still works). |
 | `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead. In every case the address can be copied with `Ctrl+Alt+C`, the main menu's *Copy page address* or the tab menu's *Copy address*. |
-| `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. |
+| `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. It is also hidden whenever the address bar is `readonly` or `hidden` (there is nothing to type a new tab's address in), and when `tabs.allow_new` is `false`. `Ctrl+T` still works where tabs are allowed. |
 | `nav.tab_bar` | bool | `true` | Show the tab bar. Hide it for a window with a single pinned tab. |
 | `nav.bookmarks_bar` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a bar under the tabs lists the bookmarks (it is shown only when there are some). Bookmarks belong to the workspace; ephemeral windows have none. |
 | `tabs` | map | see below | Rules for the window's tabs. |

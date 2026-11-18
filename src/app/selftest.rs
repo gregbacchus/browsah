@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "newtab",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -434,6 +434,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("frame") {
         run_frame(shell, r).await;
+    }
+    if wants("newtab") {
+        run_new_tab_button(shell, r).await;
     }
     if wants("sleep") {
         run_sleep(shell, r).await;
@@ -1781,6 +1784,53 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The "+" button next to the tabs needs an editable address bar: with the address hidden or read-only there is no button,
+/// whatever `nav.new_tab_button` says.
+async fn run_new_tab_button(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    let cases = [("nt1", "editable", true), ("nt2", "readonly", false), ("nt3", "hidden", false)];
+    for (id, address, shown) in cases {
+        let dir = profile.workspaces_dir().join(id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        std::fs::write(dir.join("workspace.yaml"), format!("name: {id}\nhome_page: 'http://localhost:{port}/white.html'\nnav:\n  address_bar: {address}\n  new_tab_button: true\n")).expect("workspace.yaml");
+        let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| !t.state.borrow().loading))).await;
+        let Some(w) = find() else {
+            r.check(&format!("a workspace with a {address} address bar opens"), false, || "no window".into());
+            continue;
+        };
+        let button = find_button_by_tooltip(w.window.upcast_ref::<gtk::Widget>(), "New tab (Ctrl+T)");
+        r.check(&format!("with a {address} address bar the new-tab button is {}", if shown { "shown" } else { "hidden" }), button.as_ref().is_some_and(|b| b.is_visible() == shown), || format!("{:?}", button.map(|b| b.is_visible())));
+        w.window.close();
+        let _ = wait_until(5_000, || find().is_none()).await;
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A button in a widget tree by its tooltip.
+fn find_button_by_tooltip(root: &gtk::Widget, tip: &str) -> Option<gtk::Button> {
+    if let Ok(b) = root.clone().downcast::<gtk::Button>() {
+        if b.tooltip_text().is_some_and(|t| t == tip) {
+            return Some(b);
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(w) = child {
+        if let Some(b) = find_button_by_tooltip(&w, tip) {
+            return Some(b);
+        }
+        child = w.next_sibling();
+    }
+    None
+}
+
 /// `sleep_tabs_after`: a background tab idle for that long is put to sleep (kept, its page freed) and wakes when it is
 /// selected; the tab being looked at is never touched. No sweep rules are needed.
 async fn run_sleep(shell: &Rc<Shell>, r: &mut Report) {
@@ -2411,7 +2461,7 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     if let Some(w) = find() {
         shot(&w.window, "web-app-window");
     }
-    r.check("a web app shows only its page: one pinned tab, no address bar, no new tabs", w.tab_count() == 1 && w.current().is_some_and(|t| t.page.is_pinned()) && gtk::prelude::WidgetExt::parent(&w.entry).is_none() && !w.allow_new_tabs, || format!("tabs={} entry={}", w.tab_count(), gtk::prelude::WidgetExt::is_visible(&w.entry)));
+    r.check("a web app shows only its page: one ordinary (not pinned) tab, no address bar, no new tabs", w.tab_count() == 1 && w.current().is_some_and(|t| !t.page.is_pinned()) && gtk::prelude::WidgetExt::parent(&w.entry).is_none() && !w.allow_new_tabs, || format!("tabs={} entry={}", w.tab_count(), gtk::prelude::WidgetExt::is_visible(&w.entry)));
     r.check("a web app keeps back and reload, and shows popups as modals", w.back.is_visible() && w.popup_policy == crate::workspace::PopupPolicy::Modal, || "controls or popup policy".into());
     // The window's size and state are remembered per app and used by its next window.
     {
@@ -2512,17 +2562,27 @@ async fn run_app_tabs_in_header(shell: &Rc<Shell>, r: &mut Report) {
         return;
     };
     let in_header = || w.header.title_widget().is_some_and(|t| t.is::<adw::TabBar>());
+    r.check("the app's start tab is an ordinary tab, so it shows its title", w.current().is_some_and(|t| !t.page.is_pinned() && t.page.title() == "Scope test"), || format!("{:?}", w.current().map(|t| (t.page.is_pinned(), t.page.title().to_string()))));
+    r.check("an app has no new-tab command (its tabs come from links)", gio::prelude::ActionMapExt::lookup_action(&w.window, "new-tab").is_some_and(|a| !gio::prelude::ActionExt::is_enabled(&a)), || "enabled".into());
     r.check("with one tab the header shows the title, not a tab bar", !in_header() && find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_none(), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
     let second = w.open_tab(&format!("http://localhost:{port}/b.html"), true);
     let _ = wait_until(15_000, || !second.state.borrow().loading && second.state.borrow().title == "Page B").await;
     glib::timeout_future(Duration::from_millis(400)).await;
     r.check("with two tabs they are in the header's title position", in_header() && find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_some_and(|b| b.is_visible()), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
     shot(&w.window, "web-app-tabs-in-header");
+    r.check("the tab strip has no new-tab button and the first tab is not icon-only", find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_some_and(|b| b.end_action_widget().is_none_or(|n| !n.is_visible())) && w.tabs().iter().all(|t| !t.page.is_pinned()), || "new-tab button shown or a pinned tab".into());
     w.tab_view.close_page(&second.page);
     let _ = wait_until(5_000, || w.tab_count() == 1).await;
     glib::timeout_future(Duration::from_millis(200)).await;
     r.check("back to one tab the header shows the title again", !in_header(), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
-    w.window.close();
+    // Closing the last tab closes the window, as in any browser.
+    if let Some(last) = w.current() {
+        w.tab_view.close_page(&last.page);
+    }
+    r.check("closing the app's last tab closes its window", wait_until(5_000, || find().is_none()).await, || "window still open".into());
+    if let Some(w) = find() {
+        w.window.close();
+    }
     let _ = wait_until(5_000, || find().is_none()).await;
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa4"));
     let _ = std::fs::remove_dir_all(&dir);

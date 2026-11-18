@@ -195,7 +195,9 @@ take minutes.
   profile that is not running).
 - **Web app tabs:** an explicit new-tab request (`ViewEvent::OpenTab`: Ctrl/middle click, "open in new tab") opens a tab whenever the window allows
   tabs, even though an app's popup policy is `modal` (the overlay is for windows with no tabs). An app with a hidden address bar and tabs puts the
-  `adw::TabBar` (`inline` style) in the header's title position while `n_pages > 1` (`build`: `tabs_in_header`); with one tab the title shows.
+  `adw::TabBar` (`inline` style) in the header's title position while `n_pages > 1` (`build`: `tabs_in_header`); with one tab the title shows. An app's
+  start tab is an ordinary (unpinned) tab so the strip shows its title (`add_pinned` skips pinning for apps; the scope applies to every tab of an app
+  anyway), apps have no new-tab button or Ctrl+T, and their tab menu has no "send to workspace".
 - **Sweeping config and sleeping:** `sweep` and `sleep_tabs_after` are options of the layered `Config` (not workspace-only keys), so a workspace
   inherits the profile's and the application's `sweep` (its own keys win, `rules+` appends; `sweep::effective_sweep` reads the layers for
   closed workspaces). `sleep_tabs_after` adds a last implicit `discard` rule (`SLEEP_RULE`, matches every tab, `pinned_ok`) in

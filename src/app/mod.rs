@@ -407,8 +407,8 @@ impl Shell {
         cookies.append(Some("Print\u{2026}"), Some("win.print"));
         self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
-        if page.is_pinned() {
-            return; // a workspace's pinned tabs stay where they are
+        if page.is_pinned() || self.workspace.as_ref().is_some_and(|w| w.is_app()) {
+            return; // a workspace's pinned tabs stay where they are, and a web app's tabs are not sent anywhere
         }
         let send = gio::Menu::new();
         let here = self.workspace.as_ref().map(|w| w.id.as_str());
@@ -605,8 +605,17 @@ impl Shell {
 
     /// Open a workspace's pinned tabs: always present, first, not closable, and limited to their scope.
     fn add_pinned(self: &Rc<Self>, pinned: &[crate::workspace::PinnedTab]) {
+        // A web app's start tab is an ordinary tab (it shows its title and closes like any other; closing the last one closes the
+        // window), not a pinned one: the scope applies to every tab of an app anyway.
+        let is_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
         for (i, p) in pinned.iter().enumerate() {
             let tab = self.open_tab_scoped(&p.url, p.scope.clone());
+            if is_app {
+                if i == 0 {
+                    self.tab_view.set_selected_page(&tab.page);
+                }
+                continue;
+            }
             if let Some(title) = &p.title {
                 tab.state.borrow_mut().title = title.clone();
                 tab.page.set_title(title);
@@ -1469,7 +1478,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     tab_view.set_menu_model(Some(&tab_menu));
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
-    new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new);
+    // No "+" without an address bar to type in: a hidden or read-only address bar means no new-tab button either.
+    new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new && nav.address_bar == crate::workspace::AddressBar::Editable);
     tab_bar.set_end_action_widget(Some(&new_tab_button));
     tab_bar.set_visible(nav.tab_bar);
     // A web app with no address bar has room in its header: the tabs go there, and only while there is more than one (with a
@@ -1634,7 +1644,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
-    new_tab_action.set_enabled(ws_config.tabs.allow_new);
+    // (An app has no address bar to type in, so no blank new tab either: its tabs come from its links.)
+    new_tab_action.set_enabled(ws_config.tabs.allow_new && !shell.workspace.as_ref().is_some_and(|w| w.is_app()));
     let send_tab = gio::SimpleAction::new("send-tab", Some(glib::VariantTy::STRING));
     send_tab.connect_activate({
         let weak = weak.clone();
