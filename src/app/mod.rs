@@ -295,6 +295,8 @@ pub struct Shell {
     star: gtk::Button,
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
+    /// The tab strip's minimum tab width (`tab_min_width`): a provider for the display, a class on this window's tab bar.
+    tab_width_css: RefCell<Option<gtk::CssProvider>>,
     /// The colour the window is tinted with (its workspace's, else its profile's), and the name it is styled under.
     color: RefCell<Option<(String, crate::profile::ColorPair)>>,
     /// Where this window's tabs are remembered (workspace windows only).
@@ -350,6 +352,36 @@ impl Shell {
 
     /// (Re)write the window's colour style sheet from its colour and `window.frame` (at start, when the appearance changes
     /// between light and dark, and when the configuration is reloaded).
+    /// Apply `tab_min_width` to this window's tab bar: tabs keep at least that width and the strip scrolls when they do not fit.
+    pub(crate) fn refresh_tab_width(&self) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if self.tab_width_css.borrow().is_none() {
+            // One class per window, so each window's provider styles only its own tab bar.
+            self.tab_bar.set_widget_name(&format!("browsah-tabw-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        }
+        let class = self.tab_bar.widget_name().to_string();
+        let width = self.settings.borrow().tab_min_width;
+        let mut slot = self.tab_width_css.borrow_mut();
+        if slot.is_none() {
+            let provider = gtk::CssProvider::new();
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            }
+            *slot = Some(provider);
+        }
+        let provider = slot.as_ref().expect("set above");
+        match width {
+            Some(w) => {
+                self.tab_bar.add_css_class(&class);
+                provider.load_from_string(&format!("tabbar.{class} tab {{ min-width: {w}px; }}"));
+            }
+            None => {
+                self.tab_bar.remove_css_class(&class);
+                provider.load_from_string("");
+            }
+        }
+    }
+
     pub(crate) fn refresh_color_css(&self) {
         let (Some(provider), Some((id, pair))) = (self.color_css.borrow().clone(), self.color.borrow().clone()) else { return };
         let frame = self.settings.borrow().window.frame.clone();
@@ -955,6 +987,7 @@ impl Shell {
         self.refresh_extension_buttons();
         self.refresh_swept();
         self.refresh_color_css(); // the frame options can change while running
+        self.refresh_tab_width();
         for t in self.tabs.borrow().iter() {
             self.apply_view_settings(&t.view());
             self.refresh_tab_icon(t);
@@ -1831,6 +1864,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         bookmark_revealer: bookmark_revealer.clone(),
         star: star.clone(),
         color_css: RefCell::new(None),
+        tab_width_css: RefCell::new(None),
         color: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
         save_pending: Cell::new(false),
@@ -2404,6 +2438,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     }
 
     shell.install_color(workspace_color.as_ref());
+    shell.refresh_tab_width();
     shell.connect_suggestion_clicks();
     {
         let window = shell.window.downgrade();

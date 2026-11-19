@@ -44,6 +44,9 @@ pub struct Config {
     /// Show the workspace picker (a button at the start of the window's header bar with a list of the profile's workspaces).
     /// Never shown in a web app's window. Set it per profile or workspace to hide it in those windows.
     pub workspace_picker: bool,
+    /// The narrowest a tab may get, in logical pixels (40 to 1000). When there are too many tabs to fit, the strip scrolls instead
+    /// of shrinking them further. No value (null) leaves libadwaita's own minimum.
+    pub tab_min_width: Option<i32>,
     /// Tab sweeping (`close` or `discard` rules for tabs that are not used); a workspace inherits the profile's and the
     /// application's, its own keys win and `rules+` appends.
     pub sweep: crate::sweep::SweepConfig,
@@ -191,6 +194,7 @@ impl Default for Config {
             home_page: DEFAULT_HOME_PAGE.into(),
             new_tab_page: None,
             workspace_picker: true,
+            tab_min_width: None,
             sweep: Default::default(),
             sleep_tabs_after: None,
             sleeping_tabs: Default::default(),
@@ -271,6 +275,7 @@ impl Config {
             eprintln!("config: search_url has no {{query}} placeholder; using the default");
             self.search_url = DEFAULT_SEARCH_URL.into();
         }
+        self.tab_min_width = self.tab_min_width.map(|w| w.clamp(40, 1000));
         self.sleeping_tabs.opacity = if self.sleeping_tabs.opacity.is_finite() { self.sleeping_tabs.opacity.clamp(0.2, 1.0) } else { 0.6 };
         self.context_menu.normalize();
         self.recently_swept.max_tabs = self.recently_swept.max_tabs.clamp(1, 50);
@@ -785,7 +790,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "context_menu", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "tab_min_width", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "context_menu", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };
@@ -1019,6 +1024,23 @@ mod tests {
         new.window.frame.thickness = 12;
         let ch = changes(&Config::default(), &new);
         assert!(ch.live.iter().any(|k| k == "window.frame.thickness") && ch.restart.is_empty(), "{ch:?}");
+    }
+
+    #[test]
+    fn tab_min_width_defaults_off_layers_and_clamps() {
+        assert_eq!(Config::default().tab_min_width, None);
+        let mut c = Config::parse("tab_min_width: 5\n").unwrap();
+        c.sanitize();
+        assert_eq!(c.tab_min_width, Some(40));
+        let d = temp_dir("tabw");
+        let (app, prof, ws) = (d.join("config.yaml"), d.join("profile.yaml"), d.join("workspace.yaml"));
+        std::fs::write(&app, "tab_min_width: 150\n").unwrap();
+        std::fs::write(&prof, "tab_min_width: 200\n").unwrap();
+        std::fs::write(&ws, "name: W\n").unwrap();
+        assert_eq!(load_window(&app, &prof, Some(&ws)).unwrap().config.tab_min_width, Some(200), "the profile's");
+        std::fs::write(&ws, "name: W\ntab_min_width: 90\n").unwrap();
+        assert_eq!(load_window(&app, &prof, Some(&ws)).unwrap().config.tab_min_width, Some(90), "the workspace's");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

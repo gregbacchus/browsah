@@ -30,6 +30,7 @@ storage: shared           # shared | isolated: whether a workspace keeps its coo
 new_tab_page: null         # what a new tab opens: null (blank, address bar ready), home, or an address
 sleep_tabs_after: null       # put background tabs to sleep after this idle time (30m, 2h...); null is off; also per profile, workspace or app
 workspace_picker: true    # the workspace list button at the start of the header (never in a web app); false hides it, also per profile or workspace
+tab_min_width: null       # 40 to 1000 (px) or null: the narrowest a tab gets before the strip scrolls; null keeps libadwaita's own minimum; also per profile, workspace or app
 
 window:
   width: 1280   # initial size in logical pixels

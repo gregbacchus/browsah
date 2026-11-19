@@ -113,7 +113,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -458,6 +458,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("picker") {
         run_picker(shell, r).await;
+    }
+    if wants("tabwidth") {
+        run_tabwidth(shell, r).await;
     }
     if wants("redirects") {
         run_redirects(shell, r).await;
@@ -1200,6 +1203,12 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     r.check("new tabs are not allowed (action disabled)", new_tab.is_some_and(|a| !a.is_enabled()), || "enabled".into());
     glib::timeout_future(Duration::from_millis(600)).await;
     shot(&w.window, "workspace-colour");
+    // Selected text in the address bar must stay readable against the window colour.
+    w.entry.grab_focus();
+    w.entry.select_region(0, -1);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    shot(&w.entry, "address-selection-workspace-colour");
+    w.entry.select_region(0, 0);
     // The colour covers the whole header and tab bar, with no dark line above or below (against a white page).
     if let Some(t) = w.current() {
         t.view().navigate(&format!("http://localhost:{port}/white.html"));
@@ -3722,6 +3731,55 @@ async fn run_drag_inside(shell: &Rc<Shell>, r: &mut Report) {
     view.click(1, 1, 150.0, 250.0, gdk::ModifierType::empty(), false);
     view.click(1, 1, 150.0, 250.0, gdk::ModifierType::empty(), true);
     r.check("after a drag the page gets ordinary clicks again", wait_until(5_000, || st.borrow().title == "clicked").await, || st.borrow().title.clone());
+}
+
+/// The widgets of a tab strip that draw a tab (CSS node `tab`).
+fn tab_widgets(root: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if c.css_name() == "tab" {
+            out.push(c.clone());
+        }
+        tab_widgets(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// `tab_min_width`: with many tabs open the tabs keep the width and the strip scrolls, instead of shrinking; no value is the
+/// default look; changing it applies live.
+async fn run_tabwidth(shell: &Rc<Shell>, r: &mut Report) {
+    let base = shell.settings.borrow().clone();
+    let widths = |shell: &Rc<Shell>| {
+        let mut v = Vec::new();
+        tab_widgets(shell.tab_bar.upcast_ref(), &mut v);
+        v.iter().map(|t| t.width()).filter(|w| *w > 0).collect::<Vec<_>>()
+    };
+    let before = shell.tab_count();
+    for _ in 0..25 {
+        shell.open_tab("about:blank", false);
+    }
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let narrow = widths(shell).into_iter().min().unwrap_or(0);
+    shot(&shell.window, "tabwidth-default");
+    let wanted = narrow.max(100) + 60;
+    let mut cfg = base.clone();
+    cfg.tab_min_width = Some(wanted);
+    shell.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let now = widths(shell);
+    let least = now.iter().copied().min().unwrap_or(0);
+    r.check("with many tabs open and tab_min_width set, no tab is narrower than it", !now.is_empty() && least >= wanted, || format!("narrowest {least}, wanted {wanted} (default narrowest {narrow}), {now:?}"));
+    shot(&shell.window, "tabwidth-set");
+    cfg.tab_min_width = None;
+    shell.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let back = widths(shell).into_iter().min().unwrap_or(0);
+    r.check("removing the option goes back to the default width", back < wanted, || format!("narrowest {back}, was {narrow}"));
+    shell.apply_config(&base);
+    while shell.tab_count() > before {
+        let Some(t) = shell.tabs().last().cloned() else { break };
+        shell.close_tab(&t.page);
+    }
 }
 
 /// The workspace picker: a button in workspace windows (not in a web app's; `workspace_picker: false` hides it) listing the
