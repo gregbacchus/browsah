@@ -37,7 +37,8 @@ selection) are saved in the profile's database (`data.sqlite`), with a screensho
 next time it opens, the tabs come back: the selected one loads at once, and the others stay asleep
 (no browser process) behind a blurred screenshot until you first show them. Blank tabs are not
 remembered, and pinned tabs come from this file each time. Bookmarks are stored there too, per
-workspace. Deleting a workspace (`browsah workspace remove`) deletes its tabs and bookmarks.
+workspace. Right-click a bookmark in the bar and choose **Rename bookmark…** to change its name.
+Deleting a workspace (`browsah workspace remove`) deletes its tabs and bookmarks.
 
 ## Home page
 

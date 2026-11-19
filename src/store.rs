@@ -347,6 +347,11 @@ impl Store {
         Ok(())
     }
 
+    pub fn rename_bookmark(&self, workspace: &str, url: &str, title: &str) -> rusqlite::Result<()> {
+        self.conn.execute("UPDATE bookmarks SET title = ?3 WHERE workspace = ?1 AND url = ?2", params![workspace, url, title])?;
+        Ok(())
+    }
+
     pub fn remove_bookmark(&self, workspace: &str, url: &str) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM bookmarks WHERE workspace = ?1 AND url = ?2", params![workspace, url])?;
         Ok(())
@@ -661,6 +666,11 @@ mod tests {
         let a = s.bookmarks("a");
         assert_eq!(a.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["One", "Two"]);
         assert!(s.has_bookmark("a", "https://two") && !s.has_bookmark("b", "https://two"));
+        s.rename_bookmark("a", "https://one", "Renamed").unwrap();
+        let a = s.bookmarks("a");
+        assert_eq!((a[0].url.as_str(), a[0].title.as_str()), ("https://one", "Renamed"));
+        assert_eq!(a[1].title, "Two");
+        assert_eq!(s.bookmarks("b")[0].title, "Other workspace");
         s.remove_bookmark("a", "https://one").unwrap();
         s.add_bookmark("a", "https://three", "Three").unwrap();
         assert_eq!(s.bookmarks("a").iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), ["Two", "Three"]);

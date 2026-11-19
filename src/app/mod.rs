@@ -605,7 +605,7 @@ impl Shell {
             });
             let gesture = gtk::GestureClick::builder().button(0).build();
             gesture.connect_pressed({
-                let (window, url, button) = (window.clone(), url.clone(), button.clone());
+                let (window, url, button) = (window.clone(), url.clone(), button.downgrade());
                 move |g, _, _, _| {
                     let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
                     match g.current_button() {
@@ -615,7 +615,9 @@ impl Shell {
                         }
                         3 => {
                             g.set_state(gtk::EventSequenceState::Claimed);
-                            s.bookmark_menu(&button, &url);
+                            if let Some(button) = button.upgrade() {
+                                s.bookmark_menu(&button, &url);
+                            }
                         }
                         _ => {}
                     }
@@ -640,12 +642,18 @@ impl Shell {
         let popover = gtk::Popover::new();
         popover.set_parent(button);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let mut entries: Vec<(&str, bool)> = Vec::new();
-        if self.allow_new_tabs {
-            entries.push(("Open in new tab", false));
+        enum Command {
+            Open,
+            Rename,
+            Remove,
         }
-        entries.push(("Remove bookmark", true));
-        for (label, remove) in entries {
+        let mut entries = Vec::new();
+        if self.allow_new_tabs {
+            entries.push(("Open in new tab", Command::Open));
+        }
+        entries.push(("Rename bookmark…", Command::Rename));
+        entries.push(("Remove bookmark", Command::Remove));
+        for (label, command) in entries {
             let b = gtk::Button::builder().label(label).has_frame(false).build();
             b.connect_clicked({
                 let (window, url, popover) = (self.window.downgrade(), url.to_owned(), popover.downgrade());
@@ -654,14 +662,18 @@ impl Shell {
                         p.popdown();
                     }
                     let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
-                    if remove {
-                        if let (Some(ws), Some(store)) = (s.bookmark_workspace(), store()) {
-                            let _ = store.remove_bookmark(ws, &url);
-                            s.rebuild_bookmarks();
-                            s.update_star();
+                    match command {
+                        Command::Open => {
+                            s.open_tab(&url, true);
                         }
-                    } else {
-                        s.open_tab(&url, true);
+                        Command::Rename => s.rename_bookmark_dialog(&url),
+                        Command::Remove => {
+                            if let (Some(ws), Some(store)) = (s.bookmark_workspace(), store()) {
+                                let _ = store.remove_bookmark(ws, &url);
+                                s.rebuild_bookmarks();
+                                s.update_star();
+                            }
+                        }
                     }
                 }
             });
@@ -670,6 +682,46 @@ impl Shell {
         popover.set_child(Some(&list));
         popover.connect_closed(|p| p.unparent());
         popover.popup();
+    }
+
+    fn rename_bookmark_dialog(&self, url: &str) {
+        let (Some(ws), Some(db)) = (self.bookmark_workspace(), store()) else { return };
+        let Some(bookmark) = db.bookmarks(ws).into_iter().find(|b| b.url == url) else { return };
+        let dialog = adw::AlertDialog::new(Some("Rename bookmark"), None);
+        let entry = gtk::Entry::builder().text(&bookmark.title).placeholder_text("Name").activates_default(true).build();
+        dialog.set_extra_child(Some(&entry));
+        dialog.add_responses(&[("cancel", "Cancel"), ("save", "Save")]);
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("cancel");
+        dialog.set_response_enabled("save", !entry.text().trim().is_empty());
+        entry.connect_changed({
+            let dialog = dialog.downgrade();
+            move |entry| {
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.set_response_enabled("save", !entry.text().trim().is_empty());
+                }
+            }
+        });
+        let window = self.window.downgrade();
+        dialog.choose(Some(&self.window), gio::Cancellable::NONE, move |response| {
+            let title = entry.text();
+            let title = title.trim();
+            if response != "save" || title.is_empty() {
+                return;
+            }
+            let Some(shell) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
+            let (Some(ws), Some(store)) = (shell.bookmark_workspace(), store()) else { return };
+            match store.rename_bookmark(ws, &bookmark.url, title) {
+                Ok(()) => shell.rebuild_bookmarks(),
+                Err(e) => {
+                    eprintln!("browsah: cannot rename bookmark: {e}");
+                    let dialog = adw::AlertDialog::new(Some("Could not rename bookmark"), None);
+                    dialog.add_response("close", "Close");
+                    dialog.present(Some(&shell.window));
+                }
+            }
+        });
     }
 
     /// The bookmark buttons currently in the bar (for the self-test).

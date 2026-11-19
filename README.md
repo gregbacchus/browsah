@@ -64,7 +64,8 @@ browsah --profile=work --workspace=mail
 
 Options: [docs/config/workspace.md](docs/config/workspace.md). Where links go (from other applications and from
 pages) is set by routing rules, tried without a browser by `browsah route test`: [docs/config/routing.md](docs/config/routing.md). Right-click a tab to send it to another workspace. `Ctrl+Shift+N` (or the main menu, or `--new-window`) opens an ephemeral window
-(not remembered), `Ctrl+D` bookmarks the page in a workspace window.
+(not remembered), `Ctrl+D` bookmarks the page in a workspace window. Right-click a bookmark in the bar
+and choose **Rename bookmark…** to change its name.
 
 Default browser: `browsah selector install` adds a "Browsah" entry that asks which profile should open
 a link from another application (it does not load Chromium, so it appears at once, and it can skip the

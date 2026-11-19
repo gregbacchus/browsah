@@ -1369,6 +1369,37 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
         format!("{:?} bar={} buttons={}", w.star.icon_name(), w.bookmark_revealer.reveals_child(), w.bookmark_buttons().len())
     });
 
+    if let Some(button) = w.bookmark_buttons().first() {
+        w.bookmark_menu(button, &page("b.html"));
+        let rename = button.last_child().and_downcast::<gtk::Popover>()
+            .and_then(|p| find_button(p.upcast_ref(), "Rename bookmark…"));
+        r.check("the bookmark menu offers Rename bookmark", rename.as_ref().and_then(|b| b.label()).as_deref() == Some("Rename bookmark…"), || "rename action missing".into());
+        if let Some(rename) = rename {
+            rename.emit_clicked();
+        }
+        let dialog = w.window.visible_dialog().and_downcast::<adw::AlertDialog>();
+        if let Some(dialog) = dialog {
+            let entry = dialog.extra_child().and_downcast::<gtk::Entry>().expect("bookmark name entry");
+            r.check("rename starts with the saved title", entry.text() == "Page B", || entry.text().to_string());
+            entry.set_text("  ");
+            r.check("a blank bookmark name cannot be saved", !dialog.is_response_enabled("save"), || "Save enabled".into());
+            entry.set_text("  My bookmark  ");
+            let _ = wait_until(3_000, || dialog.width() > 0).await;
+            shot(&dialog, "rename-bookmark");
+            if let Some(save) = find_button(dialog.upcast_ref(), "Save") {
+                save.emit_clicked();
+            }
+        }
+    }
+    let renamed = || marks().first().is_some_and(|b| b.title == "My bookmark" && b.url == page("b.html"));
+    let ok = wait_until(5_000, renamed).await;
+    r.check("renaming saves the new title for the same URL", ok, || format!("{:?}", marks()));
+    let bar_title = |w: &Shell| {
+        w.bookmark_buttons().first().and_then(|b| b.child()).and_then(|c| c.last_child())
+            .and_downcast::<gtk::Label>().map(|l| l.text())
+    };
+    r.check("the bookmark bar shows the new title", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
+
     // Leave the page, then use the bookmark.
     tab.view().navigate(&page("a.html"));
     let ok = wait_until(15_000, || tab.state.borrow().title == "Page A" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_PLUS).as_str())).await;
@@ -1386,6 +1417,8 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     let ok = wait_until(15_000, || find().is_some_and(|s| s.bookmark_buttons().len() == 1 && s.bookmark_revealer.reveals_child())).await;
     r.check("bookmarks are still there when the workspace reopens", ok, || "bar empty".into());
     let Some(w) = find() else { return };
+
+    r.check("the renamed title survives reopening", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
 
     // Ctrl+D on a bookmarked page removes the bookmark and hides the empty bar.
     let tab = w.current().expect("tab");
