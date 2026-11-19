@@ -322,6 +322,14 @@ impl Modal {
                         self.dismiss();
                         return;
                     }
+                    // No rule claims it. A web app's window is not a place for foreign pages (it has no address bar or way
+                    // back), so they go to the profile's default workspace, else a browsing window, else a throwaway one.
+                    Action::Allow | Action::Modal if owner.workspace.as_ref().is_some_and(|w| w.is_app()) => {
+                        let default = super::default_workspace_id().and_then(|id| OPEN_WORKSPACE.with(|f| f.borrow().clone()).and_then(|f| f(&id, "").ok()));
+                        default
+                            .or_else(|| super::browser_windows().last().cloned())
+                            .or_else(|| NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| f("")))
+                    }
                     Action::Allow | Action::Modal => Some(owner.clone()),
                 }
             }

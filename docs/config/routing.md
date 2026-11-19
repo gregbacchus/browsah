@@ -138,7 +138,9 @@ It opens over the window (or in a window of its own: `modals.style: window` in t
 [workspace file](workspace.md)), with a read-only address bar, a **Move to workspace** button, and a
 menu to pick a workspace yourself. *Move to workspace* asks the router where the link would go if it
 were not a modal (rules that open a modal are skipped), so the same rules that name the right
-workspace do the moving; if none applies, the page becomes a tab of the window it was opened over. The
+workspace do the moving; if none applies, the page becomes a tab of the window it was opened over, except over a
+[web app](webapp.md)'s window (no address bar, no way back), where it becomes a tab of the profile's
+[default workspace](profile.md#options). The
 page keeps running when it moves. Closing the modal (the close button or `Esc`) closes the page.
 
 Choose what opens as a modal with rules, so a list of sites (a whitelist) or everything except some

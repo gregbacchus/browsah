@@ -36,7 +36,12 @@ fn icon_widget(item: &Item) -> gtk::Widget {
 fn row_button(item: &Item, chevron: bool) -> gtk::Button {
     let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
     row.append(&icon_widget(item));
-    row.append(&gtk::Label::builder().label(item.label.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).build());
+    let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).build();
+    // Plain weight: the back row of a submenu used to be a "heading", and some themes make button text bold.
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Normal));
+    label.set_attributes(Some(&attrs));
+    row.append(&label);
     if let Some(keys) = item.shortcut {
         row.append(&gtk::Label::builder().label(keys).css_classes(["dim-label", "caption"]).margin_start(18).build());
     }
@@ -172,7 +177,6 @@ impl Shell {
                     page.set_width_request(250);
                     let back_item = Item { id: "back", label: label.clone(), icon: Some("chevron-left"), shortcut: None, enabled: true, checked: false, badge: None, action: Action::Page(PageCmd::Reload) };
                     let back = row_button(&back_item, false);
-                    back.add_css_class("heading");
                     back.connect_clicked({
                         let stack = stack.downgrade();
                         move |_| {
