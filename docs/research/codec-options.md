@@ -81,6 +81,38 @@ MIT/permissive dependency policy need clarification before adoption, in addition
 Its published codec builds span CEF 148, 149, 150, 152 and 156 from June to November 2026; this
 shows repeated updates but not a promised security-update cadence.
 
+**Further compatibility check, 2026-11-19:** Against the current browsah release binary and stock
+CEF 156.0.28, the downloaded Karere 156.0.26 build returns the same Linux versioned CEF API hash
+for API 15600 (`6dc09eb2834fe5b61d7d8c42bbb8d8c27a2bb1b6`). The two distributions'
+`include/cef_api_versions.h` files are byte-identical; this is evidence for C API compatibility,
+not proof of identical behavior or all ABI details. Re-tested with a fresh temporary profile and
+the current binary: `BROWSAH_SELFTEST_ONLY=basic` passed 23/23 and the sample decoded H.264 video
+(16 frames, 47 sampled colours) and AAC audio (peak 0.837). `BROWSAH_SELFTEST_ONLY=hidpi` passed
+18/18 at native scale 2, using dmabuf with no fallback. The input assertion emits synthetic GTK
+signals, not real device events. No real audio, sites, calls or ARM were tested. The library and
+its matching resource files were used together from `/tmp/browsah-karere-test/bin`, without
+recompiling or replacing the installed browser. A compatible Rust binding release also exists:
+[`cef` 156.4.0+156.0.26](https://docs.rs/crate/cef/156.4.0%2B156.0.26); compiling browsah against
+that version has not been tried or shown necessary.
+
+`download-cef` 3.0.1's `check_archive_json` accepts an archive whose version is *at most* the
+crate's CEF version, not necessarily identical, and a failed `CEF_PATH` check falls back to a stock
+download. An explicit version/API hash check and a pinned archive digest would be needed for an
+automatic build; a synthetic `archive.json` must not be mistaken for verification of the bytes.
+
+**Deployment implications, 2026-11-19:** The existing Homebrew formula bundles browsah and the
+CEF runtime under `opt_libexec`; its launcher prepends that path to `LD_LIBRARY_PATH`, and desktop
+entries use `BROWSAH_LAUNCHER` and `BROWSAH_LIBS`. Simply exporting another `LD_LIBRARY_PATH` before
+invoking that wrapper does not select the other CEF, because the wrapper puts its own runtime first.
+CEF settings do not set a separate resources directory. The tested experiment copies the browsah
+binary next to matching CEF `Release` and `Resources` files, then uses that directory in
+`LD_LIBRARY_PATH`. `browsah codecs install` now implements this selection with a pinned digest and
+version/API checks; ordinary launches re-exec using the installed runtime, and `uninstall` restores
+bundled CEF. The `basic` self-test and local MP4 probe passed through ordinary startup; after
+uninstall, the same probe reported unsupported video and audio. A running profile retains its
+existing CEF until closed. There is no automatic update for the third-party runtime; reassess the
+CEF version and API hash when changing browsah or its runtime.
+
 Arch's [156.0.28 package](https://eu.edge.kernel.org/archlinux/pool/packages/) matches the CEF
 commit but uses Chromium 156.0.8078.93 rather than browsah's .88. Its [package recipe](https://gitlab.archlinux.org/archlinux/packaging/packages/cef/-/blob/e3dbdb4ec34329fd6e614c32a7f06ad07a2002a3/PKGBUILD)
 sets `proprietary_codecs=true` and `ffmpeg_branding="Chrome"`. Extracting it and inspecting `ldd`

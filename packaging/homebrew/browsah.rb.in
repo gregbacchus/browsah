@@ -44,7 +44,12 @@ class Browsah < Formula
       root-owned copy (it prints what it will change and asks first):
         sudo "$(brew --prefix)/bin/browsah" system-install --1password
       then start browsah as /usr/local/bin/browsah. After `brew upgrade browsah`, update that copy with:
-        browsah system-upgrade
+        /usr/local/bin/browsah system-upgrade
+
+      On Linux x86-64, optional H.264/AAC codecs can be installed for personal use:
+        browsah codecs install
+      For the root-owned copy, install them separately after each system upgrade:
+        sudo /usr/local/bin/browsah codecs install
     EOS
   end
 

@@ -174,6 +174,18 @@ brew install browsah
 browsah example.com
 ```
 
+For personal use, an optional separately installed CEF runtime enables H.264 and AAC:
+
+```bash
+browsah codecs install
+browsah
+```
+
+Close any existing window of the same profile first. Run `browsah codecs status` to check the
+installation, or `browsah codecs uninstall` to return to the bundled runtime. See
+[video codecs](docs/video-codecs.md) for a separate test profile, updates and
+the limits of this third-party runtime.
+
 The brew package is a prebuilt directory (the binary with CEF's `libcef.so` and resources, about 500 MB
 installed, debug info stripped) that uses the **system** GTK 4 and libadwaita (Ubuntu 24.04 or newer, x86_64 or aarch64;
 `sudo apt install libgtk-4-1 libadwaita-1-0` if they are missing). `browsah` on the PATH is a small
@@ -184,6 +196,8 @@ versioned install directory) are repaired the next time any profile is started f
 **1Password (and anything else that insists on a root-owned browser):** a Homebrew install is owned by you, so 1Password refuses it.
 `sudo "$(brew --prefix)/bin/browsah" system-install --1password` puts a root-owned copy in `/opt/browsah` and a start-up script in
 `/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah system-upgrade` updates it; see [docs/config/extensions.md](docs/config/extensions.md#1password).
+For H.264/AAC on that copy, run `sudo /usr/local/bin/browsah codecs install`, then launch
+`/usr/local/bin/browsah` as your normal user. See [system codecs](docs/video-codecs.md#system-copy-and-1password).
 
 **Releasing** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then
 
@@ -195,8 +209,7 @@ The workflow builds both architectures, publishes a GitHub release with the tarb
 writes `Formula/browsah.rb` (from `packaging/homebrew/browsah.rb.in`) into the tap. It uses the same
 `homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret as paua-terminal; for this repository, add the
 secret (a fine-grained token with **Contents: read and write** on `homebrew-tap`). Without it the release
-still works and only the tap update is skipped. The first tagged build has not been run yet, so the
-formula and the tarball layout are untested.
+still works and only the tap update is skipped.
 
 ## Licence
 

@@ -94,6 +94,8 @@ H.264 and AAC in an isolated test, but is older than browsah's bindings and is n
 as a release dependency ([codec options](codec-options.md)).
 Building a codec-enabled CEF may fit below upstream's 200 GB recommendation, but Linux peak space
 and build time have not been measured here ([build resources](cef-build-resources.md)).
+Copyright terms for the Karere patches, third-party notices, and codec patent licensing remain open
+for distribution ([license investigation](cef-codec-licenses.md)).
 
 ## Where things are
 

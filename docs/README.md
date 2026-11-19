@@ -5,6 +5,7 @@ a worked example with a comment.
 
 | Page | What it covers |
 |---|---|
+| [Video codecs](video-codecs.md) | Optional personal H.264/AAC runtime, testing and updates |
 | [Configuration overview](config/README.md) | Which files exist, how the layers merge, live reload versus restart, errors, command-line overrides |
 | [Seeing every option](config/README.md#seeing-every-option) | The *Documentation* window, the *all options* copies of your files, `browsah config full` |
 | [Value types](config/value-types.md) | Colours, address patterns, durations, actions, list merging, YAML notes |

@@ -29,6 +29,7 @@ commands (all take --profile ID where a profile matters; the default profile is 
   workspace add <id> [--name NAME] [--color ...]               | list | remove <id> --yes
   app add [<id>] --url URL [--name N] [--scope P,...] [--display standalone|minimal|browser] [--color ...] [--icon FILE]
   system-install [--1password] [--dry-run] [--yes] | system-uninstall      (run with sudo) a root-owned copy in /opt/browsah, for 1Password
+  codecs install | status | uninstall                          optional personal H.264/AAC CEF runtime
   system-upgrade [--dry-run] [--yes] [--force] [--from=DIR]                update that copy from the one it came from (it runs sudo itself)
   extension add <id | Chrome Web Store address> | list | update [id] | remove <id> --yes     Chrome extensions
   app list | install <id> | route <id> [--write | --remove] | remove <id> --yes

@@ -377,6 +377,14 @@ pub fn root_owned_and_locked(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.uid() == 0 && m.mode() & 0o022 == 0).unwrap_or(false)
 }
 
+/// Only a system install in a directory tree controlled by root may select a shared codec runtime.
+pub fn installed_root_prefix(exe: &Path) -> Option<&Path> {
+    let prefix = exe.parent()?;
+    let record = prefix.join(RECORD_FILE);
+    (record.is_file() && root_owned_and_locked(&record)
+        && exe.ancestors().all(root_owned_and_locked)).then_some(prefix)
+}
+
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned))
 }

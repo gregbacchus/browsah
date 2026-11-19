@@ -9,6 +9,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 
 | Note | Date | Question | Short answer |
 |---|---|---|---|
+| [cef-codec-licenses.md](cef-codec-licenses.md) | 2026-11-19 | Can browsah redistribute the tested codec-enabled CEF? | Karere patch terms and exact source are unclear; FFmpeg notices and separate H.264/AAC patent terms need review. No legal clearance established. |
 | [tab-history.md](tab-history.md) | 2026-11-19 | Can a tab keep its back and forward list across restarts? | CEF cannot be given entries, so the list is saved with the tab and used through two stacks beside the browser's own. It also survives a tab sleeping. |
 | [icon-cache.md](icon-cache.md) | 2026-11-19 | Why did a new profile's launcher have no icon? | The icon file was written, but the icon cache refresh pointed at the wrong folder, so the stale `hicolor` cache hid it. Fixed in `profile::refresh_icon_cache`. |
 | [signals.md](signals.md) | 2026-11-19 | What does the browser do on SIGTERM, SIGINT, SIGHUP? | It used to end at once without the closing work; it now quits like *Quit profile* (tabs and screenshots saved, session cookies ended). `scripts/test signals` checks it. |

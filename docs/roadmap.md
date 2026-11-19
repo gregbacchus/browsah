@@ -104,6 +104,9 @@ discarding (the research shows ~42 MB per tab is recoverable) and a settings fil
 - Enable the CEF sandbox (setuid helper or user namespaces).
 - Ship the ~300 MB CEF runtime: `.deb`, Flatpak, or a tarball with the exact `libcef` the
   binary was built against.
+- An optional `browsah codecs` command installs a pinned third-party H.264/AAC runtime for personal
+  use, with version and API checks; broader compatibility, updates and redistribution remain open
+  ([video codecs](video-codecs.md)).
 - **Security updates are your job:** a browser is a high-value target, so plan to track CEF
   releases and ship patched builds quickly.
 
