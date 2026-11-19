@@ -385,7 +385,21 @@ impl Shell {
     pub(crate) fn refresh_color_css(&self) {
         let (Some(provider), Some((id, pair))) = (self.color_css.borrow().clone(), self.color.borrow().clone()) else { return };
         let frame = self.settings.borrow().window.frame.clone();
-        provider.load_from_string(&workspace_css(&format!("ws-{id}"), &pair, adw::StyleManager::default().is_dark(), &frame));
+        let dark = adw::StyleManager::default().is_dark();
+        let bg = if dark { &pair.dark } else { &pair.light };
+        provider.load_from_string(&workspace_css(&format!("ws-{id}"), bg, &frame));
+        crate::icons::set_chrome_background(&[
+            self.back.upcast_ref(), self.forward.upcast_ref(), self.reload.upcast_ref(),
+            self.picker.button.upcast_ref(), self.swept.button.upcast_ref(), self.star.upcast_ref(),
+            self.downloads.button.upcast_ref(), self.menu_button.upcast_ref(),
+        ], crate::icons::dark_background(bg));
+    }
+
+    fn chrome_icon_name(&self, icon: &crate::icons::Icon) -> String {
+        let color = self.color.borrow();
+        let Some((_, pair)) = color.as_ref() else { return crate::icons::name(icon) };
+        let bg = if adw::StyleManager::default().is_dark() { &pair.dark } else { &pair.light };
+        crate::icons::name_for_background(icon, crate::icons::dark_background(bg))
     }
 
     // ---- history ----------------------------------------------------------------------------------
@@ -1379,6 +1393,7 @@ impl Shell {
             *tab.owner.borrow_mut() = Rc::downgrade(self);
             tab.page.set_tooltip("");
             self.refresh_tab_icon(&tab);
+            self.mark_tab(&tab);
             tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
             tab.view().set_popup_policy(self.popup_policy);
             self.apply_view_settings(&tab.view());
@@ -1803,6 +1818,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     tab_view.set_menu_model(Some(&tab_menu));
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
+    new_tab_button.add_css_class("browsah-new-tab");
     // No "+" without an address bar to type in: a hidden or read-only address bar means no new-tab button either.
     new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new && nav.address_bar == crate::workspace::AddressBar::Editable);
     tab_bar.set_end_action_widget(Some(&new_tab_button));
@@ -3045,25 +3061,19 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 /// which nearly vanishes against some window colours). Window colours override it with their own pair in `workspace_css`.
 const ADDRESS_SELECTION_CSS: &str = "headerbar entry text selection, headerbar entry text selection:focus-within { background-color: @accent_bg_color; color: @accent_fg_color; }";
 
-/// Relative luminance of `#rrggbb` (0 dark, 1 light), to choose a readable foreground.
-fn luminance(hex: &str) -> f64 {
-    let c = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0) as f64 / 255.0;
-    0.2126 * c(1) + 0.7152 * c(3) + 0.0722 * c(5)
-}
-
 /// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
 /// on, the colour around the page (not in fullscreen, where the bars are hidden and the page fills the screen).
-fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool, frame: &crate::config::FrameConfig) -> String {
-    let bg = if dark { &pair.dark } else { &pair.light };
-    let fg = if luminance(bg) > 0.55 { "rgba(0, 0, 0, 0.8)" } else { "#ffffff" };
+fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> String {
+    let dark = crate::icons::dark_background(bg);
+    let fg = crate::icons::foreground(dark);
     // Selected text is black on white or white on black, whichever is opposite the header, so it never blends into the window colour.
-    let (sel_bg, sel_fg) = if luminance(bg) > 0.55 { ("#1c1c1c", "#ffffff") } else { ("#ffffff", "#1c1c1c") };
+    let (sel_bg, sel_fg) = if dark { ("#ffffff", "#1c1c1c") } else { ("#1c1c1c", "#ffffff") };
     let mut css = format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
          window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
          window.{class} toolbarview > revealer.bottom-bar, window.{class} toolbarview > revealer.bottom-bar > windowhandle {{ background-color: {bg}; color: {fg}; }}\n\
-         window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}\n\
+         window.{class} headerbar button, window.{class} headerbar windowcontrols button, window.{class} tabbar button.browsah-new-tab, window.{class} tabbar tab, window.{class} .browsah-find-bar button {{ color: {fg}; }}\n\
          window.{class} entry text selection, window.{class} entry text selection:focus-within {{ background-color: {sel_bg}; color: {sel_fg}; }}"
     );
     let t = frame.thickness.clamp(0, 40);
@@ -3245,16 +3255,16 @@ mod frame_css_tests {
 
     #[test]
     fn the_frame_follows_its_options() {
-        let on = workspace_css("ws-a", &pair(), true, &FrameConfig { enabled: true, thickness: 9, radius: 11 });
+        let on = workspace_css("ws-a", &pair().dark, &FrameConfig { enabled: true, thickness: 9, radius: 11 });
         assert!(on.contains("padding: 0 9px 9px 9px") && on.contains("border-radius: 11px") && on.contains("#61a5c2"), "{on}");
         assert!(on.contains(":not(.fullscreen) .browsah-frame"), "no frame in fullscreen");
         assert!(on.contains("headerbar"), "the header is tinted either way");
         for off in [FrameConfig { enabled: false, thickness: 9, radius: 9 }, FrameConfig { enabled: true, thickness: 0, radius: 9 }] {
-            let css = workspace_css("ws-a", &pair(), true, &off);
+            let css = workspace_css("ws-a", &pair().dark, &off);
             assert!(!css.contains("browsah-frame") && css.contains("headerbar"), "{css}");
         }
         // Silly values are held to a sensible range.
-        let big = workspace_css("ws-a", &pair(), false, &FrameConfig { enabled: true, thickness: 900, radius: -5 });
+        let big = workspace_css("ws-a", &pair().light, &FrameConfig { enabled: true, thickness: 900, radius: -5 });
         assert!(big.contains("padding: 0 40px 40px 40px") && big.contains("border-radius: 0px") && big.contains("#2a6f97"), "{big}");
     }
 }

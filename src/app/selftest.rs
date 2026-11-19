@@ -3963,14 +3963,36 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("workspace dir");
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("fr1"));
-    std::fs::write(dir.join("workspace.yaml"), format!("name: Frame\ncolor: '#2a6f97 #61a5c2'\nhome_page: 'http://localhost:{port}/white.html'\n")).expect("ws");
+    std::fs::write(dir.join("workspace.yaml"), format!("name: Frame\ncolor: '#191919 #f7f1e8'\nhome_page: 'http://localhost:{port}/white.html'\n")).expect("ws");
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "fr1"));
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"fr1".to_variant()));
     let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "White" && !t.state.borrow().loading))).await;
     let Some(w) = find() else { return };
     let dark = adw::StyleManager::default().is_dark();
+    let tab = w.current().expect("frame tab");
+    tab.dirty.set(true);
+    w.mark_tab(&tab);
+    let chrome_icons = || [
+        w.back.icon_name(), w.forward.icon_name(), w.reload.icon_name(), w.picker.button.icon_name(),
+        w.swept.button.icon_name(), w.star.icon_name(), w.downloads.button.icon_name(), w.menu_button.icon_name(),
+        tab.page.indicator_icon().and_downcast::<gio::ThemedIcon>().and_then(|icon| icon.names().first().cloned()),
+    ];
+    let expected = |variant| ["arrow-left", "arrow-right", "rotate-cw", "swatch-book", "swept-broom", "star-plus", "arrow-down-to-line", "menu", "pen-line"]
+        .map(|icon| Some(format!("browsah-{icon}-{variant}").into()));
+    let variant = if dark { "light" } else { "dark" };
+    r.check("window chrome icons contrast with the workspace tint", chrome_icons() == expected(variant), || format!("{:?}", chrome_icons()));
+    crate::icons::bind(&w.star, crate::icons::STAR_FILLED);
+    r.check("changing the bookmark star keeps the tint override", w.star.icon_name().as_deref() == Some(format!("browsah-star-filled-{variant}").as_str()), || format!("{:?}", w.star.icon_name()));
+    w.update_star();
+    let style = adw::StyleManager::default();
+    let original_scheme = style.color_scheme();
+    style.set_color_scheme(if dark { adw::ColorScheme::ForceLight } else { adw::ColorScheme::ForceDark });
+    r.check("chrome icons follow the new tint after the appearance changes", chrome_icons() == expected(if dark { "dark" } else { "light" }), || format!("{:?}", chrome_icons()));
+    style.set_color_scheme(original_scheme);
+    tab.dirty.set(false);
+    w.mark_tab(&tab);
     let tint = {
-        let c = crate::profile::ColorPair::parse("#2a6f97 #61a5c2").expect("colour");
+        let c = crate::profile::ColorPair::parse("#191919 #f7f1e8").expect("colour");
         let h = if dark { c.dark } else { c.light };
         let n = u32::from_str_radix(h.trim_start_matches('#'), 16).unwrap_or(0);
         (((n >> 16) & 255) as u8, ((n >> 8) & 255) as u8, (n & 255) as u8)
@@ -4000,6 +4022,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     // Something in the footer (the find bar): no extra border below it.
     let _ = WidgetExt::activate_action(&w.window, "win.find", None);
     glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&w.window, "frame-find-bar");
     r.check("with the find bar open the window is marked as having a footer", w.window.has_css_class("has-footer"), || String::new());
     let _ = WidgetExt::activate_action(&w.window, "win.find-close", None);
     glib::timeout_future(Duration::from_millis(300)).await;

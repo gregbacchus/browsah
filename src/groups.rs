@@ -38,7 +38,7 @@ pub fn next_id(groups: &[Group]) -> u32 {
 /// A small coloured dot as an SVG, for a tab's icon.
 pub fn dot_svg(color: &str) -> String {
     let c: String = color.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '#').collect();
-    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"5\" fill=\"{c}\"/></svg>")
+    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" fill=\"#202020\"/><circle cx=\"8\" cy=\"8\" r=\"5\" fill=\"{c}\" stroke=\"#ffffff\" stroke-width=\"1\"/></svg>")
 }
 
 /// Where a tab joining `group` should sit: right after the group's last tab. `order` is the group id of every
@@ -93,7 +93,9 @@ mod tests {
 
     #[test]
     fn dot_and_title() {
-        assert!(dot_svg("#3584e4").contains("fill=\"#3584e4\""));
+        let dot = dot_svg("#3584e4");
+        assert!(dot.contains("fill=\"#3584e4\""));
+        assert!(dot.contains("fill=\"#202020\"") && dot.contains("stroke=\"#ffffff\""));
         assert!(!dot_svg("#fff\" onload=\"x").contains("onload="), "no markup gets through");
         assert_eq!(collapsed_title("News", 3), "\u{25b8} News (3)");
         assert_eq!(collapsed_title("  ", 1), "\u{25b8} Group (1)");

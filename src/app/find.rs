@@ -24,7 +24,7 @@ impl Bar {
         for b in [&prev, &next, &close] {
             b.add_css_class("flat");
         }
-        let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).margin_top(6).margin_bottom(6).margin_start(8).margin_end(8).build();
+        let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).css_classes(["browsah-find-bar"]).margin_top(6).margin_bottom(6).margin_start(8).margin_end(8).build();
         row.append(&entry);
         row.append(&label);
         row.append(&prev);

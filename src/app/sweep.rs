@@ -288,7 +288,7 @@ impl Shell {
     /// Show on the tab why it is safe from sweeping: unsaved input (a pen) or playing media (a speaker). The indicator is
     /// activatable so that hovering it shows its own tooltip (an inert indicator gives the tab's) and clicking it says why.
     pub(super) fn mark_tab(&self, tab: &Rc<Tab>) {
-        let lucide = |icon: &crate::icons::Icon| gio::ThemedIcon::new(&crate::icons::name(icon));
+        let lucide = |icon: &crate::icons::Icon| gio::ThemedIcon::new(&self.chrome_icon_name(icon));
         if tab.dirty.get() {
             tab.page.set_indicator_icon(Some(&lucide(&crate::icons::PEN_LINE)));
             tab.page.set_indicator_tooltip(if *tab.dirty_why.borrow() == "asks" { "The page asks before it is closed (unsaved changes): this tab will not be swept" } else { "Unsaved typing in a form: this tab will not be swept" });

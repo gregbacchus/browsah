@@ -104,10 +104,28 @@ pub fn render(icon: &Icon, color: &str) -> String {
 const DARK: &str = "#ebebeb";
 const LIGHT: &str = "#363636";
 
+fn relative_luminance(hex: &str) -> f64 {
+    let channel = |i| {
+        let srgb = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).expect("normalized colour")) / 255.0;
+        if srgb <= 0.04045 { srgb / 12.92 } else { ((srgb + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+}
+
+/// True when the light stroke has greater contrast against the supplied tint.
+pub fn dark_background(hex: &str) -> bool {
+    let crossover = ((relative_luminance(DARK) + 0.05) * (relative_luminance(LIGHT) + 0.05)).sqrt() - 0.05;
+    relative_luminance(hex) < crossover
+}
+
+pub fn foreground(dark_background: bool) -> &'static str {
+    if dark_background { DARK } else { LIGHT }
+}
+
 thread_local! {
     static INSTALLED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
-    /// Widgets (or tab pages) with an `icon-name` that follows the style.
-    static BOUND: RefCell<Vec<(glib::WeakRef<glib::Object>, Icon)>> = const { RefCell::new(Vec::new()) };
+    /// Widget, icon, and the window tint override when it sits directly on window chrome.
+    static BOUND: RefCell<Vec<(glib::WeakRef<glib::Object>, Icon, Option<bool>)>> = const { RefCell::new(Vec::new()) };
     /// Called when the style changes, for icons that are not an `icon-name` of a widget (a tab's status icon).
     static ON_STYLE: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
 }
@@ -131,8 +149,13 @@ fn install() -> bool {
 
 /// The icon name for the current style (the stock fallback if the files could not be written).
 pub fn name(icon: &Icon) -> String {
+    name_for_background(icon, adw::StyleManager::default().is_dark())
+}
+
+/// The icon variant for a known background, independent of the desktop appearance.
+pub fn name_for_background(icon: &Icon, dark_background: bool) -> String {
     if install() {
-        format!("browsah-{}-{}", icon.id, if adw::StyleManager::default().is_dark() { "dark" } else { "light" })
+        format!("browsah-{}-{}", icon.id, if dark_background { "dark" } else { "light" })
     } else {
         icon.fallback.to_owned()
     }
@@ -151,24 +174,44 @@ fn refresh() {
     }
     BOUND.with(|b| {
         let mut b = b.borrow_mut();
-        b.retain(|(w, _)| w.upgrade().is_some());
-        for (w, icon) in b.iter() {
+        b.retain(|(w, _, _)| w.upgrade().is_some());
+        for (w, icon, background) in b.iter() {
             if let Some(w) = w.upgrade() {
-                w.set_property("icon-name", name(icon));
+                w.set_property("icon-name", bound_name(icon, *background));
             }
         }
     });
 }
 
-/// Give `widget` (a button, menu button, image or view-stack page) the icon, and keep it right when the style changes. Calling it
-/// again for the same widget replaces the icon (the bookmark star).
+fn bound_name(icon: &Icon, background: Option<bool>) -> String {
+    background.map_or_else(|| name(icon), |dark| name_for_background(icon, dark))
+}
+
+/// Set a tint override for icons on the window chrome. Popovers use their own surface colours.
+pub fn set_chrome_background(widgets: &[&glib::Object], dark: bool) {
+    BOUND.with(|bindings| {
+        for (weak, icon, background) in bindings.borrow_mut().iter_mut() {
+            if let Some(widget) = weak.upgrade().filter(|widget| widgets.contains(&widget)) {
+                *background = Some(dark);
+                widget.set_property("icon-name", name_for_background(icon, dark));
+            }
+        }
+    });
+}
+
+/// Bind an icon to a widget, preserving its background when the icon changes.
 pub fn bind(widget: &impl IsA<glib::Object>, icon: Icon) {
     let object: glib::Object = widget.clone().upcast();
-    object.set_property("icon-name", name(&icon));
-    BOUND.with(|b| {
-        let mut b = b.borrow_mut();
-        b.retain(|(w, _)| w.upgrade().is_some_and(|o| o != object));
-        b.push((object.downgrade(), icon));
+    BOUND.with(|bindings| {
+        let mut bindings = bindings.borrow_mut();
+        bindings.retain(|(widget, _, _)| widget.upgrade().is_some());
+        if let Some((_, current, background)) = bindings.iter_mut().find(|(widget, _, _)| widget.upgrade().as_ref() == Some(&object)) {
+            *current = icon;
+            object.set_property("icon-name", bound_name(&icon, *background));
+        } else {
+            object.set_property("icon-name", name(&icon));
+            bindings.push((object.downgrade(), icon, None));
+        }
     });
 }
 
