@@ -1434,6 +1434,11 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
 
     r.check("the renamed title survives reopening", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
 
+    let weight = label_weight(w.bookmark_bar.upcast_ref(), "My bookmark");
+    r.check("bookmark titles in the bar have regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
+    glib::timeout_future(Duration::from_millis(350)).await;
+    shot(&w.bookmark_bar, "bookmark-bar");
+
     // Ctrl+D on a bookmarked page removes the bookmark and hides the empty bar.
     let tab = w.current().expect("tab");
     let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str())).await;

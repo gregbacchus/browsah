@@ -3088,6 +3088,7 @@ const WORKSPACE_PICKER_CSS: &str = ".browsah-workspace-picker { background-color
 const MENU_ITEM_CSS: &str = "
     popover button, popover button label,
     popover row, popover row label,
+    button.bookmark label,
     .browsah-workspace-picker button, .browsah-workspace-picker button label {
         font-weight: normal;
     }
