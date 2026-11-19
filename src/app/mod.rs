@@ -1436,6 +1436,15 @@ impl Shell {
             }
             ViewEvent::Route { action, url } => {
                 perform_route(&action, &url, Some(self));
+                // A Safe Links page that was opened for this link and has now sent it elsewhere has nothing left to show.
+                let (interstitial, has_history) = {
+                    let s = tab.state.borrow();
+                    (crate::router::is_interstitial(&s.address), s.can_back)
+                };
+                if interstitial && !has_history && !tab.is_pinned() && self.tabs.borrow().len() > 1 {
+                    crate::log_info!("route: closing the Safe Links tab, the link went to {url}");
+                    self.tab_view.close_page(&tab.page);
+                }
             }
             ViewEvent::Permission(req) => self.prompt_permission(req),
             ViewEvent::PermissionDismissed(id) => self.dismiss_permission(id),

@@ -1134,8 +1134,13 @@ fn routed_elsewhere(shared: &Shared, url: &str, kind: crate::router::Kind, targe
     let source = Source::Tab(shared.workspace.lock().unwrap().clone());
     let ws = if let Source::Tab(w) = &source { w.clone() } else { None };
     // A redirector (`google.com/url?q=...`) is judged, and opened, as the address it leads to.
+    let wrapped = url;
     let url = crate::router::unwrap_url(url);
+    if crate::router::looks_like_safelink(wrapped) && url == wrapped {
+        crate::log_info!("route: a Safe Link whose destination could not be read from its address, judged as it is: {wrapped}");
+    }
     let decision = route(&Request { url: url.clone(), source, kind, target });
+    crate::log_debug!("route: {kind:?} {target:?} {wrapped} -> {url} => {:?}", decision.action);
     match decision.action {
         Action::Allow => false,
         // Already where it is told to go.
@@ -1228,7 +1233,9 @@ wrap_request_handler! {
             // page that is already showing something. A tab's own first load is never routed.
             if !current.is_empty() && current != "about:blank" && target != "about:blank" {
                 let method = CefString::from(&request.method()).to_string();
-                let kind = if user_gesture != 0 && method.eq_ignore_ascii_case("GET") {
+                let kind = if crate::router::is_interstitial(&current) && method.eq_ignore_ascii_case("GET") {
+                    Some(crate::router::Kind::Link) // a Safe Links page going on to the address it checked: to the person, a click
+                } else if user_gesture != 0 && method.eq_ignore_ascii_case("GET") {
                     Some(crate::router::Kind::Link)
                 } else if user_gesture == 0 {
                     Some(crate::router::Kind::Typed)

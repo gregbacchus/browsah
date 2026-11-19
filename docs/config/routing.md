@@ -41,9 +41,13 @@ not routed, so a rule for the destination never saw it. Two things handle this:
    the rules judge, and open, where the link really goes (`browsah route test` prints an `unwrapped:` line). Known redirectors:
    Google (`google.<tld>/url`, parameters `q` or `url`), Facebook and Messenger (`l.php`, `u`), Microsoft Safe Links in Outlook mail
    (`*.safelinks.protection.outlook.com`, also the Government and China clouds, parameter `url`), Teams' Safe Links page
-   (`atp-safelinks.html` on `*.teams.cdn.office.net`, `url`) and Outlook on the web's `owa/redir.aspx` (`URL`, any case),
+   (`/evergreen-assets/safelinks/<n>/atp-safelinks.html` on `*.office.net` or `*.microsoft`, e.g. `teams.public.onecdn.static.microsoft`; the address is
+   read from `url` in the query or the fragment, else from the first argument that is a web address and not Microsoft's own click-through endpoint) and Outlook on the web's `owa/redir.aspx` (`URL`, any case),
    Slack (`slack-redir.net/link`), LinkedIn (`/redir/redirect`, `/safety/go`), DuckDuckGo (`/l/`, `uddg`) and YouTube
-   (`/redirect`, `q`). Add your own with `routing.unwrap`, turn the list off with `routing.unwrap_known: false`. A link that no rule claims
+   (`/redirect`, `q`). Add your own with `routing.unwrap`, turn the list off with `routing.unwrap_known: false`. Teams' page then goes on to the address by script, not by an HTTP redirect, so the move away from it is judged as a clicked link
+   (a typed navigation would not match rules that are for `link`), and when a rule sends it elsewhere the tab that was opened for the
+   Safe Links page is closed. If Teams sends the address some other way than in the page's own address, the journal says so
+   (`browsah log --grep="Safe Link"`) and the link is judged as it is. A link that no rule claims
    is left alone: it goes to the redirector as before. Nothing is fetched: the tracking address is never requested for a link
    that a rule sends elsewhere.
 2. **Following redirects** (`routing.follow_redirects: true`, off by default). For addresses that hide the destination (a link

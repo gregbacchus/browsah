@@ -180,6 +180,54 @@ fn query_pairs(url: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `key=value` pairs of a URL's fragment (`#a=b&c=d`), for pages that keep their arguments there.
+fn fragment_pairs(url: &str) -> Vec<(String, String)> {
+    let Some((_, frag)) = url.split_once('#') else { return Vec::new() };
+    frag.trim_start_matches(['?', '!'])
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (query_decode(k), query_decode(v)),
+            None => (query_decode(p), String::new()),
+        })
+        .collect()
+}
+
+/// Teams' own Safe Links page: `.../evergreen-assets/safelinks/<n>/atp-safelinks.html`, on its CDN (`statics.teams.cdn.office.net`,
+/// now `teams.public.onecdn.static.microsoft`). Teams sends people through it to have the address checked, and it then goes on to
+/// the real address by script, not by an HTTP redirect.
+pub fn is_teams_safelink_page(url: &str) -> bool {
+    let Some(rest) = url.split_once("://").map(|(_, r)| r) else { return false };
+    let host = crate::cookies::host_of(url);
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let path = path.find('/').map(|i| path[i..].to_lowercase()).unwrap_or_default();
+    path.ends_with("/atp-safelinks.html") && path.contains("/safelinks/") && [".office.net", ".microsoft", ".microsoft.com"].iter().any(|d| host.ends_with(d))
+}
+
+/// A page that sends the browser on to the address it was given (by script, so the move is not an HTTP redirect): the move away from
+/// it is judged as a clicked link, since to the person it was one.
+pub fn is_interstitial(url: &str) -> bool {
+    is_teams_safelink_page(url)
+}
+
+/// Does `url` look like a Safe Link (whether or not its destination can be read)? For the log.
+pub fn looks_like_safelink(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("safelinks") || lower.contains("atp-safelinks")
+}
+
+/// The destination of a Teams Safe Links page: its `url` argument, in the query or in the fragment; failing that, the first web
+/// address among the arguments that is not Microsoft's own click-through endpoint (`.../api/atp/...`).
+fn teams_safelink_target(url: &str) -> Option<String> {
+    let mut pairs = query_pairs(url);
+    pairs.extend(fragment_pairs(url));
+    let web = |v: &str| v.starts_with("http://") || v.starts_with("https://");
+    if let Some((_, v)) = pairs.iter().find(|(k, v)| k.eq_ignore_ascii_case("url") && web(v)) {
+        return Some(v.clone());
+    }
+    pairs.iter().find(|(_, v)| web(v) && !v.to_lowercase().contains("/api/atp/")).map(|(_, v)| v.clone())
+}
+
 /// Is `url` an address that another application (a command-line tool, a desktop app) opens in the
 /// browser to sign in? Two shapes are recognised:
 /// - OAuth: a web address whose query has a `redirect_uri` (or `redirect_url`) that points back to the
@@ -673,8 +721,8 @@ fn builtin_unwrap(url: &str) -> Option<String> {
         &["u"]
     } else if [".safelinks.protection.outlook.com", ".safelinks.protection.office365.us", ".safelinks.protection.partner.outlook.cn"].iter().any(|d| host.ends_with(d)) {
         &["url"] // Outlook Safe Links, in mail (every region and cloud)
-    } else if host.ends_with(".teams.cdn.office.net") && path.ends_with("/atp-safelinks.html") {
-        &["url"] // Teams' own Safe Links page, which checks the address and then goes on to it
+    } else if is_teams_safelink_page(url) {
+        return teams_safelink_target(url); // Teams' own Safe Links page, which checks the address and then goes on to it
     } else if matches!(host.as_str(), "outlook.office.com" | "outlook.office365.com" | "outlook.live.com" | "outlook.office365.us") && path == "/owa/redir.aspx" {
         return first_web_param_with(url, &["url"], true); // Outlook on the web's own redirect (`URL=`)
     } else if host == "slack-redir.net" && path == "/link" {
@@ -1088,6 +1136,9 @@ mod tests {
         assert_eq!(u(&format!("https://usg01.safelinks.protection.office365.us/?url={enc}&data=x")), dest, "Government clouds");
         assert_eq!(u(&format!("https://statics.teams.cdn.office.net/evergreen-assets/safelinks/1/atp-safelinks.html?url={enc}&locale=en-us&dest=https%3A%2F%2Fteams.microsoft.com%2Fapi%2Fatp%2Fv1%2Furlclick")), dest, "Teams");
         assert_eq!(u(&format!("https://outlook.office.com/owa/redir.aspx?C=abc&URL={enc}&")), dest, "Outlook on the web, URL in capitals");
+        assert_eq!(u(&format!("https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html?url={enc}&locale=en-us")), dest, "Teams on its new CDN host");
+        assert_eq!(u(&format!("https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html#url={enc}&locale=en-us")), dest, "the address in the fragment");
+        assert_eq!(u(&format!("https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html?target={enc}&dest=https%3A%2F%2Fteams.microsoft.com%2Fapi%2Fatp%2Fv1%2Furlclick")), dest, "another argument name, not Microsoft's click endpoint");
         assert_eq!(u(&format!("https://slack-redir.net/link?url={enc}")), dest);
         assert_eq!(u(&format!("https://www.linkedin.com/safety/go/?url={enc}")), dest);
         assert_eq!(u(&format!("https://duckduckgo.com/l/?uddg={enc}&rut=1")), dest);
@@ -1096,6 +1147,16 @@ mod tests {
         let inner = format!("https://www.google.com/url?q={enc}");
         let outer = format!("https://l.facebook.com/l.php?u={}", inner.replace(':', "%3A").replace('/', "%2F").replace('?', "%3F").replace('=', "%3D"));
         assert_eq!(u(&outer), dest, "nested");
+    }
+
+    #[test]
+    fn the_teams_safe_links_page_is_an_interstitial_and_others_are_not() {
+        assert!(is_interstitial("https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html"));
+        assert!(is_interstitial("https://statics.teams.cdn.office.net/evergreen-assets/safelinks/1/atp-safelinks.html?url=x"));
+        assert!(!is_interstitial("https://evil.example/evergreen-assets/safelinks/2/atp-safelinks.html"));
+        assert!(!is_interstitial("https://nam02.safelinks.protection.outlook.com/?url=x"), "that one is an HTTP redirect");
+        assert!(looks_like_safelink("https://x.safelinks.protection.outlook.com/?url=x") && looks_like_safelink("https://a.example/safelinks/2/atp-safelinks.html"));
+        assert!(!looks_like_safelink("https://example.com/"));
     }
 
     #[test]
@@ -1110,6 +1171,8 @@ mod tests {
             "https://notgoogle.com/url?q=https%3A%2F%2Fmiro.com",
             "https://l.facebook.com/other?u=https%3A%2F%2Fmiro.com",
             "https://statics.teams.cdn.office.net/evergreen-assets/other.html?url=https%3A%2F%2Fmiro.com", // not the Safe Links page
+            "https://teams.public.onecdn.static.microsoft/evergreen-assets/safelinks/2/atp-safelinks.html", // nothing to read
+            "https://evil.example/evergreen-assets/safelinks/2/atp-safelinks.html?url=https%3A%2F%2Fmiro.com", // not Microsoft's host
             "https://outlook.office.com/mail/inbox?url=https%3A%2F%2Fmiro.com",
             "https://notsafelinks.protection.outlook.com.evil.example/?url=https%3A%2F%2Fmiro.com",
         ] {
