@@ -25,6 +25,7 @@ mod pinned_tabs;
 mod prompts;
 mod sweep;
 mod nav;
+mod navmenu;
 mod selftest;
 mod view;
 mod watch;
@@ -498,12 +499,15 @@ impl Shell {
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
         cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
         cookies.append(Some("Copy address"), Some("win.copy-address"));
-        cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
+        let in_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
+        if !in_app {
+            cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
+        }
         cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
         cookies.append(Some("Print\u{2026}"), Some("win.print"));
         self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
-        if self.page_is_pinned(page) || self.workspace.as_ref().is_some_and(|w| w.is_app()) {
+        if self.page_is_pinned(page) || in_app {
             return; // a workspace's pinned tabs stay where they are, and a web app's tabs are not sent anywhere
         }
         let send = gio::Menu::new();
@@ -1854,8 +1858,19 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     frame.append(&tab_view);
     toolbar.set_content(Some(&frame));
     let toasts = adw::ToastOverlay::new();
-    toasts.set_child(Some(&toolbar));
+    let chrome = gtk::Overlay::new();
+    chrome.set_child(Some(&toolbar));
+    picker_ui.attach(&chrome, &header);
+    toasts.set_child(Some(&chrome));
     window.set_content(Some(&toasts));
+    window.connect_is_active_notify({
+        let button = picker_ui.button.downgrade();
+        move |window| {
+            if let Some(button) = button.upgrade().filter(|_| !window.is_active()) {
+                button.set_active(false);
+            }
+        }
+    });
 
     let back_action = gio::SimpleAction::new("back", None);
     let forward_action = gio::SimpleAction::new("forward", None);
@@ -1971,6 +1986,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    shell.connect_navigation_menus();
     add_action(&window, "reload", on_tab(BrowserView::reload));
     add_action(&window, "stop", on_tab(BrowserView::stop));
     add_action(&window, "focus-address", {
@@ -2647,6 +2663,11 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             let _ = store.clear_history(Some(now_secs() - i64::from(days) * 86_400));
         }
     }
+    if let Some(display) = gtk::gdk::Display::default() {
+        let css = gtk::CssProvider::new();
+        css.load_from_string(&format!("{WORKSPACE_PICKER_CSS}\n{MENU_ITEM_CSS}"));
+        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
     // Restored tabs that are still asleep are shown blurred.
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
@@ -3060,6 +3081,18 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
 /// Selected text in the address bar: solid colours that always contrast (libadwaita's default is a faint tint of the accent colour,
 /// which nearly vanishes against some window colours). Window colours override it with their own pair in `workspace_css`.
 const ADDRESS_SELECTION_CSS: &str = "headerbar entry text selection, headerbar entry text selection:focus-within { background-color: @accent_bg_color; color: @accent_fg_color; }";
+const WORKSPACE_PICKER_CSS: &str = ".browsah-workspace-picker { background-color: var(--popover-bg-color); color: var(--popover-fg-color); border-radius: 12px; box-shadow: 0 3px 12px alpha(black, 0.35); }";
+
+// Adwaita styles ordinary buttons semibold. Menu choices use regular weight, including GTK's
+// generated menu buttons and the workspace picker rows. Section headings sit outside the choices.
+const MENU_ITEM_CSS: &str = "
+    popover button, popover button label,
+    popover row, popover row label,
+    .browsah-workspace-picker button, .browsah-workspace-picker button label {
+        font-weight: normal;
+    }
+    popover.browsah-navigation-history button label { color: var(--popover-fg-color); }
+";
 
 /// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
 /// on, the colour around the page (not in fullscreen, where the bars are hidden and the page fills the screen).

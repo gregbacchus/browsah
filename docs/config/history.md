@@ -9,6 +9,9 @@ things happened:
   (`user` today; swept tabs will say which rule swept them). When an ephemeral window is closed with
   tabs open, those tabs are kept together as a group, so the whole window can come back.
 
+Press and hold **Back** or **Forward** to see the current tab’s pages in that direction, nearest first.
+Choose a page to jump to it, or choose **More history…** to open the history window.
+
 The history window opens with `Ctrl+H`: search, show the history of this workspace or of all of them,
 open a page (`Enter` here, or in a new tab with `Ctrl`+`Enter`), and a *Recently closed* list for reopening tabs
 and ephemeral windows. `Ctrl+Shift+T` reopens the last closed tab of the workspace (in an ephemeral

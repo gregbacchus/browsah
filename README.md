@@ -80,6 +80,7 @@ page's script popup becomes a tab, a modal or nothing (`tabs.popups`). See
 History: each profile remembers the pages visited (with the workspace) and the tabs closed. `Ctrl+H` opens
 the history window, `Ctrl+Shift+T` reopens the last closed tab (in an ephemeral window: the last closed
 window, so ephemeral windows are recoverable). `browsah history` lists and clears it from the command line.
+Press and hold **Back** or **Forward** to jump to a page in the current tab’s list or open **More history…**.
 See [docs/config/history.md](docs/config/history.md).
 
 Tab sweeping: rules (in a workspace, or in `profile.yaml` or `config.yaml` for all of them to inherit) can tidy up tabs you no longer use (idle for how long, a decaying use
@@ -100,7 +101,7 @@ Chrome extensions: `browsah extension add <id or Chrome Web Store address>` inst
 opens its popup (`extensions.hide` / `extensions.show` choose which buttons a workspace or app window shows); the 1Password extension works with the desktop app. Chromium loads the extensions (CEF has no extension API of its own). See
 [docs/config/extensions.md](docs/config/extensions.md).
 
-The workspace picker: a button at the start of the header lists the profile's workspaces with a badge in each one's colour, ordered by last use or by name; `workspace_picker: false` hides it (and a web app's window never has it).
+The workspace picker: a button at the start of the header lists the profile's workspaces with a badge in each one's colour, ordered by last use or by name. Select **No workspace** to switch to a plain browser window or open one. `workspace_picker: false` hides the picker, and it is always hidden in web apps.
 
 Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
 profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.

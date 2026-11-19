@@ -2,7 +2,7 @@
 //! badge in its colour, ordered by last use or alphabetically (the choice is remembered in the profile). The model (ordering,
 //! badges) is `crate::picker`.
 
-use super::{store, windows, PROFILE};
+use super::{shell_of, store, windows, PROFILE};
 use crate::picker::{self, Entry, Order};
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -12,8 +12,8 @@ use std::rc::Rc;
 const ORDER_PREF: &str = "workspace_order";
 
 pub struct Ui {
-    pub button: gtk::MenuButton,
-    pub popover: gtk::Popover,
+    pub button: gtk::ToggleButton,
+    pub panel: gtk::Box,
     /// The workspace rows.
     pub list: gtk::Box,
     pub recent: gtk::ToggleButton,
@@ -67,16 +67,20 @@ impl Ui {
         content.append(&scroller);
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content.append(&switch);
-        let popover = gtk::Popover::builder().child(&content).build();
-        let button = gtk::MenuButton::builder().tooltip_text("Workspaces").popover(&popover).build();
+        let panel = gtk::Box::builder().css_classes(["browsah-workspace-picker"])
+            .halign(gtk::Align::Start).valign(gtk::Align::Start).visible(false).build();
+        panel.append(&content);
+        let button = gtk::ToggleButton::builder().tooltip_text("Workspaces").build();
         crate::icons::bind(&button, crate::icons::SWATCH_BOOK);
-        let ui = Rc::new(Ui { button, popover, list, recent, alpha, current, syncing: std::cell::Cell::new(false) });
-        // The list is built when it is opened, so it shows the workspaces and the last use as they are now.
-        ui.popover.connect_show({
+        let ui = Rc::new(Ui { button, panel, list, recent, alpha, current, syncing: std::cell::Cell::new(false) });
+        ui.button.connect_toggled({
             let ui = Rc::downgrade(&ui);
-            move |_| {
-                if let Some(ui) = ui.upgrade() {
+            move |button| {
+                let Some(ui) = ui.upgrade() else { return };
+                ui.panel.set_visible(button.is_active());
+                if button.is_active() {
                     ui.rebuild();
+                    ui.panel.child_focus(gtk::DirectionType::TabForward);
                 }
             }
         });
@@ -93,6 +97,56 @@ impl Ui {
             });
         }
         ui
+    }
+
+    /// Keep the picker on the window's Wayland surface so its input serial can activate another toplevel.
+    pub fn attach(self: &Rc<Self>, overlay: &gtk::Overlay, header: &adw::HeaderBar) {
+        overlay.add_overlay(&self.panel);
+        overlay.connect_get_child_position({
+            let header = header.downgrade();
+            let panel = self.panel.downgrade();
+            move |overlay, child| {
+                if panel.upgrade().as_ref().map(|p| p.upcast_ref::<gtk::Widget>()) != Some(child) {
+                    return None;
+                }
+                let bounds = header.upgrade()?.compute_bounds(overlay)?;
+                let bottom = (bounds.y() + bounds.height()).ceil() as i32;
+                let (_, width, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
+                let width = width.min((overlay.width() - 16).max(1));
+                let (_, height, _, _) = child.measure(gtk::Orientation::Vertical, width);
+                let x = if overlay.direction() == gtk::TextDirection::Rtl { overlay.width() - width - 8 } else { 8 };
+                Some(gtk::gdk::Rectangle::new(x, bottom + 4, width, height))
+            }
+        });
+
+        let outside_click = gtk::GestureClick::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
+        outside_click.connect_pressed({
+            let ui = Rc::downgrade(self);
+            let overlay = overlay.downgrade();
+            move |_, _, x, y| {
+                let (Some(ui), Some(overlay)) = (ui.upgrade(), overlay.upgrade()) else { return };
+                if ui.button.is_active() && !overlay.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|widget| {
+                    widget == ui.panel || widget.is_ancestor(&ui.panel) || widget == ui.button || widget.is_ancestor(&ui.button)
+                }) {
+                    ui.button.set_active(false);
+                }
+            }
+        });
+        overlay.add_controller(outside_click);
+
+        let keys = gtk::EventControllerKey::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
+        keys.connect_key_pressed({
+            let ui = Rc::downgrade(self);
+            move |_, key, _, _| {
+                if let Some(ui) = ui.upgrade().filter(|ui| key == gtk::gdk::Key::Escape && ui.button.is_active()) {
+                    ui.button.set_active(false);
+                    ui.button.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        overlay.add_controller(keys);
     }
 
     /// Choose the order and remember it (for every window of the profile).
@@ -117,32 +171,48 @@ impl Ui {
             b.set_active(current_order == o);
         }
         self.syncing.set(false);
-        let open: Vec<String> = windows().iter().filter_map(|s| s.workspace.as_ref().map(|w| w.id.clone())).collect();
+        let open = windows();
         let entries = entries();
-        if entries.is_empty() {
-            self.list.append(&gtk::Label::builder().label("No workspaces yet").css_classes(["dim-label"]).margin_top(8).margin_bottom(8).build());
-        }
-        for e in entries {
+        let choices = std::iter::once((None, "No workspace", None))
+            .chain(entries.iter().map(|e| (Some(e.id.as_str()), e.name.as_str(), e.color.as_ref())));
+        for (id, name, color) in choices {
             let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
-            row.append(&badge(picker::badge_color(e.color.as_ref(), dark)));
-            row.append(&gtk::Label::builder().label(e.name.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build());
-            let is_current = self.current.as_deref() == Some(e.id.as_str());
-            if open.contains(&e.id) && !is_current {
+            row.append(&badge(picker::badge_color(color, dark)));
+            row.append(&gtk::Label::builder().label(name).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build());
+            let is_current = self.current.as_deref() == id;
+            if !is_current && open.iter().any(|s| !s.private.get() && s.workspace_id() == id) {
                 row.append(&gtk::Label::builder().label("open").css_classes(["dim-label", "caption"]).build());
             }
             if is_current {
                 row.append(&gtk::Image::from_icon_name("object-select-symbolic"));
             }
-            let b = gtk::Button::builder().child(&row).has_frame(false).tooltip_text(e.id.as_str()).build();
-            b.set_widget_name(&e.id);
+            let b = gtk::Button::builder().child(&row).has_frame(false).tooltip_text(id.unwrap_or(name)).build();
+            b.set_widget_name(id.unwrap_or("No workspace"));
             b.connect_clicked({
-                let popover = self.popover.downgrade();
+                let toggle = self.button.downgrade();
+                let id = id.map(str::to_owned);
                 move |button| {
-                    // Release the popover's input grab before asking Wayland to raise the window.
-                    if let Some(p) = popover.upgrade() {
-                        p.popdown();
+                    let source = button.root().and_downcast::<adw::ApplicationWindow>();
+                    let target = source.as_ref().and_then(|w| w.application()).and_then(|app| {
+                        // GTK lists the windows in most-recently-focused order.
+                        app.windows().into_iter().filter_map(|w| w.downcast::<adw::ApplicationWindow>().ok())
+                            .filter_map(|w| shell_of(&w))
+                            .find(|s| !s.private.get() && s.workspace_id() == id.as_deref())
+                    });
+                    if let Some(toggle) = toggle.upgrade() {
+                        toggle.set_active(false);
+                        toggle.grab_focus();
                     }
-                    let _ = gtk::prelude::WidgetExt::activate_action(button, "app.open-workspace", Some(&e.id.to_variant()));
+                    if let Some(target) = target {
+                        if Some(&target.window) != source.as_ref() {
+                            target.window.unminimize();
+                            target.window.present();
+                        }
+                    } else if let Some(id) = &id {
+                        let _ = gtk::prelude::WidgetExt::activate_action(button, "app.open-workspace", Some(&id.to_variant()));
+                    } else {
+                        let _ = gtk::prelude::WidgetExt::activate_action(button, "app.new-window", None);
+                    }
                 }
             });
             self.list.append(&b);

@@ -9,6 +9,10 @@ Next steps are in [../roadmap.md](../roadmap.md).
 
 | Note | Date | Question | Short answer |
 |---|---|---|---|
+| [devtools-branding.md](devtools-branding.md) | 2026-11-20 | How closely can the native DevTools window match Browsah? | Apply a profile palette and desktop identity. Chromium draws the in-frame icon. |
+| [navigation-history-menu.md](navigation-history-menu.md) | 2026-11-20 | Can Back and Forward jump directly to a specific entry? | A long press lists native and saved entries in the selected direction. |
+| [menu-item-weight.md](menu-item-weight.md) | 2026-11-20 | How should menus distinguish choices from headings? | Use regular weight for menu choices and reserve stronger weight for actual headings. |
+| [workspace-picker-focus.md](workspace-picker-focus.md) | 2026-11-20 | How can a row in the picker activate an existing window? | Keep the picker on the source toplevel surface where GDK gets the click serial. |
 | [navigation-icon-contrast.md](navigation-icon-contrast.md) | 2026-11-20 | Which stroke should chrome icons use on tinted windows? | Choose from the actual window tint using relative luminance. |
 | [cef-codec-licenses.md](cef-codec-licenses.md) | 2026-11-19 | Can browsah redistribute the tested codec-enabled CEF? | Karere patch terms and exact source are unclear; FFmpeg notices and separate H.264/AAC patent terms need review. No legal clearance established. |
 | [tab-history.md](tab-history.md) | 2026-11-19 | Can a tab keep its back and forward list across restarts? | CEF cannot be given entries, so the list is saved with the tab and used through two stacks beside the browser's own. It also survives a tab sleeping. |

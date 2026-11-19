@@ -2358,16 +2358,7 @@ impl BrowserView {
 
     /// Open developer tools with the element at (`x`, `y`) in the page's coordinates selected ("Inspect").
     pub fn inspect_at(&self, x: i32, y: i32) {
-        let shared = self.shared.clone();
-        if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
-            let h = HostHandle(h.0.clone());
-            on_ui(move || {
-                let h = h;
-                let window_info = WindowInfo::default();
-                h.0.show_dev_tools(Some(&window_info), None, Some(&BrowserSettings::default()), Some(&Point { x, y }));
-                shared.dev_tools.store(h.0.has_dev_tools() != 0, Ordering::Relaxed);
-            });
-        }
+        self.show_dev_tools(Some(Point { x, y }), false);
     }
 
     /// Evaluate an expression that gives a string in the page and hand the string to `done` (`None`: no answer in 3 seconds, or not
@@ -2419,6 +2410,17 @@ impl BrowserView {
         self.cdp("Page.resetNavigationHistory");
     }
 
+    /// Jump to an entry by its Chromium navigation ID, keeping the browser's own history intact.
+    pub fn go_to_navigation_entry(&self, entry_id: i32) {
+        let h = self.shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone()));
+        self.shared.post_cdp(move |id| {
+            let Some(h) = h else { return };
+            let Some(mut params) = dictionary_value_create() else { return };
+            params.set_int(Some(&CefString::from("entryId")), entry_id);
+            h.0.execute_dev_tools_method(id, Some(&CefString::from("Page.navigateToHistoryEntry")), Some(&mut params));
+        });
+    }
+
     pub fn go_back(&self) {
         self.with_browser(|b| b.go_back());
     }
@@ -2454,25 +2456,47 @@ impl BrowserView {
 
     /// Open Chromium's developer tools for this page in a window of their own (or close them if open).
     pub fn toggle_dev_tools(&self) {
+        self.show_dev_tools(None, true);
+    }
+
+    fn show_dev_tools(&self, inspect: Option<Point>, toggle: bool) {
+        use sys::cef_color_variant_t::*;
+        let dark = adw::StyleManager::default().is_dark();
+        // Chrome's theme is shared by a request context. A profile-wide seed keeps it consistent
+        // when tools are open for several workspaces that share that context.
+        let seed = super::PROFILE.with(|profiles| {
+            let profiles = profiles.borrow();
+            let color = profiles.as_ref().and_then(|p| p.config.color.as_ref())?;
+            let hex = if dark { &color.dark } else { &color.light };
+            u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()
+        });
+        let color = 0xff000000 | seed.unwrap_or(0x686868);
+        let variant = if seed.is_some() { CEF_COLOR_VARIANT_TONAL_SPOT } else { CEF_COLOR_VARIANT_NEUTRAL };
+        let mode = if dark { CEF_COLOR_VARIANT_DARK } else { CEF_COLOR_VARIANT_LIGHT };
         let shared = self.shared.clone();
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
             let h = HostHandle(h.0.clone());
             on_ui(move || {
                 let h = h;
-                if h.0.has_dev_tools() != 0 {
+                let was_open = h.0.has_dev_tools() != 0;
+                if toggle && was_open {
                     h.0.close_dev_tools();
                     shared.dev_tools.store(false, Ordering::Relaxed);
                     return;
                 }
+                if !was_open {
+                    if let Some(context) = h.0.request_context() {
+                        context.set_chrome_color_scheme(mode.into(), 0);
+                        context.set_chrome_color_scheme(variant.into(), color);
+                    }
+                }
                 // A plain window and no client of ours: the tools must not feed their title or frames into this view.
-                let window_info = WindowInfo::default();
-                h.0.show_dev_tools(Some(&window_info), None, Some(&BrowserSettings::default()), None);
+                h.0.show_dev_tools(Some(&WindowInfo::default()), None, Some(&BrowserSettings::default()), inspect.as_ref());
                 shared.dev_tools.store(h.0.has_dev_tools() != 0, Ordering::Relaxed);
             });
         }
     }
 
-    /// Whether developer tools were open after the last toggle.
     pub fn has_dev_tools(&self) -> bool {
         self.shared.dev_tools.load(Ordering::Relaxed)
     }

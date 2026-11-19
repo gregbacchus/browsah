@@ -72,7 +72,7 @@ rendering:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `chromium.flags` | list of strings | empty | Extra Chromium command-line switches, for example `--disable-features=Foo`. `--ozone-platform=wayland` is always applied unless a flag here or on the command line sets `--ozone-platform`. Use with care: switches can break rendering. |
+| `chromium.flags` | list of strings | empty | Extra Chromium command-line switches, for example `--disable-features=Foo`. `--ozone-platform=wayland` is always applied unless a flag here or on the command line sets `--ozone-platform`. Native Chromium windows such as DevTools use the Browsah profile’s desktop ID unless `--class` is specified. Use with care: switches can break rendering. |
 
 ```yaml
 chromium:

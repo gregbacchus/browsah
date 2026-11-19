@@ -35,4 +35,4 @@ a new page drops them; a tab put to sleep keeps its earlier page, wakes on the r
 Not measured or known limits: the browser's list is read when a load finishes, so a page still loading is not in a saved list yet; pages
 whose address needs a POST or script state come back as a plain load; a link followed within 2 seconds of a step through the stacks keeps
 the stale forward pages; only workspace windows remember tabs (ephemeral windows do not); the list is not kept for tabs reopened with
-`Ctrl+Shift+T`; the page titles in the stacks are not shown anywhere (no history menu on the Back button).
+`Ctrl+Shift+T`. The [Back and Forward menus](navigation-history-menu.md) now show the saved page titles.

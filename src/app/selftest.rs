@@ -570,6 +570,20 @@ fn first_label_text(w: &gtk::Widget) -> Option<String> {
     None
 }
 
+fn label_weight(root: &gtk::Widget, text: &str) -> Option<gtk::pango::Weight> {
+    if let Some(label) = root.downcast_ref::<gtk::Label>().filter(|label| label.text() == text) {
+        return label.pango_context().font_description().map(|font| font.weight());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(weight) = label_weight(&widget, text) {
+            return Some(weight);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 /// A button anywhere below `root` whose label text is `label` (case-insensitive).
 fn find_button(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
     if let Ok(b) = root.clone().downcast::<gtk::Button>() {
@@ -2888,6 +2902,14 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
         r.check(&format!("the tab bar follows multiple_tabs ({id}: tabs {tabs})"), bar.as_ref().is_some_and(|b| b.is_visible() == tabs), || format!("{:?}", bar.map(|b| b.is_visible())));
         r.check(&format!("and there is no picker or bookmark star in an app ({id})"), !w.picker.button.is_visible() && !w.star.is_visible(), || format!("picker {} star {}", w.picker.button.is_visible(), w.star.is_visible()));
         if tabs {
+            w.setup_tab_menu(w.tab_view.selected_page().as_ref());
+            let actions = (0..w.tab_menu.n_items())
+                .filter_map(|i| w.tab_menu.item_link(i, "section"))
+                .flat_map(|section| (0..section.n_items()).filter_map(move |i| section.item_attribute_value(i, "action", None).and_then(|v| v.get::<String>())))
+                .collect::<Vec<_>>();
+            r.check("a web app tab menu offers Print and omits Install as web app", actions.iter().any(|a| a == "win.print") && !actions.iter().any(|a| a == "win.install-app"), || format!("{actions:?}"));
+            w.setup_tab_menu(None);
+
             // Ctrl+click on a link asks for a new tab: an app that allows tabs gets one, not an overlay.
             let (view, held) = (w.view(), gdk::ModifierType::CONTROL_MASK);
             let before = w.tab_count();
@@ -3433,6 +3455,13 @@ async fn run_devtools(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
     let ok = wait_until(10_000, || !view.has_dev_tools()).await;
     r.check("F12 again closes them", ok, || "still open".into());
+    let page_title = shell.window.title();
+    view.inspect_at(24, 24);
+    let ok = wait_until(10_000, || view.has_dev_tools()).await;
+    r.check("Inspect reopens DevTools for the same page", ok && shell.window.title() == page_title, || format!("{:?}", shell.window.title()));
+    let _ = WidgetExt::activate_action(&shell.window, "win.devtools", None);
+    let ok = wait_until(10_000, || !view.has_dev_tools()).await;
+    r.check("F12 closes the tools opened by Inspect", ok, || "still open".into());
 }
 
 /// Saving a page as a PDF: the file is written, is a PDF, and is on A4 paper by default.
@@ -3568,8 +3597,11 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
         }
     }
     shot(&shell.window, "main-menu");
-    if let Some(p) = shell.menu_button.popover() {
-        shot(&p, "main-menu-popover");
+    let menu = shell.menu_button.popover();
+    let weight = |label| menu.as_ref().and_then(|p| label_weight(p.upcast_ref(), label));
+    r.check("main-menu items have regular weight", ["New window", "Open workspace", "Find in page"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("New window: {:?}, Open workspace: {:?}", weight("New window"), weight("Open workspace")));
+    if let Some(p) = &menu {
+        shot(p, "main-menu-popover");
     }
     shell.menu_button.popdown();
     r.check("the main menu offers a new window (no workspace) and the page tools", ["New window", "Open workspace", "Find in page", "Developer tools", "History"].iter().all(|l| labels.iter().any(|x| x == l)), || format!("{labels:?}"));
@@ -3864,21 +3896,23 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
     };
     // A new window is activated a moment after it opens, and GTK closes a popover opened before that.
     let _ = wait_until(5_000, || w.window.is_active()).await;
-    w.picker.button.popup();
+    w.picker.button.set_active(true);
     let _ = wait_until(3_000, || !order_of(&w.picker).is_empty()).await;
     r.check("last used order: the most recent first, never used last", order_of(&w.picker) == ["pk1", "pk2", "pk3"], || format!("{:?}", order_of(&w.picker)));
-    shot(&w.window, "workspace-picker-window");
     glib::timeout_future(Duration::from_millis(400)).await;
-    shot(&w.picker.popover, "workspace-picker-recent");
+    shot(&w.window, "workspace-picker-window");
+    shot(&w.picker.panel, "workspace-picker-recent");
+    let weight = |label| label_weight(w.picker.panel.upcast_ref(), label);
+    r.check("picker choices and the selected order have regular weight", ["No workspace", "Zebra", "Recent"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("No workspace: {:?}, Zebra: {:?}, Recent: {:?}", weight("No workspace"), weight("Zebra"), weight("Recent")));
     w.picker.alpha.set_active(true);
     glib::timeout_future(Duration::from_millis(200)).await;
     r.check("alphabetical order ignores case: apple, Mango, Zebra", order_of(&w.picker) == ["pk2", "pk3", "pk1"], || format!("{:?}", order_of(&w.picker)));
     r.check("the chosen order is remembered in the profile", store.pref("workspace_order").as_deref() == Some("alphabetical"), || format!("{:?}", store.pref("workspace_order")));
     glib::timeout_future(Duration::from_millis(300)).await;
-    shot(&w.picker.popover, "workspace-picker-alphabetical");
-    w.picker.button.popdown();
+    shot(&w.picker.panel, "workspace-picker-alphabetical");
+    w.picker.button.set_active(false);
     // A new window of the profile reads the remembered order.
-    w.picker.button.popup();
+    w.picker.button.set_active(true);
     glib::timeout_future(Duration::from_millis(200)).await;
     r.check("reopening the list keeps the remembered order", order_of(&w.picker) == ["pk2", "pk3", "pk1"] && w.picker.alpha.is_active(), || format!("{:?}", order_of(&w.picker)));
     let click_workspace = |ui: &super::picker::Ui, id: &str| {
@@ -3899,16 +3933,16 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
     r.check("choosing a workspace in the list opens its window", clicked && opened, || format!("clicked={clicked}"));
     r.check("a workspace that opens counts as used: it leads the last used order", {
         store.set_pref("workspace_order", "last_used").unwrap();
-        w.picker.button.popdown();
+        w.picker.button.set_active(false);
         glib::timeout_future(Duration::from_millis(300)).await;
-        w.picker.button.popup();
+        w.picker.button.set_active(true);
         glib::timeout_future(Duration::from_millis(200)).await;
         order_of(&w.picker).first().map(String::as_str) == Some("pk3")
     }, || format!("{:?}", order_of(&w.picker)));
-    w.picker.button.popdown();
+    w.picker.button.set_active(false);
     if let Some(target) = find("pk3") {
         let active = wait_until(5_000, || target.window.is_active()).await;
-        target.picker.button.popup();
+        target.picker.button.set_active(true);
         let _ = wait_until(3_000, || order_of(&target.picker).iter().any(|id| id == "pk1")).await;
         let initial_count = super::windows().len();
         let clicked = click_workspace(&target.picker, "pk1");
@@ -3917,6 +3951,18 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
             && super::windows().len() == initial_count && find("pk1").is_some_and(|s| Rc::ptr_eq(&s, &w)),
             || format!("picker source active={active}, clicked={clicked}, target active={focused}"));
     }
+    w.picker.button.set_active(true);
+    let clicked = click_workspace(&w.picker, "No workspace");
+    let focused = wait_until(5_000, || shell.window.is_active()).await;
+    r.check("No workspace focuses an existing plain browser window", clicked && focused,
+        || format!("clicked={clicked}, plain window active={focused}"));
+    // Temporarily exclude the test harness window so the picker has to create a plain window.
+    shell.private.set(true);
+    w.picker.button.set_active(true);
+    let clicked = click_workspace(&w.picker, "No workspace");
+    shell.private.set(false);
+    r.check("No workspace opens a plain window when none is eligible", clicked && super::windows().iter().any(|s| s.workspace.is_none() && !Rc::ptr_eq(s, shell)),
+        || format!("clicked={clicked}, windows={}", super::windows().len()));
     // A workspace that sets `workspace_picker: false` has no button in its own window; the others keep theirs.
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"pk2".to_variant()));
     let _ = wait_until(15_000, || find("pk2").is_some()).await;
@@ -4454,6 +4500,8 @@ async fn run_swept(shell: &Rc<Shell>, r: &mut Report) {
     shot(&w.window, "recently-swept-window");
     w.swept.popover.popup();
     glib::timeout_future(Duration::from_millis(500)).await;
+    let weight = label_weight(w.swept.popover.upcast_ref(), "Restore all");
+    r.check("the swept-tabs menu action has regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
     shot(&w.swept.popover, "recently-swept");
     w.swept.popover.popdown();
 
@@ -4543,6 +4591,13 @@ async fn run_copybutton(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a page that was not just used cannot set the clipboard", got == "untouched", || format!("clipboard {got:?}"));
 }
 
+fn hold_history_button(button: &gtk::Button) -> Option<gtk::Popover> {
+    let controllers = button.observe_controllers();
+    let hold = (0..controllers.n_items()).find_map(|i| controllers.item(i).and_downcast::<gtk::GestureLongPress>())?;
+    hold.emit_by_name::<()>("pressed", &[&8.0f64, &8.0f64]);
+    button.last_child().and_downcast::<gtk::Popover>()
+}
+
 /// A tab's back and forward list survives closing the window and a tab being put to sleep. CEF cannot be given entries, so a restored
 /// tab keeps the earlier and later pages in lists beside the browser's own (`navhistory`); Back and Forward use them when the browser
 /// has nothing to go to, and a new navigation drops the later pages.
@@ -4557,7 +4612,7 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("workspace dir");
     let _ = store().delete_workspace("nh");
-    std::fs::write(dir.join("workspace.yaml"), format!("name: History\nhome_page: 'http://localhost:{port}/scope.html'\n")).expect("workspace.yaml");
+    std::fs::write(dir.join("workspace.yaml"), format!("name: History\ncolor: '#191919 #f7f1e8'\nhome_page: 'http://localhost:{port}/scope.html'\n")).expect("workspace.yaml");
     crate::router::install(crate::router::Router::default());
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "nh"));
     let (a, b, c) = (format!("http://localhost:{port}/scope.html"), format!("http://localhost:{port}/b.html"), format!("http://localhost:{port}/white.html"));
@@ -4578,9 +4633,41 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     }
     let ok = wait_until(5_000, || tab.view().nav_entries().0.len() == 3).await;
     r.check("the browser lists the three pages", ok, || format!("{:?}", tab.view().nav_entries()));
-    w.history_back(); // to the middle page, so a page is ahead and one behind
-    let ok = wait_until(15_000, at(&w, &b)).await;
-    r.check("back goes to the middle page", ok, || tab.state.borrow().address.clone());
+    let back_menu = hold_history_button(&w.back);
+    let named_rows = |menu: &gtk::Popover, titles: &[&str]| {
+        let rows = menu.child()?.first_child()?.downcast::<gtk::ScrolledWindow>().ok()?;
+        let list = rows.child()?.downcast::<gtk::Viewport>().ok()?.child()?;
+        let mut item = list.first_child();
+        for title in titles {
+            let button = item?.downcast::<gtk::Button>().ok()?;
+            if first_label_text(button.upcast_ref()).as_deref() != Some(title) {
+                return None;
+            }
+            item = button.next_sibling();
+        }
+        Some(())
+    };
+    r.check("holding Back lists native pages nearest first", back_menu.as_ref().and_then(|p| named_rows(p, &["Page B", "Scope test"])).is_some(), || "history rows missing or out of order".into());
+    if let Some(menu) = &back_menu {
+        glib::timeout_future(Duration::from_millis(350)).await;
+        shot(menu, "navigation-history");
+    }
+    if let Some(first) = back_menu.and_then(|p| find_button(p.upcast_ref(), "Scope test")) {
+        first.emit_clicked();
+    }
+    let ok = wait_until(5_000, at(&w, &a)).await;
+    r.check("a native history choice can skip a page", ok, || tab.state.borrow().address.clone());
+    let forward_menu = hold_history_button(&w.forward);
+    r.check("holding Forward lists native pages nearest first", forward_menu.as_ref().and_then(|p| named_rows(p, &["Page B", "White"])).is_some(), || "history rows missing or out of order".into());
+    if let Some(more) = forward_menu.and_then(|p| find_button(p.upcast_ref(), "More history…")) {
+        more.emit_clicked();
+    }
+    let opened = wait_until(3_000, || w.window.visible_dialog().is_some()).await;
+    r.check("More history opens the History window", opened, || "no dialog".into());
+    w.close_history();
+    w.forward.emit_clicked(); // ordinary click still steps a single page
+    let ok = wait_until(5_000, at(&w, &b)).await;
+    r.check("a normal Forward click goes to the middle page", ok, || tab.state.borrow().address.clone());
     glib::timeout_future(Duration::from_millis(500)).await;
     w.save_now();
     let saved = store().load_tabs("nh");
@@ -4597,10 +4684,24 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     let (back, fwd) = (tab.hist_back.borrow().len(), tab.hist_fwd.borrow().len());
     r.check("its earlier and later pages came back too", back == 1 && fwd == 1, || format!("back {back}, forward {fwd}"));
     r.check("back and forward are both enabled", w.back_action.is_enabled() && w.forward_action.is_enabled(), || format!("back {} forward {}", w.back_action.is_enabled(), w.forward_action.is_enabled()));
-    w.history_back();
-    let ok = wait_until(15_000, at(&w, &a)).await;
-    r.check("back goes to the earlier page", ok, || tab.state.borrow().address.clone());
+    let _ = wait_until(5_000, || tab.view().nav_entries().0.first().is_some_and(|e| e.url == b)).await;
+    let first = hold_history_button(&w.back).and_then(|p| find_button_by_tooltip(p.upcast_ref(), &a));
+    if let Some(first) = &first {
+        first.emit_clicked();
+    }
+    let ok = wait_until(5_000, at(&w, &a)).await;
+    r.check("back goes to the earlier page", ok, || format!("selected={}, at {}", first.is_some(), tab.state.borrow().address));
     r.check("nothing is left behind, and two pages are ahead", !w.back_action.is_enabled() && w.forward_action.is_enabled() && tab.hist_fwd.borrow().len() == 2, || format!("back {} fwd {}", w.back_action.is_enabled(), tab.hist_fwd.borrow().len()));
+    if let Some(last) = hold_history_button(&w.forward).and_then(|p| find_button(p.upcast_ref(), "White")) {
+        last.emit_clicked();
+    }
+    let ok = wait_until(5_000, at(&w, &c)).await;
+    r.check("a saved history choice skips directly to the last page", ok && tab.hist_back.borrow().len() == 2, || format!("at {}, {} earlier", tab.state.borrow().address, tab.hist_back.borrow().len()));
+    if let Some(first) = hold_history_button(&w.back).and_then(|p| find_button(p.upcast_ref(), "Scope test")) {
+        first.emit_clicked();
+    }
+    let ok = wait_until(5_000, at(&w, &a)).await;
+    r.check("the skipped pages remain available in the opposite direction", ok && tab.hist_fwd.borrow().len() == 2, || format!("at {}, {} ahead", tab.state.borrow().address, tab.hist_fwd.borrow().len()));
     w.history_forward();
     let ok = wait_until(15_000, at(&w, &b)).await;
     r.check("forward returns to the middle page", ok, || tab.state.borrow().address.clone());
@@ -4624,6 +4725,16 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(15_000, || tab.state.borrow().address.contains("new=1") && !tab.state.borrow().loading).await;
     glib::timeout_future(Duration::from_millis(700)).await;
     r.check("a reload keeps the pages ahead and a new page drops them", kept == 1 && tab.hist_fwd.borrow().is_empty(), || format!("after reload {kept}, after navigation {}", tab.hist_fwd.borrow().len()));
+
+    let saved_url = format!("{c}?saved=1");
+    tab.hist_back.borrow_mut().push(crate::navhistory::Entry::new(&saved_url, "Saved page"));
+    let menu = hold_history_button(&w.back);
+    r.check("a mixed list shows browser entries before older saved ones", menu.as_ref().and_then(|p| named_rows(p, &["Scope test", "Saved page"])).is_some(), || "history rows missing or out of order".into());
+    if let Some(saved) = menu.and_then(|p| find_button(p.upcast_ref(), "Saved page")) {
+        saved.emit_clicked();
+    }
+    let ok = wait_until(5_000, at(&w, &saved_url)).await;
+    r.check("jumping past a native entry keeps it in the forward list", ok && tab.hist_fwd.borrow().last().is_some_and(|entry| entry.url == a), || format!("{:?}", tab.hist_fwd.borrow()));
 
     // A tab put to sleep keeps its list.
     let sleeper = w.open_tab(&a, false);
@@ -4691,6 +4802,8 @@ async fn run_ctxmenu(shell: &Rc<Shell>, r: &mut Report) {
     let link_items = ["Open in new tab", "Open in new window", "Open as popup", "Copy link address", "Copy clean link", "Copy link text", "Save link as\u{2026}", "Inspect"];
     r.check("a link's menu has the open and copy items", menu.as_ref().is_some_and(|p| has(p, &link_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &link_items))));
     r.check("a link's menu is not the page menu", menu.as_ref().is_some_and(|p| find_button_by_tooltip_prefix(p.upcast_ref(), "Reload").is_none() && find_button(p.upcast_ref(), "Find in page").is_none()), || "page items on a link".into());
+    let weight = menu.as_ref().and_then(|p| label_weight(p.upcast_ref(), "Copy clean link"));
+    r.check("page context menu items have regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
     if let Some(p) = &menu {
         shot(p, "ctxmenu-link");
     }

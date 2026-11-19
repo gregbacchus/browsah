@@ -459,7 +459,7 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
         groups.push(g);
         if !ctx.in_modal {
             let mut g = Vec::new();
-            if is_web(&ctx.page_url) {
+            if !ctx.in_app && is_web(&ctx.page_url) {
                 g.push(Entry::Item(item("install-app", "Install as web app\u{2026}", "app-window", Action::Page(PageCmd::InstallApp))));
             }
             if ctx.can_send_tab && !ctx.in_app {
@@ -690,6 +690,15 @@ mod tests {
         let got = ids(&plan(&ctx, &Targets::default(), &opts));
         assert!(!got.contains(&"open-popup") && got.contains(&"open-tab"), "{got:?}");
         well_formed(&plan(&ctx, &Targets::default(), &opts));
+    }
+
+    #[test]
+    fn a_web_app_page_cannot_be_installed_again_from_its_menu() {
+        let ctx = Context { in_app: true, ..page() };
+        let entries = plan(&ctx, &Targets::default(), &Options::default());
+        well_formed(&entries);
+        let got = ids(&entries);
+        assert!(!got.contains(&"install-app") && got.contains(&"print"), "{got:?}");
     }
 
     #[test]

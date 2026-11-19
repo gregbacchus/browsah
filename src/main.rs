@@ -272,7 +272,11 @@ fn main() {
         extensions::set_loaded(list);
     }
     // BROWSAH_NO_SCALE_FIX=1 leaves Chromium's Wayland fractional-scale feature on (to reproduce the HiDPI problem).
-    let flags = cef_rt::with_default_flags(flags, std::env::var_os("BROWSAH_NO_SCALE_FIX").is_none());
+    let mut flags = cef_rt::with_default_flags(flags, std::env::var_os("BROWSAH_NO_SCALE_FIX").is_none());
+    // Chromium owns the native DevTools toplevel. Give it the same Wayland identity as the profile launcher.
+    if !flags.iter().any(|flag| matches!(flag.split('=').next(), Some("--class" | "class"))) {
+        flags.push(format!("--class={}", profile.app_id()));
+    }
 
     cef_rt::forget_saved_zoom(&profile.cef_dir());
 

@@ -49,7 +49,7 @@ broader rules; running it again replaces it, `--remove` deletes it). The rule is
 under another name is left alone. Writing rewrites `profile.yaml` and drops its comments. The rule is an ordinary [routing](routing.md) rule (`open: app:<id>`) that you can edit or write yourself
 for other sites, other sources or `routing.external`. Nothing is routed to an app until you add a rule.
 
-**Installing from a page.** Right-click a tab and choose *Install as web app…*. The page's web manifest is read
+**Installing from a page.** In a regular browser window, right-click a tab and choose *Install as web app…*. The page's web manifest is read
 (through DevTools, as Chromium sees it): its name, start page, scope, display mode, theme colour and the best icon.
 You are shown the name and start page and can change the name before anything is saved; a site without a
 manifest can be installed too, as its own page. The result is what `browsah app add --url` makes for the same site (both

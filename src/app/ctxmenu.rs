@@ -37,10 +37,6 @@ fn row_button(item: &Item, chevron: bool) -> gtk::Button {
     let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
     row.append(&icon_widget(item));
     let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).build();
-    // Plain weight: the back row of a submenu used to be a "heading", and some themes make button text bold.
-    let attrs = gtk::pango::AttrList::new();
-    attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Normal));
-    label.set_attributes(Some(&attrs));
     row.append(&label);
     if let Some(keys) = item.shortcut {
         row.append(&gtk::Label::builder().label(keys).css_classes(["dim-label", "caption"]).margin_start(18).build());

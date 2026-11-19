@@ -26,7 +26,7 @@ of the profile's launcher entry (right-click its icon in the dash). The main men
 
 **The workspace picker** is the button at the start of the header bar (not in a web app's window): a list of the profile's workspaces,
 each with a badge in its colour, to open one or bring its window forward, ordered by last use or by name (the switch at the foot of the
-list; remembered per profile). `workspace_picker: false` (in `config.yaml`, `profile.yaml` or this workspace's `workspace.yaml`) hides it, see [options.md](options.md#startup-and-search).
+list; remembered per profile). **No workspace** switches to the most recently focused plain browser window or opens one. `workspace_picker: false` (in `config.yaml`, `profile.yaml` or this workspace's `workspace.yaml`) hides it, see [options.md](options.md#startup-and-search).
 
 **Sending tabs.** Right-click a tab and choose *Send to workspace* to move it, still running, to another
 workspace's window (opened if needed) or to a new window. Pinned tabs cannot be sent. A window whose
