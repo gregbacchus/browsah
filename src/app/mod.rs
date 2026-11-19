@@ -2582,7 +2582,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     // Restored tabs that are still asleep are shown blurred.
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
-        css.load_from_string(".dormant { filter: blur(8px); }\n.browsah-view:drop(active), .browsah-view:drop(active) * { outline: none; box-shadow: none; background-image: none; }");
+        css.load_from_string(&format!(".dormant {{ filter: blur(8px); }}\n.browsah-view:drop(active), .browsah-view:drop(active) * {{ outline: none; box-shadow: none; background-image: none; }}\n{ADDRESS_SELECTION_CSS}"));
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
@@ -2996,6 +2996,10 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     exit.get()
 }
 
+/// Selected text in the address bar: solid colours that always contrast (libadwaita's default is a faint tint of the accent colour,
+/// which nearly vanishes against some window colours). Window colours override it with their own pair in `workspace_css`.
+const ADDRESS_SELECTION_CSS: &str = "headerbar entry text selection, headerbar entry text selection:focus-within { background-color: @accent_bg_color; color: @accent_fg_color; }";
+
 /// Relative luminance of `#rrggbb` (0 dark, 1 light), to choose a readable foreground.
 fn luminance(hex: &str) -> f64 {
     let c = |i: usize| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0) as f64 / 255.0;
@@ -3007,12 +3011,15 @@ fn luminance(hex: &str) -> f64 {
 fn workspace_css(class: &str, pair: &crate::profile::ColorPair, dark: bool, frame: &crate::config::FrameConfig) -> String {
     let bg = if dark { &pair.dark } else { &pair.light };
     let fg = if luminance(bg) > 0.55 { "rgba(0, 0, 0, 0.8)" } else { "#ffffff" };
+    // Selected text is black on white or white on black, whichever is opposite the header, so it never blends into the window colour.
+    let (sel_bg, sel_fg) = if luminance(bg) > 0.55 { ("#1c1c1c", "#ffffff") } else { ("#ffffff", "#1c1c1c") };
     let mut css = format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
          window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
          window.{class} toolbarview > revealer.bottom-bar, window.{class} toolbarview > revealer.bottom-bar > windowhandle {{ background-color: {bg}; color: {fg}; }}\n\
-         window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}"
+         window.{class} headerbar button, window.{class} headerbar windowcontrols button {{ color: {fg}; }}\n\
+         window.{class} entry text selection, window.{class} entry text selection:focus-within {{ background-color: {sel_bg}; color: {sel_fg}; }}"
     );
     let t = frame.thickness.clamp(0, 40);
     if frame.enabled && t > 0 {
