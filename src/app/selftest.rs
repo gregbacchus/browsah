@@ -1569,7 +1569,7 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
     let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
     let db = profile.dir.join("data.sqlite");
     let port = start_test_server();
-    let ids = ["ma", "mb", "mp", "mq", "mw", "mc"];
+    let ids = ["ma", "mb", "mp", "mq", "mw", "mc", "mz"];
     for id in ids {
         let dir = profile.workspaces_dir().join(id);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1583,6 +1583,7 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
     let modal_rules = "routing:\n  rules:\n    - match: { url: ['127.0.0.1'] }\n      open: modal\n    - match: { url: ['127.0.0.1'] }\n      open: workspace:mb\n";
     std::fs::write(wd("ma"), format!("name: A\nhome_page: '{scope}'\n{modal_rules}")).expect("ma");
     std::fs::write(wd("mb"), "name: B\n").expect("mb");
+    std::fs::write(wd("mz"), "name: Z\n").expect("mz");
     std::fs::write(wd("mp"), format!("name: P\nhome_page: '{}'\ntabs: {{ popups: modal }}\n", page("popup.html"))).expect("mp");
     std::fs::write(wd("mc"), format!("name: C\nhome_page: '{}'\ntabs: {{ popups: modal }}\n", page("popup-close.html"))).expect("mc");
     std::fs::write(wd("mq"), format!("name: Q\nhome_page: '{}'\ntabs: {{ popups: block }}\n", page("popup.html"))).expect("mq");
@@ -1630,6 +1631,24 @@ async fn run_modals(shell: &Rc<Shell>, r: &mut Report) {
     }
     let ok2 = wait_until(5_000, || ma.modal_list().is_empty()).await;
     r.check("closing a modal removes it", ok && ok2, || format!("{} modals", ma.modal_list().len()));
+
+    // Moving to a window with no workspace, or to a workspace that is not open, shows the page alone (no home page tab).
+    let plain_tabs = || super::windows().iter().filter(|s| s.workspace.is_none()).map(|s| s.tab_count()).sum::<usize>();
+    for to in ["plain", "mz"] {
+        let before = plain_tabs();
+        d.click(40.0, 45.0);
+        let ok = wait_until(15_000, || ma.modal_list().len() == 1 && ma.modal_list()[0].state.borrow().title == "Page B").await;
+        let Some(m) = ma.modal_list().first().cloned().filter(|_| ok) else {
+            r.check(&format!("a modal opens to move to {to}"), false, || "no modal".into());
+            continue;
+        };
+        if to == "plain" { m.move_to_plain() } else { m.move_to_workspace(to) }
+        let dest = || super::windows().into_iter().find(|s| if to == "plain" { s.workspace.is_none() && s.tab_count() > 0 } else { s.workspace.as_ref().is_some_and(|w| w.id == to) });
+        let ok = wait_until(15_000, || dest().is_some_and(|s| s.current().is_some_and(|t| t.page.title() == "Page B"))).await;
+        glib::timeout_future(Duration::from_millis(1500)).await;
+        r.check(&format!("moving a modal to {to} opens only that page"), ok && if to == "plain" { plain_tabs() == before + 1 } else { dest().is_some_and(|s| s.tab_count() == 1) }, || format!("{:?} (plain tabs {before} -> {})", dest().map(|s| s.tab_count()), plain_tabs()));
+        
+    }
 
     // Popup policy: modal.
     open("mp");

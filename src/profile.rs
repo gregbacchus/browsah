@@ -288,6 +288,18 @@ pub fn icon_svg(p: &Profile) -> String {
     crate::appicon::svg(p.config.color.as_ref().map(|c| c.light.as_str()))
 }
 
+/// Rebuild the user's `hicolor` icon cache. GTK trusts that cache: while it is older than an icon file, a new icon is not found
+/// (the launcher shows the generic one). The theme folder is `icons/hicolor` (three levels up from `scalable/apps` is `icons`, which
+/// is not a theme), it has no `index.theme` of its own (`-t`), and `-f` rebuilds even when the cache looks current.
+pub fn refresh_icon_cache() {
+    let theme = icons_dir().join("../..");
+    for tool in ["gtk-update-icon-cache", "gtk4-update-icon-cache"] {
+        if std::process::Command::new(tool).args(["-q", "-t", "-f"]).arg(&theme).status().is_ok_and(|s| s.success()) {
+            break;
+        }
+    }
+}
+
 /// Write the profile's `profile.yaml` (if new), `.desktop` entry and icon.
 fn install(p: &Profile, exe: &Path, libs: &Path) -> std::io::Result<()> {
     p.ensure_dirs()?;
@@ -297,7 +309,7 @@ fn install(p: &Profile, exe: &Path, libs: &Path) -> std::io::Result<()> {
     std::fs::write(icons_dir().join(format!("{}.svg", p.app_id())), icon_svg(p))?;
     // Best effort: let desktops notice the new entry and icon without a re-login.
     let _ = std::process::Command::new("update-desktop-database").arg(applications_dir()).status();
-    let _ = std::process::Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(icons_dir().join("../../..")).status();
+    refresh_icon_cache();
     Ok(())
 }
 
@@ -465,7 +477,8 @@ fn add(args: &[String], exe: &Path, libs: &Path) -> i32 {
             return 2;
         }
         Some(Ok(c)) => Some(c),
-        None => None,
+        // No colour given: pick one, so the new profile's icon and windows are told apart from the others'.
+        None => Some(auto_color(id, &list().iter().filter_map(|p| p.config.color.as_ref().map(|c| c.light.clone())).collect::<Vec<_>>())),
     };
     let name = flag_value(args, "--name");
     let p = Profile { id: id.clone(), config: ProfileConfig { name, color, ..Default::default() }, dir: dir.clone() };
@@ -476,6 +489,29 @@ fn add(args: &[String], exe: &Path, libs: &Path) -> i32 {
     println!("created profile {id:?} in {}", dir.display());
     println!("launch it with: browsah --profile={id}   (application id {})", p.app_id());
     0
+}
+
+/// Light and dark colours a new profile can take (`browsah profile add` without `--color`).
+const AUTO_COLORS: &[(&str, &str)] = &[
+    ("#3584e4", "#62a0ea"),
+    ("#33a06f", "#57e389"),
+    ("#e5731c", "#ffa348"),
+    ("#9141ac", "#c061cb"),
+    ("#d6416a", "#f66151"),
+    ("#2aa1b3", "#5bc8d4"),
+    ("#c4a000", "#f5c211"),
+    ("#6c7a89", "#9aa8b6"),
+];
+
+/// A colour for a new profile: the first of `AUTO_COLORS` no other profile uses (`used`: their light colours), else one
+/// chosen from the id.
+fn auto_color(id: &str, used: &[String]) -> ColorPair {
+    let free = AUTO_COLORS.iter().find(|(l, _)| !used.iter().any(|u| u.eq_ignore_ascii_case(l)));
+    let (light, dark) = free.copied().unwrap_or_else(|| {
+        let h = id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+        AUTO_COLORS[h % AUTO_COLORS.len()]
+    });
+    ColorPair { light: light.to_owned(), dark: dark.to_owned() }
 }
 
 /// Write `profile.yaml` with the options that were given and a comment pointing at the docs.
@@ -709,6 +745,19 @@ mod tests {
         for (e, l) in [(Some("/nope/browsah"), Some("/opt/stable/libexec")), (Some("/usr/bin/env"), None), (None, Some("/opt/x")), (Some("browsah"), Some("libexec"))] {
             let got = launcher_from(e.map(Into::into), l.map(Into::into), own).unwrap();
             assert_eq!(got.0, PathBuf::from("/opt/cellar/0.1.2/libexec/browsah"), "{e:?} {l:?}");
+        }
+    }
+
+    #[test]
+    fn auto_colors_avoid_the_ones_in_use() {
+        let first = auto_color("a", &[]);
+        assert_eq!(first.light, AUTO_COLORS[0].0);
+        let second = auto_color("b", &[first.light.clone()]);
+        assert_eq!(second.light, AUTO_COLORS[1].0);
+        let all: Vec<String> = AUTO_COLORS.iter().map(|(l, _)| l.to_string()).collect();
+        assert!(AUTO_COLORS.iter().any(|(l, _)| *l == auto_color("c", &all).light));
+        for (l, d) in AUTO_COLORS {
+            assert!(ColorPair::parse(&format!("{l} {d}")).is_ok());
         }
     }
 

@@ -30,6 +30,8 @@ enum Dest {
     /// Wherever the router would send the link if it were not a modal.
     Router,
     Workspace(String),
+    /// A window of the profile with no workspace.
+    Plain,
 }
 
 impl Shell {
@@ -67,7 +69,13 @@ impl Shell {
         let state = Rc::new(RefCell::new(State { address: url.to_owned(), ..State::default() }));
 
         // Move: to where the router says, or to a workspace chosen from the menu.
-        let move_button = gtk::Button::builder().label("Move to workspace").tooltip_text("Open this page where the routing rules send it, as a tab").build();
+        let from_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
+        let (move_label, move_tip) = if from_app {
+            ("Open in profile", "Open this page where the routing rules send it, or in a window with no workspace")
+        } else {
+            ("Move to workspace", "Open this page where the routing rules send it, as a tab")
+        };
+        let move_button = gtk::Button::builder().label(move_label).tooltip_text(move_tip).build();
         let choose = gtk::MenuButton::builder().icon_name("view-more-symbolic").tooltip_text("Choose a workspace").build();
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let popover = gtk::Popover::new();
@@ -93,7 +101,20 @@ impl Shell {
         let modal = Rc::new(Modal { view, state, owner: Rc::downgrade(self), entry, toolbar, dialog, window, moved: Cell::new(false), closed: Cell::new(false) });
         let _ = cell.set(Rc::downgrade(&modal));
 
-        // The workspaces to choose from.
+        // A window with no workspace, then the workspaces to choose from.
+        {
+            let b = gtk::Button::builder().label("No workspace").has_frame(false).build();
+            let (m, popover) = (Rc::downgrade(&modal), popover.downgrade());
+            b.connect_clicked(move |_| {
+                if let Some(p) = popover.upgrade() {
+                    p.popdown();
+                }
+                if let Some(m) = m.upgrade() {
+                    m.move_to(Dest::Plain);
+                }
+            });
+            list.append(&b);
+        }
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
             let here = self.workspace.as_ref().map(|w| w.id.clone());
             for w in crate::workspace::Workspace::list(&profile) {
@@ -295,6 +316,15 @@ impl Modal {
         self.move_to(Dest::Router);
     }
 
+    /// What "No workspace" and a workspace in the menu do (the self-test presses them).
+    pub(super) fn move_to_plain(self: &Rc<Self>) {
+        self.move_to(Dest::Plain);
+    }
+
+    pub(super) fn move_to_workspace(self: &Rc<Self>, id: &str) {
+        self.move_to(Dest::Workspace(id.to_owned()));
+    }
+
     /// Move the page out of the modal into a tab (of this window, another workspace's, or a new window).
     fn move_to(self: &Rc<Self>, dest: Dest) {
         let Some(owner) = self.owner.upgrade() else { return };
@@ -302,7 +332,9 @@ impl Modal {
             let s = self.state.borrow();
             s.address.clone()
         };
+        let plain = || super::browser_windows().into_iter().rev().find(|s| s.workspace.is_none()).or_else(|| NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| f("")));
         let target: Option<Rc<Shell>> = match dest {
+            Dest::Plain => plain(),
             Dest::Workspace(id) => OPEN_WORKSPACE.with(|f| f.borrow().clone()).and_then(|f| f(&id, "").ok()),
             Dest::Router => {
                 let decision = router::route_ignoring_modal(&Request {
@@ -323,13 +355,8 @@ impl Modal {
                         return;
                     }
                     // No rule claims it. A web app's window is not a place for foreign pages (it has no address bar or way
-                    // back), so they go to the profile's default workspace, else a browsing window, else a throwaway one.
-                    Action::Allow | Action::Modal if owner.workspace.as_ref().is_some_and(|w| w.is_app()) => {
-                        let default = super::default_workspace_id().and_then(|id| OPEN_WORKSPACE.with(|f| f.borrow().clone()).and_then(|f| f(&id, "").ok()));
-                        default
-                            .or_else(|| super::browser_windows().last().cloned())
-                            .or_else(|| NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| f("")))
-                    }
+                    // back), so they go to a window with no workspace.
+                    Action::Allow | Action::Modal if owner.workspace.as_ref().is_some_and(|w| w.is_app()) => plain(),
                     Action::Allow | Action::Modal => Some(owner.clone()),
                 }
             }

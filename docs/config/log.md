@@ -13,8 +13,8 @@ journalctl -t browsah -p warning --since today           # warnings and errors f
 journalctl -t browsah -f                                 # follow
 ```
 
-`browsah log` runs the same thing for you: `browsah log --grep=sweep --lines=100`, `--profile=ID` (default `default`),
-`--all-profiles`, `--level=warn`, `--since="1 hour ago"`, `--follow`.
+`browsah log` runs the same thing for you: `browsah log --grep=sweep --lines=100`, `--profile=ID` (without it every profile is shown, and
+each line starts with `[profile]`), `--level=warn`, `--since="1 hour ago"`, `--follow`.
 
 A line, as `journalctl` prints it:
 
@@ -35,7 +35,7 @@ journal (a system without systemd) nothing is stored; warnings and errors still 
   (also when run as `browsah extension ...`, under the `--profile` it was given), with the download address and the package check.
   A warning says when an extension asks for native messaging but no host manifest names it (1Password without its desktop app installed).
 - `debug` adds why a sweep **kept** each tab (the selected tab, unsaved form input, playing media, still loading, no answer from
-  the page, the last tab of the window, or what each rule said: `Stale: idle 5m0s < 1h0m`).
+  the page, the last tab of the window, or what each rule said: `Stale: idle 5m0s < 1h0m, score 0.31 (limit 0.5)`; the score is that rule's, by its `half_life`). A line for a tab a rule acts on (info level) also ends its idle time and score.
 - `warn` and `error` are always also printed on the terminal (a failed `browsah extension add` prints its reason once, and logs it).
 
 To find out why a sweep did something, set `logging.level: debug`, restart, and look at the sweep lines:

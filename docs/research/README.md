@@ -10,6 +10,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | Note | Date | Question | Short answer |
 |---|---|---|---|
 | [tab-history.md](tab-history.md) | 2026-11-19 | Can a tab keep its back and forward list across restarts? | CEF cannot be given entries, so the list is saved with the tab and used through two stacks beside the browser's own. It also survives a tab sleeping. |
+| [icon-cache.md](icon-cache.md) | 2026-11-19 | Why did a new profile's launcher have no icon? | The icon file was written, but the icon cache refresh pointed at the wrong folder, so the stale `hicolor` cache hid it. Fixed in `profile::refresh_icon_cache`. |
 | [signals.md](signals.md) | 2026-11-19 | What does the browser do on SIGTERM, SIGINT, SIGHUP? | It used to end at once without the closing work; it now quits like *Quit profile* (tabs and screenshots saved, session cookies ended). `scripts/test signals` checks it. |
 | [page-copy-buttons.md](page-copy-buttons.md) | 2026-11-19 | Why did sites' own copy buttons do nothing? | Windowless Chromium cannot reach the Wayland clipboard: `writeText` was rejected, `execCommand('copy')` returned false. A script run in every frame now makes them succeed and reports the text, which the shell puts on the clipboard if the person just used the page. |
 | [icons-lucide.md](icons-lucide.md) | 2026-11-19 | Which icons does the interface use? | Lucide, on a 24 px grid with a 1.5 px stroke, as ordinary (not symbolic) icons recoloured per style, because GTK fills symbolic icons. Use Lucide for new icons. |

@@ -82,7 +82,9 @@ fn short(target: &str) -> &str {
 /// `NAME\n` + the length as 8 bytes little endian + the value + `\n`.
 fn journal_entry(level: Level, profile: &str, target: &str, message: &str) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut message = message;
+    // The profile leads the text, so a listing of several profiles (`browsah log` without `--profile`) can be told apart.
+    let tagged = format!("[{profile}] {message}");
+    let mut message = tagged.as_str();
     let cut;
     if message.len() > 16_000 {
         cut = format!("{}… (cut)", message.chars().take(8_000).collect::<String>());
@@ -137,13 +139,13 @@ macro_rules! log_debug { ($($t:tt)*) => { $crate::log::debug(module_path!(), for
 
 const CLI_USAGE: &str = "usage: browsah log [--profile=ID] [--lines=N] [--grep=TEXT] [--level=LEVEL] [--follow] [--since=TIME]
 
-Shows the program's log from the system journal (the same as `journalctl -t browsah BROWSAH_PROFILE=ID`), the last 50
+Shows the program's log from the system journal (the same as `journalctl -t browsah`), the last 50
 lines by default. --grep keeps lines matching TEXT (e.g. `sweep`), --level shows that priority and worse (error, warn, info,
 debug), --since takes journalctl's times (`1 hour ago`, `today`), --follow keeps printing. Use --all-profiles for every profile.
 How much is logged is the `logging.level` option; `BROWSAH_LOG=debug` logs everything for one run.";
 
 /// The journalctl arguments for `browsah log ...` (separate so they can be tested).
-fn journalctl_args(args: &[String], default_profile: &str) -> Vec<String> {
+fn journalctl_args(args: &[String]) -> Vec<String> {
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
     let mut out: Vec<String> = vec!["--no-pager".into(), "-o".into(), "short-iso".into(), "-t".into(), "browsah".into()];
     out.push("-n".into());
@@ -163,8 +165,9 @@ fn journalctl_args(args: &[String], default_profile: &str) -> Vec<String> {
     if args.iter().any(|a| a == "--follow") {
         out.push("-f".into());
     }
-    if !args.iter().any(|a| a == "--all-profiles") {
-        out.push(format!("BROWSAH_PROFILE={}", value("--profile").unwrap_or_else(|| default_profile.to_owned())));
+    // Every profile unless one is named (the profile that runs is often not `default`).
+    if let Some(p) = value("--profile").filter(|_| !args.iter().any(|a| a == "--all-profiles")) {
+        out.push(format!("BROWSAH_PROFILE={p}"));
     }
     out
 }
@@ -175,7 +178,7 @@ pub fn cli(args: &[String]) -> i32 {
         println!("{CLI_USAGE}");
         return 0;
     }
-    let jargs = journalctl_args(args, crate::profile::DEFAULT_ID);
+    let jargs = journalctl_args(args);
     match std::process::Command::new("journalctl").args(&jargs).status() {
         Ok(s) => s.code().unwrap_or(1),
         Err(e) => {
@@ -202,15 +205,15 @@ mod tests {
         let e = journal_entry(Level::Warn, "work", "browsah::app::sweep", "line one\nline two");
         let text = String::from_utf8_lossy(&e).to_string();
         assert!(text.starts_with("PRIORITY=4\nSYSLOG_IDENTIFIER=browsah\nBROWSAH_PROFILE=work\nCODE_TARGET=app::sweep\nMESSAGE\n"));
-        let at = e.windows(8).position(|w| w == 17u64.to_le_bytes()).expect("length");
-        assert_eq!(&e[at + 8..], b"line one\nline two\n");
+        let at = e.windows(8).position(|w| w == 24u64.to_le_bytes()).expect("length");
+        assert_eq!(&e[at + 8..], b"[work] line one\nline two\n");
     }
 
     #[test]
     fn log_command_becomes_journalctl_arguments() {
-        let a = |v: &[&str]| journalctl_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "default");
+        let a = |v: &[&str]| journalctl_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let plain = a(&[]);
-        assert!(plain.contains(&"BROWSAH_PROFILE=default".to_string()) && plain.windows(2).any(|w| w == ["-n", "50"]));
+        assert!(!plain.iter().any(|x| x.starts_with("BROWSAH_PROFILE")) && plain.windows(2).any(|w| w == ["-n", "50"]));
         let some = a(&["--profile=work", "--lines=5", "--grep=sweep", "--level=warn", "--follow"]);
         assert!(some.contains(&"BROWSAH_PROFILE=work".to_string()) && some.windows(2).any(|w| w == ["-g", "sweep"]) && some.windows(2).any(|w| w == ["-p", "4"]) && some.contains(&"-f".to_string()));
         assert!(!a(&["--all-profiles"]).iter().any(|x| x.starts_with("BROWSAH_PROFILE")));

@@ -3248,19 +3248,6 @@ fn activation_workspaces(named: Option<&str>, app_only: bool, plain_window: bool
     ids
 }
 
-/// The profile's default workspace: where a page that belongs nowhere goes (one moved out of a web app's window with no
-/// routing rule for it). The `default_workspace` option when it names an existing workspace, else the first workspace
-/// alphabetically (a stable choice; creation dates are not recorded), else none.
-fn default_workspace_id() -> Option<String> {
-    let profile = PROFILE.with(|p| p.borrow().clone())?;
-    profile
-        .config
-        .default_workspace
-        .clone()
-        .filter(|id| crate::workspace::Workspace::resolve(&profile, id).is_ok())
-        .or_else(|| crate::workspace::Workspace::list(&profile).into_iter().next().map(|w| w.id))
-}
-
 fn startup_workspaces(profile: &crate::profile::Profile, use_default: bool) -> Vec<String> {
     let exists = |id: &String| crate::workspace::Workspace::resolve(profile, id).is_ok();
     let remembered: Vec<String> = profile.load_state().open_workspaces.into_iter().filter(exists).collect();

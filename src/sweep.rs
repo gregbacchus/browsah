@@ -188,13 +188,20 @@ impl Rule {
     }
 
     /// Like `fires`, but says which condition stopped the rule (for the log).
+    /// The tab's decayed use score by this rule's `half_life`.
+    pub fn score_of(&self, usage: &Usage, now: i64) -> f64 {
+        usage.score(now, self.half_life)
+    }
+
     pub fn verdict(&self, url: &str, usage: &Usage, now: i64, fallback: i64) -> Result<(), String> {
         if !self.urls.is_empty() && !self.urls.iter().any(|p| scope_matches(p, url)) {
             return Err("address does not match".into());
         }
         let last = usage.last_used().unwrap_or(fallback);
         if let Some(d) = self.idle_for.filter(|d| now - last < *d) {
-            return Err(format!("idle {} < {}", short_duration(now - last), short_duration(d)));
+            // The score is shown too, though it has not been compared yet: it is what the rule would look at next.
+            let score = self.score_below.map(|l| format!(", score {:.2} (limit {l})", usage.score(now, self.half_life))).unwrap_or_default();
+            return Err(format!("idle {} < {}{score}", short_duration(now - last), short_duration(d)));
         }
         if let Some(limit) = self.score_below {
             let score = usage.score(now, self.half_life);
@@ -266,7 +273,7 @@ impl Sweeper {
             .iter()
             .map(|r| match (pinned && !r.pinned_ok, r.verdict(url, usage, now, created)) {
                 (true, _) => format!("{}: not for pinned tabs", r.name),
-                (false, Ok(())) => format!("{}: fires", r.name),
+                (false, Ok(())) => format!("{}: fires (score {:.2})", r.name, r.score_of(usage, now)),
                 (false, Err(why)) => format!("{}: {why}", r.name),
             })
             .collect::<Vec<_>>()

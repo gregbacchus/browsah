@@ -227,7 +227,7 @@ pub fn refresh_launchers(running: &Profile) {
     rewrite(profile::icons_dir().join(format!("{selector_id}.svg")), crate::selector::icon_svg());
     if changed {
         let _ = std::process::Command::new("update-desktop-database").arg(profile::applications_dir()).status();
-        let _ = std::process::Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(profile::icons_dir().join("../../..")).status();
+        profile::refresh_icon_cache();
     }
 }
 
@@ -257,7 +257,7 @@ pub fn install(profile: &Profile, w: &Workspace, exe: &Path, libs: &Path) -> std
         }
     }
     let _ = std::process::Command::new("update-desktop-database").arg(profile::applications_dir()).status();
-    let _ = std::process::Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(profile::icons_dir().join("../../..")).status();
+    profile::refresh_icon_cache();
     Ok(())
 }
 
