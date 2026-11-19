@@ -2521,7 +2521,12 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
     input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);
     let exit = Rc::new(Cell::new(0));
     match Store::open(&profile.dir.join("data.sqlite")) {
-        Ok(s) => STORE.with(|st| *st.borrow_mut() = Some(Rc::new(s))),
+        Ok(s) => {
+            for (origin, kind, choice, _) in s.remembered_permissions() {
+                crate::permissions::note_remembered(&origin, &kind, choice == "allow");
+            }
+            STORE.with(|st| *st.borrow_mut() = Some(Rc::new(s)))
+        }
         Err(e) => eprintln!("browsah: cannot open the profile database ({e}); tabs will not be remembered"),
     }
     // Workspaces with sweeping rules are swept while their window is closed too.

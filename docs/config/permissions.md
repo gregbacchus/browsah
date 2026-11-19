@@ -25,8 +25,12 @@ question.
 A permission lasts as long as the page it was given to: when a page of the same site loads again (a
 reload, a new address on the site, another tab), the request is judged afresh by the configuration and
 remembered answers. (Chromium would otherwise keep the first answer for the site for good and stop asking
-Browsah, so a later `deny`, a forgotten answer or a changed rule would have no effect; Browsah clears what
-Chromium kept whenever a page starts loading.)
+Browsah, so a later `deny`, a forgotten answer or a changed rule would have no effect; when a page starts loading Browsah puts
+what Chromium kept back to what it would answer.) Where the answer is already known (`allow` or `deny` in the configuration, or
+an answer you remembered) for notifications, location, clipboard and MIDI, Chromium is told the same at that moment, so a page that
+only *looks* (`Notification.permission`, `navigator.permissions.query`) sees "granted" or "denied" and does not nag: Microsoft Teams'
+"Turn on desktop notifications" banner does not return on every start once notifications are allowed for it. Where the answer is not
+known the page sees "default" and asking reaches you. Camera and microphone are asked through another path and are not mirrored.
 
 Remembered answers are kept per profile (in its database), for the site and the kind. They never override an
 explicit `allow` or `deny` in the configuration, only fill in for `ask`. Manage them from the command line:

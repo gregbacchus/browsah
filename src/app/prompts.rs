@@ -44,6 +44,7 @@ impl Queued {
                 for (kind, known) in self.req.ask.iter().zip(&self.known) {
                     if known.is_none() {
                         let _ = store.remember_permission(&self.req.origin, kind.name(), if decision { "allow" } else { "deny" }, now_secs());
+                        crate::permissions::note_remembered(&self.req.origin, kind.name(), decision);
                     }
                 }
             }

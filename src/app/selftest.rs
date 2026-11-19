@@ -2311,6 +2311,10 @@ async fn run_permissions(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a workspace with permission rules opens", ok, || "not open".into());
     let Some(pm) = find("pm") else { return };
     let tab = pm.current().expect("tab");
+    let looked = eval_string(&tab, "Notification.permission").await;
+    r.check("a kind set to allow already reads as granted on load (a page that only looks does not nag)", looked.as_deref() == Some("granted"), || format!("{looked:?}"));
+    let looked = eval_string(&tab, "navigator.permissions.query({ name: 'geolocation' }).then(s => s.state)").await;
+    r.check("and a kind set to deny reads as denied", looked.as_deref() == Some("denied"), || format!("{looked:?}"));
     let granted = eval_string(&tab, "Notification.requestPermission()").await;
     r.check("a kind set to allow is granted without asking", granted.as_deref() == Some("granted") && pm.pending_permission().is_none(), || format!("{granted:?}"));
     let loc = eval_string(&tab, geo).await;
@@ -2347,10 +2351,13 @@ async fn run_permissions(shell: &Rc<Shell>, r: &mut Report) {
     r.check("while the page stays, Chromium goes on answering it", samepage.as_deref() == Some("granted"), || format!("{samepage:?}"));
     tab.view().navigate(&format!("http://localhost:{port}/b.html?second=1"));
     let _ = wait_until(15_000, || tab.state.borrow().address.contains("second=1") && !tab.state.borrow().loading).await;
+    // A page that only looks (as Teams does, to decide whether to nag) sees the remembered answer without asking.
+    let looked = eval_string(&tab, "Notification.permission").await;
+    r.check("a page that only looks sees the remembered answer: granted, so it does not nag", looked.as_deref() == Some("granted"), || format!("{looked:?}"));
     let before = super::view::PERMISSION_REQUESTS.load(std::sync::atomic::Ordering::Relaxed);
     let again = eval_string(&tab, "Notification.requestPermission()").await;
     let seen = super::view::PERMISSION_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) - before;
-    r.check("the next load of the origin reaches us again and is answered from the remembered answer", seen == 1 && again.as_deref() == Some("granted") && pa.pending_permission().is_none(), || format!("{again:?}, handler reached {seen} time(s)"));
+    r.check("the next load of the origin is answered from the remembered answer, without a question", again.as_deref() == Some("granted") && seen == 0 && pa.pending_permission().is_none(), || format!("{again:?}, handler reached {seen} times"));
 
     // A remembered answer stands in for the question.
     let port = start_test_server();

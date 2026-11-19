@@ -815,7 +815,7 @@ wrap_load_handler! {
 
     impl LoadHandler {
         // A page starts loading: forget what Chromium kept of earlier permission answers for its origin
-        // (see `forget_in_chromium`), so this page's requests reach the permission handler.
+        // (see `sync_to_chromium`), so this page's requests reach the permission handler.
         fn on_load_start(&self, b: Option<&mut Browser>, frame: Option<&mut Frame>, transition: TransitionType) {
             if let (Some(b), Some(frame)) = (b, frame) {
                 if frame.is_main() != 0 {
@@ -825,7 +825,7 @@ wrap_load_handler! {
                     let step = bits & TT_FORWARD_BACK_FLAG != 0 || bits & TT_SOURCE_MASK == TT_RELOAD;
                     send(self.shared.id, ViewEvent::NavStart { history_step: step });
                     self.shared.link_nav.store(false, Ordering::Relaxed); // the navigation committed: its redirects are over
-                    forget_in_chromium(b, &CefString::from(&frame.url()).to_string());
+                    sync_to_chromium(b, &CefString::from(&frame.url()).to_string(), &self.shared.permissions.lock().unwrap().clone());
                 }
                 // Every frame, each time it starts loading: the page's copy buttons (see `COPY_HOOK`).
                 frame.execute_java_script(Some(&CefString::from(COPY_HOOK)), Some(&CefString::from("browsah://copy-hook")), 0);
@@ -1331,22 +1331,28 @@ fn content_setting_type(kind: crate::permissions::Kind) -> Option<ContentSetting
     Some(ContentSettingTypes::from(t))
 }
 
-/// Chromium keeps the answer it is given to a permission prompt and then answers the same origin itself,
-/// without asking the handler again. That would make a later `deny` in the configuration, a forgotten
-/// answer, or "allow but do not remember" ineffective. So what it kept is cleared (back to its default)
-/// whenever a page of the origin starts loading: a permission lasts as long as the page it was given to
-/// (clearing it at once instead makes Chromium refuse a request it is still working on), and the next
-/// load asks the handler again.
-fn forget_in_chromium(browser: &Browser, url: &str) {
+/// Chromium keeps the answer it is given to a permission prompt and then answers the same origin itself, without asking the handler
+/// again. That would make a later `deny` in the configuration, a forgotten answer, or "allow but do not remember" ineffective. So what
+/// it kept is put back to what browsah would answer whenever a page of the origin starts loading (a permission lasts as long as the
+/// page it was given to; changing it at once instead makes Chromium refuse a request it is still working on): the default, so the next
+/// request reaches the handler, except where the answer is already known (the configuration says allow or deny, or one was
+/// remembered), when Chromium is told the same, so that a page reading `Notification.permission` sees "granted" and does not nag
+/// ("Turn on desktop notifications" in Teams, on every start).
+fn sync_to_chromium(browser: &Browser, url: &str, cfg: &crate::permissions::PermissionsConfig) {
     let origin = match url.split_once("://") {
         Some((scheme @ ("http" | "https"), rest)) => format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")),
         _ => return,
     };
     let Some(rc) = browser.host().and_then(|h| h.request_context()) else { return };
-    let url = CefString::from(origin.as_str());
+    let target = CefString::from(origin.as_str());
     for k in crate::permissions::Kind::ALL {
         if let Some(t) = content_setting_type(k) {
-            rc.set_content_setting(Some(&url), Some(&url), t, ContentSettingValues::from(sys::cef_content_setting_values_t::CEF_CONTENT_SETTING_VALUE_DEFAULT));
+            let value = match crate::permissions::mirrored_choice(cfg, &origin, k) {
+                Some(true) => sys::cef_content_setting_values_t::CEF_CONTENT_SETTING_VALUE_ALLOW,
+                Some(false) => sys::cef_content_setting_values_t::CEF_CONTENT_SETTING_VALUE_BLOCK,
+                None => sys::cef_content_setting_values_t::CEF_CONTENT_SETTING_VALUE_DEFAULT,
+            };
+            rc.set_content_setting(Some(&target), Some(&target), t, ContentSettingValues::from(value));
         }
     }
 }

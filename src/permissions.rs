@@ -198,6 +198,35 @@ impl PermissionsConfig {
     }
 }
 
+/// Answers remembered from questions, by origin and kind, for the code that runs on CEF's thread (the database is the GTK thread's).
+/// Filled at start-up and when an answer is remembered.
+static REMEMBERED: std::sync::Mutex<Option<std::collections::HashMap<(String, String), bool>>> = std::sync::Mutex::new(None);
+
+pub fn note_remembered(origin: &str, kind: &str, allow: bool) {
+    if let Ok(mut g) = REMEMBERED.lock() {
+        g.get_or_insert_with(Default::default).insert((origin.trim_end_matches('/').to_owned(), kind.to_owned()), allow);
+    }
+}
+
+fn remembered(origin: &str, kind: &str) -> Option<bool> {
+    REMEMBERED.lock().ok()?.as_ref()?.get(&(origin.trim_end_matches('/').to_owned(), kind.to_owned())).copied()
+}
+
+/// What Chromium's own setting for `kind` at `origin` should be, so that a page that looks (`Notification.permission`) sees what
+/// browsah will answer: `Some(true)` granted, `Some(false)` denied, `None` still to be asked (Chromium's default). The
+/// configuration decides, then an answer remembered from a question. Only the kinds a page can read without asking (notifications,
+/// location, clipboard, MIDI): camera and microphone are asked through another path and are left alone.
+pub fn mirrored_choice(cfg: &PermissionsConfig, origin: &str, kind: Kind) -> Option<bool> {
+    if !matches!(kind, Kind::Notifications | Kind::Location | Kind::Clipboard | Kind::Midi) {
+        return None;
+    }
+    match cfg.decide(origin, kind) {
+        Choice::Allow => Some(true),
+        Choice::Deny => Some(false),
+        Choice::Ask => remembered(origin, kind.name()),
+    }
+}
+
 /// The host of an origin, for messages.
 pub fn origin_host(origin: &str) -> &str {
     origin.split_once("://").map(|(_, r)| r).unwrap_or(origin).split(['/', '?']).next().unwrap_or(origin)
@@ -271,6 +300,25 @@ pub fn cli(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_chromium_is_told_follows_the_configuration_then_what_was_remembered() {
+        let cfg: PermissionsConfig = serde_yaml_ng::from_str("default: ask\nnotifications: allow\nlocation: deny\nsites:\n  - match: ['blocked.example']\n    notifications: deny\n").unwrap();
+        assert_eq!(mirrored_choice(&cfg, "https://a.example", Kind::Notifications), Some(true));
+        assert_eq!(mirrored_choice(&cfg, "https://blocked.example", Kind::Notifications), Some(false), "a site rule wins");
+        assert_eq!(mirrored_choice(&cfg, "https://a.example", Kind::Location), Some(false));
+        // Ask: nothing known, then a remembered answer (with or without the trailing slash Chromium gives).
+        assert_eq!(mirrored_choice(&cfg, "https://asked.example", Kind::Clipboard), None);
+        note_remembered("https://asked.example/", "clipboard", true);
+        assert_eq!(mirrored_choice(&cfg, "https://asked.example", Kind::Clipboard), Some(true));
+        note_remembered("https://asked.example", "clipboard", false);
+        assert_eq!(mirrored_choice(&cfg, "https://asked.example/", Kind::Clipboard), Some(false), "the last answer stands");
+        // Camera and microphone are asked through another path and are left alone.
+        let allow_all: PermissionsConfig = serde_yaml_ng::from_str("default: allow").unwrap();
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Camera), None);
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Microphone), None);
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Notifications), Some(true));
+    }
+
     use super::*;
 
     fn cfg(yaml: &str) -> PermissionsConfig {
