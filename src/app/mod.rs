@@ -2642,28 +2642,21 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
             s.window.connect_close_request({
                 let (window, profile) = (s.window.downgrade(), profile.clone());
                 move |_| {
-                    let id = window.upgrade().and_then(|w| windows_workspace_id(&w));
-                    let more = WINDOWS.with(|w| w.borrow().len()) > 1;
-                    WINDOWS.with(|w| w.borrow_mut().retain(|s| Some(&s.window) != window.upgrade().as_ref()));
+                    let closing = window.upgrade();
+                    let (id, is_app) = closing.as_ref().map(|w| windows_workspace_kind(w)).unwrap_or((None, false));
+                    // Only windows that a plain start would bring back count as "more": a web app's window
+                    // staying open must not make the last workspace window forget its workspace.
+                    let more = WINDOWS.with(|w| w.borrow().iter().filter(|s| Some(&s.window) != closing.as_ref() && !s.workspace.as_ref().is_some_and(|w| w.is_app())).count()) > 0;
+                    WINDOWS.with(|w| w.borrow_mut().retain(|s| Some(&s.window) != closing.as_ref()));
                     // Closing one of several windows forgets its workspace; the last window's
                     // stays remembered, so the next plain start brings it back.
                     // A desktop "Quit" (the dock's menu) closes the windows one after another, so those closed in
                     // the same burst as the last window are remembered too.
-                    if let Some(id) = id.filter(|id| crate::workspace::Workspace::resolve(&profile, id).is_ok()) {
+                    if let (Some(id), false) = (id.filter(|id| crate::workspace::Workspace::resolve(&profile, id).is_ok()), is_app) {
                         let now = std::time::Instant::now();
-                        RECENTLY_CLOSED.with(|r| {
-                            let mut r = r.borrow_mut();
-                            r.retain(|(_, t)| now.duration_since(*t) < QUIT_BURST);
-                            if more {
-                                r.push((id.clone(), now));
-                            }
-                        });
-                        if more {
-                            remember_workspace(&profile, &id, false);
-                        } else {
-                            for earlier in RECENTLY_CLOSED.with(|r| r.borrow().iter().map(|(i, _)| i.clone()).collect::<Vec<_>>()) {
-                                remember_workspace(&profile, &earlier, true);
-                            }
+                        let actions = RECENTLY_CLOSED.with(|r| closed_window_actions(&mut r.borrow_mut(), &id, more, now));
+                        for (id, open) in actions {
+                            remember_workspace(&profile, &id, open);
                         }
                     }
                     glib::Propagation::Proceed
@@ -3120,8 +3113,8 @@ fn window_sweeper(has_workspace: bool, cfg: &Config) -> Option<crate::sweep::Swe
 }
 
 /// The workspace id of the window, if it shows one.
-fn windows_workspace_id(window: &adw::ApplicationWindow) -> Option<String> {
-    WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).and_then(|s| s.workspace.as_ref().map(|w| w.id.clone())))
+fn windows_workspace_kind(window: &adw::ApplicationWindow) -> (Option<String>, bool) {
+    WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).map(|s| (s.workspace.as_ref().map(|w| w.id.clone()), s.workspace.as_ref().is_some_and(|w| w.is_app()))).unwrap_or((None, false)))
 }
 
 /// The main menu: a window with no workspace, the profile's workspaces, and the page tools.
@@ -3211,6 +3204,34 @@ mod frame_css_tests {
         // Silly values are held to a sensible range.
         let big = workspace_css("ws-a", &pair(), false, &FrameConfig { enabled: true, thickness: 900, radius: -5 });
         assert!(big.contains("padding: 0 40px 40px 40px") && big.contains("border-radius: 0px") && big.contains("#2a6f97"), "{big}");
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    /// Three workspace windows close in a burst while a web app's window stays open (not "more"), then the app closes.
+    #[test]
+    fn restore_workspaces_closed_before_the_app_window() {
+        let now = std::time::Instant::now();
+        let mut recent = Vec::new();
+        assert_eq!(closed_window_actions(&mut recent, "a", true, now), vec![("a".to_owned(), false)]);
+        assert_eq!(closed_window_actions(&mut recent, "b", true, now), vec![("b".to_owned(), false)]);
+        let last = closed_window_actions(&mut recent, "c", false, now);
+        assert!(last.iter().all(|(_, open)| *open));
+        let mut ids: Vec<_> = last.iter().map(|(i, _)| i.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn old_closes_are_not_restored() {
+        let now = std::time::Instant::now();
+        let mut recent = vec![("a".to_owned(), now)];
+        let later = now + QUIT_BURST + Duration::from_secs(1);
+        assert_eq!(closed_window_actions(&mut recent, "b", false, later), vec![("b".to_owned(), true)]);
     }
 }
 
@@ -3360,6 +3381,20 @@ const QUIT_BURST: Duration = Duration::from_secs(3);
 thread_local! {
     /// Workspaces whose windows were closed lately (not by quitting), with when.
     static RECENTLY_CLOSED: RefCell<Vec<(String, std::time::Instant)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// What to remember when a workspace's window closes: `more` says other restorable windows stay open.
+/// One of several forgets its workspace; the last one keeps its own and every one closed in the same burst.
+fn closed_window_actions(recent: &mut Vec<(String, std::time::Instant)>, id: &str, more: bool, now: std::time::Instant) -> Vec<(String, bool)> {
+    recent.retain(|(_, t)| now.duration_since(*t) < QUIT_BURST);
+    if more {
+        recent.push((id.to_owned(), now));
+        vec![(id.to_owned(), false)]
+    } else {
+        let mut v: Vec<(String, bool)> = recent.iter().map(|(i, _)| (i.clone(), true)).collect();
+        v.push((id.to_owned(), true));
+        v
+    }
 }
 
 /// Record that a workspace's window is open (or no longer).
