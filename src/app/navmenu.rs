@@ -65,10 +65,10 @@ impl Shell {
 
         let popover = gtk::Popover::builder().css_classes(["browsah-navigation-history"]).build();
         popover.set_parent(anchor);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).width_request(360).build();
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let scroller = gtk::ScrolledWindow::builder().child(&list).propagate_natural_height(true)
-            .max_content_height(360).min_content_width(240).hscrollbar_policy(gtk::PolicyType::Never).build();
+            .propagate_natural_width(true).max_content_height(360).hscrollbar_policy(gtk::PolicyType::Never).build();
         for (target, entry) in rows {
             let name = if entry.title.trim().is_empty() { &entry.url } else { &entry.title };
             let button = history_row(name);
@@ -120,7 +120,7 @@ impl Shell {
 }
 
 fn history_row(text: &str) -> gtk::Button {
-    let label = gtk::Label::builder().label(text).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(42).build();
+    let label = gtk::Label::builder().label(text).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(64).build();
     gtk::Button::builder().child(&label).has_frame(false).build()
 }
 

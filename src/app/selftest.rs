@@ -4633,6 +4633,8 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     }
     let ok = wait_until(5_000, || tab.view().nav_entries().0.len() == 3).await;
     r.check("the browser lists the three pages", ok, || format!("{:?}", tab.view().nav_entries()));
+    let long_title = "Quarterly planning notes for the browser release and packaging";
+    tab.hist_back.borrow_mut().push(crate::navhistory::Entry::new(&a, long_title));
     let back_menu = hold_history_button(&w.back);
     let named_rows = |menu: &gtk::Popover, titles: &[&str]| {
         let rows = menu.child()?.first_child()?.downcast::<gtk::ScrolledWindow>().ok()?;
@@ -4650,8 +4652,11 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     r.check("holding Back lists native pages nearest first", back_menu.as_ref().and_then(|p| named_rows(p, &["Page B", "Scope test"])).is_some(), || "history rows missing or out of order".into());
     if let Some(menu) = &back_menu {
         glib::timeout_future(Duration::from_millis(350)).await;
+        let label = find_button(menu.upcast_ref(), long_title).and_then(|button| button.child()).and_downcast::<gtk::Label>();
+        r.check("the history menu is wide enough to show a long page title", menu.width() >= 360 && label.is_some_and(|label| !label.layout().is_ellipsized()), || format!("menu width {}", menu.width()));
         shot(menu, "navigation-history");
     }
+    tab.hist_back.borrow_mut().pop();
     if let Some(first) = back_menu.and_then(|p| find_button(p.upcast_ref(), "Scope test")) {
         first.emit_clicked();
     }

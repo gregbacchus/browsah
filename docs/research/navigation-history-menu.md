@@ -17,6 +17,11 @@ The focused GNOME Wayland self-test exercises the menu with GTK signals. It cove
 ordering, a native jump, saved jumps, a mixed list, the History link, and a regular click.
 It does not generate a physical press, hold, and release.
 
+The original scroller minimum did not keep the menu wide on GNOME Wayland. The menu now requests
+360 logical pixels for its content and lets the rows request more space for longer titles.
+The `navhistory` self-test checked that a 62-character title fit without ellipsizing. The captured
+Back menu was inspected on the development machine.
+
 ```bash
 test_dir="$(mktemp -d)"
 XDG_CONFIG_HOME="$test_dir/config" XDG_DATA_HOME="$test_dir/data" \
