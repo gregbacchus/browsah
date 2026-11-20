@@ -32,6 +32,8 @@ Wayland is a hard requirement and is met.
 | **Use regular weight for menu choices** | A shared CSS rule covers native menus, custom popovers and the workspace picker. See [menu item weight](menu-item-weight.md). |
 | **Jump to entries from Back and Forward** | A long press lists the tab’s native and saved entries. See [the history menu](navigation-history-menu.md). |
 | **Use the profile palette and Wayland identity for DevTools** | Chromium still owns the native frame. See [DevTools appearance](devtools-branding.md). |
+| **Update web app metadata on request** | Verify the manifest identity and keep local edits. See [web app manifest updates](webapp-manifest-updates.md). |
+| **Test the painted theme of Chromium connection errors** | The built-in error page painted dark and light in the focused test. See [Chromium error page theme](chromium-error-page-theme.md). |
 | **One CEF browser per tab; hide background tabs (`was_hidden`)** | Hidden tabs cost ~0 W and ~0 CPU; only memory (~45 MB each here) | [multi-tab](cef-multi-tab-cost.md) ; built in the app ([tabs](browser-tabs.md)) |
 | **Run Chrome extensions through Chromium's `--load-extension`** (CEF 156 has no extension API); install from the Web Store and check the package signature ourselves | Content scripts, MV3 service workers, native messaging and popups work unmodified; 1Password connected, unlocked and filled; the store download and RSA signature check worked against the real store | [chrome-extensions.md](chrome-extensions.md) |
 | **Use an ordinary tab to display full workspace pins** | Share libadwaita's normal tab layout and keep pin behaviour in the workspace | [pinned tab size](pinned-tab-size.md) |

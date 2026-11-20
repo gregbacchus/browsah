@@ -3197,13 +3197,20 @@ async fn run_install(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the page's web manifest is read through DevTools", ok, || format!("{info:?}"));
     let Some(info) = info else { return };
     {
-        let dialog = shell.confirm_install(view.clone(), info.clone());
+        let dialog = shell.confirm_install(view.clone(), info.clone(), shell.state().borrow().address.clone());
         glib::timeout_future(Duration::from_millis(600)).await;
         shot(&shell.window, "install-dialog");
         dialog.force_close();
     }
-    let id = super::install::save_app(&view, &info, "Test Manifest App").await;
+    let install_page = shell.state().borrow().address.clone();
+    let id = super::install::save_app(&view, &info, "Test Manifest App", &install_page).await;
     r.check("installing creates the web app", id.as_deref() == Ok("test-manifest-app"), || format!("{id:?}"));
+    let source = profile.apps_dir().join("test-manifest-app/.manifest-source.json");
+    let recorded: Option<serde_json::Value> = std::fs::read(source).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    r.check("installing from a tab records the manifest address and ID", recorded.as_ref().is_some_and(|data| {
+        data["source"]["manifest"].as_str().is_some_and(|url| url.ends_with("/manifest.json"))
+            && data["source"]["id"].as_str() == info.manifest_id.as_deref()
+    }), || format!("{recorded:?}"));
     let Ok(id) = id else { return };
     let dir = profile.apps_dir().join(&id);
     let icon = std::fs::read(dir.join("icon.png")).unwrap_or_default();
@@ -4409,6 +4416,46 @@ async fn run_theme(shell: &Rc<Shell>, r: &mut Report) {
     style.set_color_scheme(adw::ColorScheme::Default);
     r.check("an explicit theme ignores the desktop", !dark, || format!("dark={dark}"));
     set_theme(crate::config::Theme::System);
+
+    let refused = std::net::TcpListener::bind("127.0.0.1:0").expect("unused local port");
+    let url = format!("http://{}/", refused.local_addr().expect("local address"));
+    drop(refused);
+    set_theme(crate::config::Theme::Dark);
+    go(url.clone()).await;
+    let error_info = |tab: &Rc<super::Tab>| {
+        let tab = tab.clone();
+        async move {
+            eval_string(&tab, "JSON.stringify([location.protocol, !!document.querySelector('#reload-button'), matchMedia('(prefers-color-scheme: dark)').matches, getComputedStyle(document.body).backgroundColor])").await.unwrap_or_default()
+        }
+    };
+    let error_pixel = || {
+        let p = tab.view().widget.compute_point(&shell.window, &gtk::graphene::Point::new(16.0, 16.0))?;
+        pixels(&shell.window, &[(p.x() as i32, p.y() as i32)]).first().copied()
+    };
+    let dark_error = error_info(&tab).await;
+    let dark_pixel = error_pixel();
+    shot(&shell.window, "network-error-dark");
+    set_theme(crate::config::Theme::Light);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let light_error = error_info(&tab).await;
+    shot(&shell.window, "network-error-light");
+    let light_pixel = error_pixel();
+    r.check("Chromium's error page follows dark and light themes",
+        dark_error.starts_with("[\"chrome-error:\",true,true,") && light_error.starts_with("[\"chrome-error:\",true,false,")
+            && dark_pixel.is_some_and(|(red, green, blue)| red < 70 && green < 70 && blue < 70)
+            && light_pixel.is_some_and(|(red, green, blue)| red > 235 && green > 235 && blue > 235),
+        || format!("dark={dark_error} {dark_pixel:?}, light={light_error} {light_pixel:?}"));
+    set_theme(crate::config::Theme::System);
+    go(format!("http://localhost:{port}/scheme.html")).await;
+
+    style.set_color_scheme(adw::ColorScheme::ForceDark);
+    let first_error = shell.open_tab(&url, true);
+    let _ = wait_until(10_000, || { let s = first_error.state.borrow(); s.ready && !s.loading && s.load_cycles > 0 }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let initial_dark = error_info(&first_error).await;
+    r.check("an error on a new tab's first load follows the dark desktop", initial_dark.starts_with("[\"chrome-error:\",true,true,"), || initial_dark.clone());
+    shell.tab_view.close_page(&first_error.page);
+    style.set_color_scheme(adw::ColorScheme::Default);
 
     // A workspace and a web app can set their own theme in their files; the others keep the default.
     use gtk::prelude::ActionGroupExt;

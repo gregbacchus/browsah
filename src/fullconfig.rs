@@ -86,7 +86,7 @@ fn indent_of(line: &str) -> usize {
 }
 
 /// Split `text` at a comment: a `#` outside quotes that starts the text or follows a space.
-fn split_comment(text: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_comment(text: &str) -> (&str, Option<&str>) {
     let (mut single, mut double) = (false, false);
     let mut prev = ' ';
     for (i, c) in text.char_indices() {

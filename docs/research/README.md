@@ -10,6 +10,8 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | Note | Date | Question | Short answer |
 |---|---|---|---|
 | [2026-11-20-teams-camera-microphone.md](2026-11-20-teams-camera-microphone.md) | 2026-11-20 | Why can camera and microphone fail in Teams although config allows them? | Probably Chromium's own state was not mirrored for them (pages that look first saw "prompt"/no devices); now mirrored. Not reproduced: no devices or Teams here. |
+| [chromium-error-page-theme.md](chromium-error-page-theme.md) | 2026-11-20 | Do Chromium network error pages use the tab’s theme? | Both palettes painted correctly for a closed loopback port on GNOME Wayland. |
+| [webapp-manifest-updates.md](webapp-manifest-updates.md) | 2026-11-20 | How can a site’s manifest update an installed app safely? | Preview changes and update only values that still match the last import. |
 | [devtools-branding.md](devtools-branding.md) | 2026-11-20 | How closely can the native DevTools window match Browsah? | Apply a profile palette and desktop identity. Chromium draws the in-frame icon. |
 | [navigation-history-menu.md](navigation-history-menu.md) | 2026-11-20 | Can Back and Forward jump directly to a specific entry? | A long press lists native and saved entries in the selected direction. |
 | [menu-item-weight.md](menu-item-weight.md) | 2026-11-20 | How should menus distinguish choices from headings? | Use regular weight for menu choices and reserve stronger weight for actual headings. |

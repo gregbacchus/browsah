@@ -384,7 +384,7 @@ pub fn first_positional(args: &[String]) -> Option<&String> {
     while i < args.len() {
         let a = &args[i];
         if a.starts_with("--") {
-            i += if a.contains('=') || matches!(a.as_str(), "--yes" | "--explain" | "--write" | "--remove" | "--no-manifest" | "--new-window") { 1 } else { 2 };
+            i += if a.contains('=') || matches!(a.as_str(), "--yes" | "--apply" | "--explain" | "--write" | "--remove" | "--no-manifest" | "--new-window") { 1 } else { 2 };
         } else {
             return Some(a);
         }

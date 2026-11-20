@@ -95,7 +95,8 @@ remember are kept per profile (`browsah permissions list`). Downloads go to a co
 workspace, optionally asking where to save each file. See [docs/config/permissions.md](docs/config/permissions.md).
 
 Web apps: `browsah app add --url https://mail.example.com/` reads the site's web manifest and makes a window for one site with its own
-launcher entry and icon (its own `app.yaml`, not a workspace). See [docs/config/webapp.md](docs/config/webapp.md).
+launcher entry and icon. Use `browsah app update <id>` to preview manifest changes and `--apply` to save them.
+See [docs/config/webapp.md](docs/config/webapp.md).
 
 Chrome extensions: `browsah extension add <id or Chrome Web Store address>` installs an extension (checked against its signing key), and a toolbar button
 opens its popup (`extensions.hide` / `extensions.show` choose which buttons a workspace or app window shows); the 1Password extension works with the desktop app. Chromium loads the extensions (CEF has no extension API of its own). See

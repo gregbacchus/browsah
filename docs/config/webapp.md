@@ -20,6 +20,8 @@ browsah app add mail --profile=work --url https://mail.example.com/ --name "Mail
     --color "#2a6f97 #61a5c2" --icon ./mail.png --start-url https://mail.example.com/inbox   # each flag overrides the manifest
 browsah app list --profile=work
 browsah app install mail --profile=work     # write the launcher entry and icon again
+browsah app update mail --profile=work      # preview manifest changes
+browsah app update mail --profile=work --apply
 browsah app route mail --profile=work       # show a routing rule that opens the app's site in the app
 browsah app route mail --profile=work --write    # ...and put it in the profile's profile.yaml (--remove takes it out)
 browsah app remove mail --profile=work --yes
@@ -55,8 +57,20 @@ You are shown the name and start page and can change the name before anything is
 manifest can be installed too, as its own page. The result is what `browsah app add --url` makes for the same site (both
 read the manifest by the same rules: `name` or `short_name`, `start_url`, a `scope` that contains the start page, `display`,
 `theme_color`, `id`, and the icons marked for general use, largest first). The manifest
-is the site's own claim, so it is read once, at install time: the saved configuration is yours to edit, and
-the site cannot change the app later. Icons marked only `maskable` or `monochrome` are not used (GNOME does not mask).
+is the site's own claim. Browsah reads it at install time and when you explicitly run an update.
+Icons marked only `maskable` or `monochrome` are not used (GNOME does not mask).
+
+**Updating from a manifest.** `browsah app update <id>` fetches the manifest and previews changes
+to the name, start URL, scope, display mode, theme colour and icon. Add `--apply` to save the
+changes and refresh the desktop launcher. Existing app windows keep their current page. Close
+and reopen the app to use its updated window settings and start page.
+
+Browsah verifies the saved manifest ID and start origin. It applies only values that still
+match the last import. Local values and custom icons take precedence. If the proposed start URL
+and retained scope conflict, Browsah keeps both existing values. A manifest icon that fails to
+download is kept. For apps installed before manifest tracking, the start page must still link
+to a manifest with the same ID. The first `--apply` records a baseline while keeping the current
+settings and icon. Apps installed without a manifest have no site metadata to update.
 
 ## What the window does
 
@@ -128,7 +142,7 @@ Every key below is in `app.yaml` at the top level (there is no `app:` section). 
 | `nav.reload` | bool | `true` | Show the reload and stop buttons (`Ctrl+R` still works). |
 | `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead. |
 | `icon` | text | a generated icon | A file in the app's directory used as its icon (`icon.png`, `icon.svg`). Applied to the launcher entry by `browsah app install`. |
-| `manifest_id` | text | none | The web manifest's `id`, kept so a later import can recognise the same app. |
+| `manifest_id` | text | none | The installed web manifest’s identity. `browsah app update` uses it to verify the fetched manifest. Keep this value when editing other settings. |
 | `multiple_windows` | bool | `true` | May the app have more than one window. The launcher entry (written by `browsah app add` / `app install`) has a *New Window* action only when this is true. See above. |
 | `multiple_tabs` | bool | `false` | May a window have more than one tab. The tab bar shows (there is no new-tab button, and no Ctrl+T: an app's tabs come from its links). A link opened with Ctrl+click, middle click or *Open link in new tab* then opens as a tab; without `multiple_tabs` it opens as an overlay (a modal) over the app. The app's start tab is an ordinary tab: it shows its title and can be closed, and closing the last tab closes the window. With the address hidden (`standalone`, or `custom` with `address_bar: hidden`) the tabs are not a row of their own but fill the header bar's first row, and only while there is more than one tab (with a single tab the header shows the title as usual). Applies to windows opened after the change. |
 | `modals` | section | see below | How modals look; the same as a workspace's. |

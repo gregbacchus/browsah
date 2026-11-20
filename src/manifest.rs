@@ -17,6 +17,10 @@ pub struct AppInfo {
     pub color: Option<String>,
     /// The manifest's `id`, resolved.
     pub manifest_id: Option<String>,
+    /// The address the manifest was fetched from.
+    pub manifest_url: Option<String>,
+    /// The page associated with a manifest parsed outside Chromium.
+    pub manifest_page: Option<String>,
     /// Icon candidates, best first.
     pub icons: Vec<String>,
     /// Whether a manifest was found (otherwise this is just the page).
@@ -93,6 +97,8 @@ pub fn parse_manifest(json: &str) -> Option<AppInfo> {
         display,
         color: text(m, "themeColor").and_then(|c| rgba_to_hex(&c)),
         manifest_id: text(m, "id"),
+        manifest_url: text(&v, "url"),
+        manifest_page: None,
         icons: icons.into_iter().map(|(_, u)| u).collect(),
         from_manifest: true,
     })
@@ -101,7 +107,7 @@ pub fn parse_manifest(json: &str) -> Option<AppInfo> {
 /// What to say about a page that has no manifest: its title and address.
 pub fn page_info(title: &str, address: &str) -> AppInfo {
     let name = if title.trim().is_empty() { crate::cookies::host_of(address) } else { title.trim().to_owned() };
-    AppInfo { name, start_url: address.to_owned(), scope: Vec::new(), display: AppDisplay::Standalone, color: None, manifest_id: None, icons: Vec::new(), from_manifest: false }
+    AppInfo { name, start_url: address.to_owned(), scope: Vec::new(), display: AppDisplay::Standalone, color: None, manifest_id: None, manifest_url: None, manifest_page: None, icons: Vec::new(), from_manifest: false }
 }
 
 // ---- the manifest file itself -------------------------------------------------------------------------
@@ -248,6 +254,21 @@ fn origin(url: &str) -> Option<String> {
     Some(format!("{scheme}://{}", rest.split(['/', '?', '#']).next()?))
 }
 
+pub(crate) fn http_origin(url: &str) -> Option<(String, String, u16)> {
+    let uri: ureq::http::Uri = url.split('#').next()?.parse().ok()?;
+    let scheme = uri.scheme_str()?;
+    let default_port = match scheme { "http" => 80, "https" => 443, _ => return None };
+    let authority = uri.authority()?;
+    if authority.as_str().contains('@') {
+        return None;
+    }
+    Some((scheme.to_owned(), authority.host().to_ascii_lowercase(), authority.port_u16().unwrap_or(default_port)))
+}
+
+pub(crate) fn same_origin(a: &str, b: &str) -> bool {
+    http_origin(a).zip(http_origin(b)).is_some_and(|(a, b)| a == b)
+}
+
 /// Read a manifest file (`json`, fetched from `manifest_url`) for the page at `page_url`, the way Chromium does:
 /// `name` or `short_name`, `start_url` (the page's own address if absent), a `scope` that must contain the start
 /// page (else the start page's directory), `display`, `theme_color`, `id` and the icons. Icons marked only `maskable`
@@ -258,7 +279,7 @@ pub fn parse_raw_manifest(json: &str, manifest_url: &str, page_url: &str) -> Opt
     let name = text("name").or_else(|| text("short_name"))?;
     let start_url = text("start_url").and_then(|s| resolve(manifest_url, &s)).map(|s| s.split('#').next().unwrap_or("").to_owned()).unwrap_or_else(|| page_url.to_owned());
     let default_scope = directory(&start_url);
-    let scope_url = text("scope").and_then(|s| resolve(manifest_url, &s)).filter(|s| start_url.starts_with(s.split(['?', '#']).next().unwrap_or(""))).or(default_scope);
+    let scope_url = text("scope").and_then(|s| resolve(manifest_url, &s)).filter(|s| same_origin(&start_url, s) && start_url.starts_with(s.split(['?', '#']).next().unwrap_or(""))).or(default_scope);
     let display = match text("display").as_deref() {
         Some("minimal-ui") => AppDisplay::Minimal,
         Some("browser") => AppDisplay::Browser,
@@ -278,6 +299,8 @@ pub fn parse_raw_manifest(json: &str, manifest_url: &str, page_url: &str) -> Opt
         name,
         scope: scope_url.and_then(|s| scope_pattern(&s)).into_iter().collect(),
         manifest_id: Some(text("id").and_then(|i| origin(&start_url).and_then(|o| resolve(&format!("{o}/"), &i))).unwrap_or_else(|| start_url.clone())),
+        manifest_url: Some(manifest_url.to_owned()),
+        manifest_page: Some(page_url.to_owned()),
         start_url,
         display,
         color: text("theme_color").and_then(|c| hex_colour(&c)),

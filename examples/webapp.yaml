@@ -14,7 +14,7 @@ nav:                                    # controls shown with display: custom (a
   reload: true
   address_bar: readonly                 # editable | readonly | hidden
 icon: icon.png                          # a file in this directory (default: a generated icon)
-manifest_id: https://mail.example.com/  # the web manifest's id, when it was installed from one
+manifest_id: https://mail.example.com/  # installed manifest identity, verified by app update
 multiple_windows: true                  # more than one window of the app (the launcher's "New Window"); default true
 multiple_tabs: false                    # more than one tab in a window; default false
 modals:

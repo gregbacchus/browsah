@@ -41,11 +41,11 @@ async fn fetch_icon(view: &Rc<BrowserView>, icons: &[String]) -> Option<Vec<u8>>
 }
 
 /// Create the web app: its directory (with the icon), launcher entry and icon. Returns its id.
-pub async fn save_app(view: &Rc<BrowserView>, info: &AppInfo, name: &str) -> Result<String, String> {
+pub async fn save_app(view: &Rc<BrowserView>, info: &AppInfo, name: &str, page_url: &str) -> Result<String, String> {
     let profile = super::PROFILE.with(|p| p.borrow().clone()).ok_or("no profile")?;
     let icon = fetch_icon(view, &info.icons).await.map(|png| ("png", png));
     let (exe, libs) = crate::profile::launcher().map_err(|e| e.to_string())?;
-    let spec = webapp::NewApp { name: Some(name.to_owned()), color: info.color.clone(), url: info.start_url.clone(), scope: info.scope.clone(), display: info.display, icon, manifest_id: info.manifest_id.clone() };
+    let spec = webapp::NewApp { name: Some(name.to_owned()), color: info.color.clone(), url: info.start_url.clone(), scope: info.scope.clone(), display: info.display, icon, manifest: info.from_manifest.then(|| webapp::ManifestInstall { info: info.clone(), page_url: page_url.to_owned(), custom_icon: false }) };
     webapp::create(&profile, None, &spec, &exe, &libs)
 }
 
@@ -64,11 +64,11 @@ impl Shell {
                 return;
             }
             let info = read_manifest(&view).await.unwrap_or_else(|| page_info(&title, &address));
-            let _ = shell.confirm_install(view, info);
+            let _ = shell.confirm_install(view, info, address);
         });
     }
 
-    pub(super) fn confirm_install(self: &Rc<Self>, view: Rc<BrowserView>, info: AppInfo) -> adw::AlertDialog {
+    pub(super) fn confirm_install(self: &Rc<Self>, view: Rc<BrowserView>, info: AppInfo, page_url: String) -> adw::AlertDialog {
         let dialog = adw::AlertDialog::new(Some("Install as web app"), None);
         let source = if info.from_manifest { "from the site's manifest" } else { "this site has no manifest, so this is the page itself" };
         dialog.set_body(&format!("{}\n\nOpens on {} ({source}).", info.name, info.start_url));
@@ -85,8 +85,9 @@ impl Shell {
             }
             let (shell, view, info, name) = (shell.clone(), view.clone(), info.clone(), entry.text().trim().to_owned());
             let name = if name.is_empty() { info.name.clone() } else { name };
+            let page_url = page_url.clone();
             glib::MainContext::default().spawn_local(async move {
-                match save_app(&view, &info, &name).await {
+                match save_app(&view, &info, &name, &page_url).await {
                     Ok(id) => {
                         shell.toast(&format!("Installed {name}; find it in your launcher"));
                         if let Some(app) = shell.window.application() {

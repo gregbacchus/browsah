@@ -8,6 +8,8 @@ use crate::workspace::{first_positional, AddressBar, ModalsConfig, NavConfig, Pi
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+mod update;
+
 /// How much browser a web app shows around its page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -73,7 +75,6 @@ pub struct AppConfig {
     pub icon: Option<String>,
     /// The web manifest's `id`, kept so a later import can tell it is the same app.
     #[serde(default)]
-    #[allow(dead_code)] // kept in the file for a later import to compare against
     pub manifest_id: Option<String>,
     /// Whether the app may have more than one window (the launcher's "New Window").
     #[serde(default = "yes")]
@@ -288,6 +289,7 @@ const USAGE: &str = "usage:
   browsah app list [--profile ID]
   browsah app remove <id> [--profile ID] --yes
   browsah app install <id> [--profile ID]      (write the launcher entry and icon again)
+  browsah app update <id> [--profile ID] [--apply]   (preview or apply manifest changes)
   browsah app route <id> [--profile ID] [--write | --remove]   (a routing rule that opens the app's site in the app)
 
 `app add` reads the site's web manifest (name, start page, scope, display, theme colour, icon) like installing from a page in the
@@ -395,6 +397,7 @@ pub fn cli(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("update") => update::cli(&profile, &args[1..], &exe, &libs),
         Some("remove") => remove(&profile, &args[1..]),
         Some("route") => route(&profile, &args[1..]),
         _ => {
@@ -417,7 +420,13 @@ pub struct NewApp {
     pub display: AppDisplay,
     /// The icon file: its extension (`png` or `svg`) and contents.
     pub icon: Option<(&'static str, Vec<u8>)>,
-    pub manifest_id: Option<String>,
+    pub manifest: Option<ManifestInstall>,
+}
+
+pub struct ManifestInstall {
+    pub info: crate::manifest::AppInfo,
+    pub page_url: String,
+    pub custom_icon: bool,
 }
 
 fn display_name_of(d: AppDisplay) -> &'static str {
@@ -455,11 +464,14 @@ pub fn create(profile: &Profile, id: Option<&str>, spec: &NewApp, exe: &Path, li
     let dir = profile.apps_dir().join(&id);
     let color = spec.color.as_deref().and_then(|c| profile::ColorPair::parse(c).ok());
     let icon_name = spec.icon.as_ref().map(|(ext, _)| format!("icon.{ext}"));
-    let text = config_text(spec.name.as_deref(), color.as_ref(), &spec.url, &spec.scope, display_name_of(spec.display), icon_name.as_deref(), spec.manifest_id.as_deref());
+    let text = config_text(spec.name.as_deref(), color.as_ref(), &spec.url, &spec.scope, display_name_of(spec.display), icon_name.as_deref(), spec.manifest.as_ref().and_then(|source| source.info.manifest_id.as_deref()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     std::fs::write(dir.join("app.yaml"), text).map_err(|e| e.to_string())?;
     if let (Some((_, bytes)), Some(name)) = (&spec.icon, &icon_name) {
         std::fs::write(dir.join(name), bytes).map_err(|e| e.to_string())?;
+    }
+    if let Some(source) = &spec.manifest {
+        update::remember_install(&dir, source, icon_name.as_deref().zip(spec.icon.as_ref().map(|(_, data)| data.as_slice())))?;
     }
     let w = Workspace::resolve_app(profile, &id)?;
     install(profile, &w, exe, libs).map_err(|e| format!("created {id:?}, but its launcher entry failed: {e}"))?;
@@ -655,6 +667,7 @@ fn add(profile: &Profile, args: &[String], exe: &Path, libs: &Path) -> i32 {
     }
     let info = info.unwrap_or_else(|| crate::manifest::page_info("", &page));
     let scope_flag: Option<Vec<String>> = flag_value(args, "--scope").map(|s| s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect());
+    let custom_icon = icon_flag.is_some();
     let icon = match icon_flag {
         Some((ext, bytes)) => Some((ext, bytes, "--icon".to_owned())),
         None if from_site => fetch_icon(&info.icons),
@@ -668,7 +681,7 @@ fn add(profile: &Profile, args: &[String], exe: &Path, libs: &Path) -> i32 {
         scope: scope_flag.unwrap_or_else(|| info.scope.clone()),
         display: display.unwrap_or(info.display),
         icon: icon.as_ref().map(|(ext, bytes, _)| (*ext, bytes.clone())),
-        manifest_id: info.manifest_id.clone(),
+        manifest: info.from_manifest.then(|| ManifestInstall { info: info.clone(), page_url: page, custom_icon }),
     };
     let id = match create(profile, id, &spec, exe, libs) {
         Ok(id) => id,
