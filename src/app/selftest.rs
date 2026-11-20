@@ -86,6 +86,15 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
     println!("shot {name}: {}", if ok { "saved" } else { "failed" });
 }
 
+/// Open the window's tab menu as a popover (the menu model is already filled in) and take a picture of it.
+async fn shot_tab_menu(shell: &Rc<Shell>, name: &str) {
+    shell.show_tab_menu(&shell.window, 60, 60);
+    let Some(popover) = shell.tab_popover.borrow().clone() else { return };
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&popover, name);
+    popover.popdown();
+}
+
 /// The colours (r, g, b) of the window's pixels at the given points (window coordinates), as GTK renders them.
 fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8, u8)> {
     let paintable = gtk::WidgetPaintable::new(Some(widget));
@@ -1490,6 +1499,7 @@ async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the tab menu has a send-to-workspace submenu listing the other workspaces and a new window", submenu_labels.contains(&"Receiver".to_string()) && submenu_labels.contains(&"New window".to_string()) && !submenu_labels.contains(&"Sender".to_string()), || format!("{submenu_labels:?}"));
     let has_close = (0..menu.n_items()).filter_map(|i| menu.item_link(i, "section")).any(|sec| (0..sec.n_items()).any(|j| sec.item_attribute_value(j, "label", None).and_then(|v| v.get::<String>()).as_deref() == Some("Close tab")));
     r.check("the tab menu also offers closing the tab", has_close, || "no close item".into());
+    shot_tab_menu(&s1, "tab-menu").await;
 
     // Send it.
     ActionGroupExt::activate_action(&s1.window, "send-tab", Some(&"s2".to_variant()));
@@ -2913,6 +2923,7 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
                 .flat_map(|section| (0..section.n_items()).filter_map(move |i| section.item_attribute_value(i, "action", None).and_then(|v| v.get::<String>())))
                 .collect::<Vec<_>>();
             r.check("a web app tab menu offers Print and omits Install as web app", actions.iter().any(|a| a == "win.print") && !actions.iter().any(|a| a == "win.install-app"), || format!("{actions:?}"));
+            shot_tab_menu(&w, &format!("app-title-menu-{id}")).await;
             w.setup_tab_menu(None);
 
             // Ctrl+click on a link asks for a new tab: an app that allows tabs gets one, not an overlay.
