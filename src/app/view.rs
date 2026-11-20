@@ -2573,6 +2573,15 @@ impl BrowserView {
         self.with_host(|h| h.set_focus(focused as _));
     }
 
+    /// Give CEF the focus again if the widget has it (never takes it away). The page's renderer is
+    /// replaced by navigation and a browser woken from a restored tab is shown after it is created;
+    /// focus sent before either is not kept by Chromium, and without it the caret does not blink.
+    pub fn refocus(&self) {
+        if self.widget.has_focus() {
+            self.with_host(|h| h.set_focus(1));
+        }
+    }
+
     /// Change the frame-rate cap. Posted to CEF's UI thread.
     pub fn set_frame_rate(&self, fps: i32) {
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
@@ -2587,6 +2596,7 @@ impl BrowserView {
     /// Tell CEF whether the view is on screen. Posted to CEF's UI thread.
     fn set_hidden(&self, hidden: bool) {
         self.shared.hidden.store(hidden, Ordering::Relaxed);
+        let focused = !hidden && self.widget.has_focus();
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
             let h = HostHandle(h.0.clone());
             on_ui(move || {
@@ -2594,6 +2604,9 @@ impl BrowserView {
                 h.0.was_hidden(hidden as _);
                 if !hidden {
                     h.0.invalidate(PaintElementType::VIEW);
+                    if focused {
+                        h.0.set_focus(1); // after showing: focus given while hidden does not make the caret blink
+                    }
                 }
             });
         }
@@ -2952,6 +2965,7 @@ impl BrowserView {
             move |g, n_press, x, y| {
                 if let Some(v) = w.upgrade() {
                     v.widget.grab_focus();
+                    v.refocus(); // grab_focus sends nothing when the widget already had focus
                     v.click(g.current_button(), n_press, x, y, g.current_event_state(), false);
                 }
             }

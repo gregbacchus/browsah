@@ -1671,6 +1671,9 @@ impl Shell {
                     tab.sad.set_visible(false);
                     tab.view().widget.set_visible(true);
                 }
+                if !loading {
+                    tab.view().refocus(); // a new renderer may not have been given the focus (no caret)
+                }
                 {
                     let mut s = tab.state.borrow_mut();
                     if s.loading && !loading {
