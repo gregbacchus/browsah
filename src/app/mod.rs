@@ -254,6 +254,8 @@ pub struct Shell {
     close_confirmed: std::cell::Cell<bool>,
     /// Tabs being closed that may still say "Leave site?".
     closing: RefCell<Vec<adw::TabPage>>,
+    /// `close_all` has asked every browser to close (the window is going): their `Closed` events are ours, not the page's.
+    all_closing: Cell<bool>,
     js_showing: RefCell<Option<(u64, adw::AlertDialog)>>,
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
@@ -1478,6 +1480,7 @@ impl Shell {
 
     /// Ask CEF to close every browser. Call before shutting CEF down.
     pub fn close_all(&self) {
+        self.all_closing.set(true);
         for t in self.tabs.borrow().iter() {
             t.view().close();
         }
@@ -1583,6 +1586,13 @@ impl Shell {
                     self.closing.borrow_mut().retain(|p| p != &page);
                     self.close_tab(&page);
                     self.tab_view.close_page_finish(&page, true);
+                } else if !self.all_closing.get() && self.tabs.borrow().iter().any(|t| t.page == page) {
+                    // The page closed itself (`window.close()`, as a sign-in popup does when it is done) or Chromium closed it:
+                    // its browser is gone, so the tab must go too, or it stays as a frozen picture with a stuck spinner.
+                    // `close_tab` first, so the close request below finds nothing to ask (`begin_close`) and only removes the page.
+                    crate::log_info!("tab closed by its page: {}", tab.state.borrow().address);
+                    self.close_tab(&page);
+                    self.tab_view.close_page(&page);
                 }
             }
             ViewEvent::CloseCancelled => {
@@ -1926,6 +1936,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         swept_all_handler: Cell::new(None),
         js_queue: RefCell::new(std::collections::VecDeque::new()),
         closing: RefCell::new(Vec::new()),
+        all_closing: Cell::new(false),
         close_confirmed: std::cell::Cell::new(false),
         js_showing: RefCell::new(None),
         js_pending: RefCell::new(None),

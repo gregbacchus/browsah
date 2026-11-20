@@ -45,3 +45,4 @@ Next steps are in [../roadmap.md](../roadmap.md).
 - Record machine, GPU/driver, compositor, toolkit and CEF versions with every measurement.
 - Link sources; mark anything unverified as such.
 - Reproduction commands must be copy-pasteable from the repo root.
+- [2026-11-20-window-close-tab.md](2026-11-20-window-close-tab.md): a tab whose page calls window.close() stayed open (fixed).

@@ -991,6 +991,28 @@ async fn run_opener(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a popup keeps window.opener (postMessage reaches the opener)", ok, || {
         format!("tabs={} parent title={:?}", shell.tab_count(), parent.state.borrow().title)
     });
+
+    // A popup that closes itself (a finished sign-in, `window.close()`) takes its tab with it: the browser is gone, so a
+    // tab left behind would be a frozen picture with a stuck spinner.
+    while shell.tab_count() > 1 {
+        let _ = WidgetExt::activate_action(&shell.window, "win.close-tab", None);
+        glib::timeout_future(Duration::from_millis(300)).await;
+    }
+    shell.entry.set_text(&page("popup-close.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || {
+        let s = parent.state.borrow();
+        !s.loading && s.title == "Popup close test"
+    })
+    .await;
+    r.check("popup-close test page loads", ok, || format!("{:?}", parent.state.borrow()));
+    glib::timeout_future(Duration::from_millis(800)).await;
+    d.click(80.0, 40.0);
+    let ok = wait_until(10_000, || shell.tab_count() == 2).await;
+    r.check("a script popup opens as a tab", ok, || format!("tabs={}", shell.tab_count()));
+    let ok = wait_until(10_000, || shell.tab_count() == 1).await;
+    r.check("the tab closes when its page calls window.close()", ok, || format!("tabs={}", shell.tab_count()));
+    r.check("the opener's tab is the one left", shell.current().is_some_and(|t| t.page == parent.page), || "another tab is selected".into());
 }
 
 /// A second (ephemeral) window, and a tab dragged between windows changing owner.
