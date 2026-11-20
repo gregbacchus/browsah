@@ -136,6 +136,8 @@ pub enum ViewEvent {
     FindResult { count: i32, active: i32 },
     /// The page navigated to an expected non-web scheme and it was handed to the desktop.
     ExternalLaunch { scheme: String, url: String, signin: bool },
+    /// The page tried to open an address with a scheme that is not allowed (`routing.desktop_schemes`: schemes handed to the desktop's handler); nothing was launched.
+    SchemeBlocked(String),
     /// The router sent this link elsewhere; the navigation was cancelled and this is what to do.
     Route { action: crate::router::Action, url: String },
     /// A main-frame navigation left the view's scope and was cancelled (see `set_scope`): open it elsewhere.
@@ -1112,11 +1114,13 @@ wrap_resource_request_handler! {
             let scheme = url.split_once(':').map(|(s, _)| s.to_lowercase()).unwrap_or_default();
             let from_env = std::env::var("BROWSAH_ALLOW_SCHEMES").unwrap_or_default();
             let signin = self.shared.allowed_schemes.lock().unwrap().iter().any(|s| *s == scheme);
-            let expected = signin || from_env.split(',').any(|s| !s.is_empty() && s == scheme);
+            let expected = signin || crate::router::scheme_allowed(&scheme) || from_env.split(',').any(|s| !s.is_empty() && s == scheme);
             // Chromium's own launching needs a prompt that does not exist here, so the shell does it.
             *allow = 0;
             if expected {
                 send(self.shared.id, ViewEvent::ExternalLaunch { scheme, url, signin });
+            } else if !scheme.is_empty() {
+                send(self.shared.id, ViewEvent::SchemeBlocked(scheme));
             }
         }
 

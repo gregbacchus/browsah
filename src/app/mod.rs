@@ -1640,6 +1640,9 @@ impl Shell {
                     self.tab_view.close_page_finish(&page, false);
                 }
             }
+            ViewEvent::SchemeBlocked(scheme) => {
+                self.toast(&format!("Blocked a {scheme}: link. It is not handed to the desktop. To do that, add {scheme} to routing.desktop_schemes"));
+            }
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
                 // The sign-in handed its result to the application: an ephemeral window with only
                 // this tab has nothing more to show.

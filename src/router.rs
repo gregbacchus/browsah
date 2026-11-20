@@ -292,6 +292,8 @@ pub struct RoutingConfig {
     pub unwrap_known: Option<bool>,
     /// Also route where a clicked link's redirects lead (default `false`; see `Router::follow_redirects`).
     pub follow_redirects: Option<bool>,
+    /// URL schemes (`claude`, `zoommtg`) any page may hand to the desktop's handler; the application's and the profile's lists are joined.
+    pub desktop_schemes: Vec<String>,
     pub rules: Vec<RuleConfig>,
 }
 
@@ -453,6 +455,8 @@ pub struct Router {
     unwrappers: Vec<Unwrapper>,
     no_known_unwrap: bool,
     follow_redirects: bool,
+    /// Schemes a page may hand to the desktop (`routing.desktop_schemes`), lower case.
+    desktop_schemes: Vec<String>,
     /// Problems found while loading (invalid rules are skipped).
     pub warnings: Vec<String>,
 }
@@ -500,6 +504,7 @@ impl Router {
         let mut unwrappers: Vec<Unwrapper> = app_cfg.unwrap.iter().map(Unwrapper::from_config).collect();
         let mut unwrap_known = app_cfg.unwrap_known;
         let mut follow = app_cfg.follow_redirects;
+        let mut desktop_schemes = app_cfg.desktop_schemes.clone();
         if let Some(p) = profile {
             let file = p.dir.join("profile.yaml");
             let cfg = read_routing(&file, &mut warnings);
@@ -513,6 +518,7 @@ impl Router {
             unwrappers.extend(cfg.unwrap.iter().map(Unwrapper::from_config));
             unwrap_known = cfg.unwrap_known.or(unwrap_known);
             follow = cfg.follow_redirects.or(follow);
+            desktop_schemes.extend(cfg.desktop_schemes.iter().cloned());
             for w in Workspace::list_apps(p) {
                 if let Some(app) = &w.config.app {
                     router.app_scopes.insert(w.id.clone(), crate::webapp::route_patterns(app));
@@ -530,6 +536,16 @@ impl Router {
         router.unwrappers = unwrappers;
         router.no_known_unwrap = unwrap_known == Some(false);
         router.follow_redirects = follow == Some(true);
+        for scheme in desktop_schemes {
+            let scheme = scheme.trim().trim_end_matches(['/', ':']).to_lowercase();
+            if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+                warnings.push(format!("routing.desktop_schemes: {scheme:?} is not a URL scheme; ignored"));
+            } else if matches!(scheme.as_str(), "http" | "https" | "file" | "javascript" | "data" | "blob" | "about" | "chrome" | "view-source") {
+                warnings.push(format!("routing.desktop_schemes: {scheme} is handled by the browser itself; ignored"));
+            } else if !router.desktop_schemes.contains(&scheme) {
+                router.desktop_schemes.push(scheme);
+            }
+        }
         router.external = external.and_then(|e| match Action::parse(&e) {
             Ok(a) => Some(a),
             Err(err) => {
@@ -763,6 +779,12 @@ pub fn unwrap_url(url: &str) -> String {
 /// Whether redirects of a clicked link are routed as well (`routing.follow_redirects`).
 pub fn follow_redirects() -> bool {
     CURRENT.read().ok().and_then(|g| g.clone()).is_some_and(|r| r.follow_redirects)
+}
+
+/// Whether `routing.desktop_schemes` lets a page hand an address with this scheme to the desktop.
+pub fn scheme_allowed(scheme: &str) -> bool {
+    let scheme = scheme.to_lowercase();
+    CURRENT.read().ok().and_then(|g| g.clone()).is_some_and(|r| r.desktop_schemes.contains(&scheme))
 }
 
 /// Like `route`, with modal rules skipped (see `Router::route_ignoring_modal`).
@@ -1204,6 +1226,22 @@ mod tests {
         let r = Router::load(&file, None);
         assert!(!r.follow_redirects);
         assert_eq!(r.unwrap("https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F"), "https://www.google.com/url?q=https%3A%2F%2Fmiro.com%2F");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn desktop_schemes_join_and_ignore_the_browsers_own() {
+        let dir = std::env::temp_dir().join(format!("browsah-allow-schemes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.yaml");
+        std::fs::write(&file, "routing:\n  desktop_schemes: [Claude, 'zoommtg://', https, 'bad scheme']\n").unwrap();
+        let r = Router::load(&file, None);
+        assert_eq!(r.desktop_schemes, vec!["claude", "zoommtg"]);
+        assert_eq!(r.warnings.len(), 2, "{:?}", r.warnings);
+        install(r);
+        assert!(scheme_allowed("CLAUDE") && !scheme_allowed("msteams"));
+        install(Router::default());
+        assert!(!scheme_allowed("claude"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

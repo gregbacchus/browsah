@@ -28,7 +28,11 @@ default for the whole profile or application. `browsah route test` shows when it
 
 Many applications finish by redirecting to their own scheme (`claude://...`). A sign-in window opened
 this way may hand an address with *that* scheme (and only that one) to the desktop, which starts the
-application; the window then closes by itself. Any other scheme a page tries to open is blocked.
+application; the window then closes by itself. Any other scheme a page tries to open is blocked, and a message says which scheme
+(`Blocked a claude: link...`). Some sign-ins are not recognised that way: Claude Desktop's sign-in returns to
+`https://claude.ai/desktop/callback`, an ordinary web address, and only that page then opens `claude://`. List such a scheme in
+`routing.desktop_schemes` (`desktop_schemes: [claude]`) and any page may hand it to the desktop's handler
+([research](../research/claude-desktop-sign-in.md)).
 
 ## Links that go through a redirector
 
@@ -98,6 +102,7 @@ link from another application is first judged. `--from` is `external` (the defau
 | `routing.unwrap[].url` | list of text | required | Address patterns of the redirector: `host` or `host/path`, as for a pinned tab's scope (`example.com/out`). Any one may match. |
 | `routing.unwrap[].param` | text or list of text | required | The query parameter that holds the address it sends you to (the first one present whose value is a web address is used). |
 | `routing.unwrap_known` | bool | `true` | `false` turns off the built-in list of redirectors. A profile's value overrides the application's. |
+| `routing.desktop_schemes` | list of text | none | URL schemes (`claude`, `zoommtg`) that any page may **hand to the desktop** (the operating system's registered handler, which starts that application; browsah never opens them itself). Without this a page's address with such a scheme is blocked. Names only, no `://`; `http`, `https`, `file`, `javascript` and the like are ignored with a warning. A profile's list is added to the application's. Applies as soon as the file is reloaded; workspace files do not have it. Only allow applications you trust: any page you visit may then launch them. See the paragraph on sign-ins started by other applications above. |
 | `routing.follow_redirects` | bool | `false` | Also judge where a clicked link's **redirects** lead (see below). A profile's value overrides the application's. |
 
 **Actions** (`open:` and `routing.external`):

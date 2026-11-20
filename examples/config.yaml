@@ -13,6 +13,7 @@ default_profile: work      # the profile used when none is named: the selector o
 # URL routing rules for every profile (docs/config/routing.md); profiles and workspaces add their own.
 routing:
   unwrap_known: true        # unwrap the built-in redirectors (Google, Facebook, Outlook...); false turns the list off
+  desktop_schemes: [claude]   # URL schemes any page may hand to the desktop's registered handler (starts that application; browsah does not open them); Claude Desktop's sign-in ends on claude://
   app_sign_in: ephemeral    # links from other applications that look like a sign-in they started; allow turns detection off
   rules:
     - name: Meeting links open in the desktop client
