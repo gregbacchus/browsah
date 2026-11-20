@@ -1114,7 +1114,7 @@ async fn run_restore(shell: &Rc<Shell>, r: &mut Report) {
         r.check("after a tab is woken, clicking a text field gives the page focus (caret)", ok, || format!("{:?}", tabs[0].state.borrow().title));
         if std::env::var_os("BROWSAH_SHOTS").is_some() {
             glib::timeout_future(Duration::from_millis(600)).await;
-            shot(&w.window, "restored-focus");
+            self::shot(&w.window, "restored-focus");
         }
     }
 
