@@ -383,7 +383,7 @@ pub fn cli(args: &[String]) -> i32 {
         println!("{CLI_USAGE}");
         return 0;
     }
-    let profile = match Profile::resolve(&value("--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned())) {
+    let profile = match Profile::resolve(&value("--profile").unwrap_or_else(crate::profile::cli_default_id)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");

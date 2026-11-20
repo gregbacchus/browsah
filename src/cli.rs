@@ -8,7 +8,7 @@ usage:
   browsah COMMAND [ARGS]                            manage profiles, apps and workspaces, no window needed
 
 options:
-  --profile=ID        the profile to run (default: `default`; or set BROWSAH_PROFILE)
+  --profile=ID        the profile to run (or `--profile ID`; else BROWSAH_PROFILE, then `default_profile` in config.yaml, then `default`)
   --workspace=ID      open this workspace of the profile
   --app=ID            open this web app of the profile
   --new-window        open a window with no workspace instead of the remembered ones
@@ -24,7 +24,7 @@ options:
   -V, --version       show the version
   --OTHER             any other --switch is passed to Chromium
 
-commands (all take --profile ID where a profile matters; the default profile is `default`):
+commands (all take --profile ID where a profile matters, before or after the command; without it: `default_profile` from config.yaml, else `default`):
   profile add <id> [--name NAME] [--color \"LIGHT [DARK]\"]     | list | install <id> | remove <id> --yes [--keep-data]
   workspace add <id> [--name NAME] [--color ...]               | list | remove <id> --yes
   app add [<id>] --url URL [--name N] [--scope P,...] [--display standalone|minimal|browser] [--color ...] [--icon FILE]
@@ -109,6 +109,11 @@ pub struct Options {
 
 impl Options {
     pub fn parse() -> Self {
+        Self::parse_from(std::env::args().skip(1), std::env::var("BROWSAH_PROFILE").ok())
+    }
+
+    /// The options in `args` (without the program name); `env_profile` is `BROWSAH_PROFILE`, which `--profile` overrides.
+    pub fn parse_from(args: impl IntoIterator<Item = String>, env_profile: Option<String>) -> Self {
         let mut o = Options {
             mode: None,
             bench: Bench::None,
@@ -119,7 +124,7 @@ impl Options {
             backing: None,
             selftest: false,
             latency: false,
-            profile: std::env::var("BROWSAH_PROFILE").ok().filter(|p| !p.is_empty()),
+            profile: env_profile.filter(|p| !p.is_empty()),
             workspace: None,
             app: false,
             new_window: false,
@@ -127,8 +132,15 @@ impl Options {
             config_path: None,
             flags: Vec::new(),
         };
-        for a in std::env::args().skip(1) {
+        let mut args = args.into_iter();
+        while let Some(a) = args.next() {
             match a.as_str() {
+                // `--profile ID` (a separate word) as well as `--profile=ID`.
+                "--profile" => {
+                    if let Some(id) = args.next() {
+                        o.profile = Some(id);
+                    }
+                }
                 "--mode=paint" => o.mode = Some(Mode::Paint),
                 "--mode=accel" => o.mode = Some(Mode::Accel),
                 "--bench=single" => o.bench = Bench::Single,
@@ -185,6 +197,17 @@ mod tests {
         for other in [&["example.com"][..], &["profile", "--help"], &["--disable-gpu"], &[]] {
             assert!(root_info(&a(other)).is_none(), "{other:?}");
         }
+    }
+
+    #[test]
+    fn profile_option_takes_both_spellings_and_beats_the_environment() {
+        let p = |v: &[&str], env: Option<&str>| Options::parse_from(a(v), env.map(str::to_owned)).profile;
+        assert_eq!(p(&["--profile=work"], None).as_deref(), Some("work"));
+        assert_eq!(p(&["--profile", "work", "example.com"], None).as_deref(), Some("work"));
+        assert_eq!(Options::parse_from(a(&["--profile", "work", "example.com"]), None).url.as_deref(), Some("example.com"));
+        assert_eq!(p(&["--profile=work"], Some("other")).as_deref(), Some("work"));
+        assert_eq!(p(&[], Some("other")).as_deref(), Some("other"));
+        assert_eq!(p(&[], None), None);
     }
 
     #[test]

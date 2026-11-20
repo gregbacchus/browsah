@@ -423,7 +423,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 /// `browsah extension ...`: install, list, update and remove the profile's extensions. Needs no CEF and no window; a running
 /// browser loads the changes at its next start.
 pub fn cli(args: &[String]) -> i32 {
-    let profile_id = flag_value(args, "--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned());
+    let profile_id = flag_value(args, "--profile").unwrap_or_else(crate::profile::cli_default_id);
     let profile = match crate::profile::Profile::resolve(&profile_id) {
         Ok(p) => p,
         Err(e) => {

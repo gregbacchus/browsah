@@ -787,7 +787,7 @@ pub fn route(req: &Request) -> Decision {
 
 const USAGE: &str = "usage: browsah route test <url> [--profile ID] [--from SOURCE] [--kind KIND] [--target TARGET] [--explain]
 
-  --profile ID    use this profile's rules and workspaces; without it only the application's rules
+  --profile ID    use this profile's rules and workspaces (default: `default_profile` from config.yaml); without either only the application's rules
                   apply (how a link from another application is first judged)
   --from SOURCE   external (default), ephemeral, or workspace:<id> (a link clicked in that workspace)
   --kind KIND     external (default for --from external), link (default otherwise) or typed
@@ -818,7 +818,8 @@ pub fn cli(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
-    let profile = match flag_value(rest, "--profile") {
+    // Without `--profile`, `default_profile` from config.yaml (if set); otherwise the application's rules only.
+    let profile = match flag_value(rest, "--profile").or_else(|| crate::profile::configured_default_in(&crate::config::default_path())) {
         Some(id) => match Profile::resolve(&id) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -887,7 +888,7 @@ pub fn cli(args: &[String]) -> i32 {
     println!("from:     {from}   kind: {kind:?}   target: {target:?}");
     println!("rules:    {}", match &profile {
         Some(p) => format!("application + profile {:?}{}", p.id, if p.id == DEFAULT_ID { " (default)" } else { "" }),
-        None => "application only (no --profile)".to_owned(),
+        None => "application only (no --profile, no default_profile)".to_owned(),
     });
     if rest.iter().any(|a| a == "--explain") {
         for (layer, i, name, outcome) in &trace {

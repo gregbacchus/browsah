@@ -334,7 +334,7 @@ const USAGE: &str = "usage:
   browsah workspace list [--profile ID]
   browsah workspace remove <id> [--profile ID] --yes
 
-The profile defaults to `default`. Open a workspace with: browsah --profile=<id> --workspace=<id>";
+The profile defaults to `default_profile` from config.yaml, else `default`. Open a workspace with: browsah --profile=<id> --workspace=<id>";
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
     let mut it = args.iter();
@@ -351,7 +351,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 
 /// `browsah workspace ...`. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
-    let profile_id = flag_value(args, "--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned());
+    let profile_id = flag_value(args, "--profile").unwrap_or_else(crate::profile::cli_default_id);
     let profile = match Profile::resolve(&profile_id) {
         Ok(p) => p,
         Err(e) => {

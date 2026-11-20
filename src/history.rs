@@ -53,7 +53,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 
 /// `browsah history ...`. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
-    let profile = match Profile::resolve(&flag_value(args, "--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned())) {
+    let profile = match Profile::resolve(&flag_value(args, "--profile").unwrap_or_else(crate::profile::cli_default_id)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");

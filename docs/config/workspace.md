@@ -12,7 +12,7 @@ browsah workspace remove mail --profile=work --yes      # deletes the workspace 
 browsah --profile=work --workspace=mail [URL]           # open it (or raise it if it is open)
 ```
 
-`--profile` defaults to `default`. A plain start of a profile opens the workspaces that were open
+`--profile` defaults to `default_profile` from `config.yaml`, else `default`. A plain start of a profile opens the workspaces that were open
 when it last ran, else the profile's `default_workspace`, else a window with no workspace. Use
 **Quit profile** in the main menu or `Ctrl+Q` to quit with all open workspaces remembered. Closing
 individual windows dismisses their workspaces from the restore list, except for the final window.

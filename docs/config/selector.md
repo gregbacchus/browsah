@@ -27,7 +27,7 @@ It does not ask when it can already tell:
    `open: profile:work` or `open: profile:work/workspace:mail` sends it there; `open: block` drops it.
    Rules that open a workspace or ephemeral window do not decide here (they depend on a profile).
    See [routing.md](routing.md).
-3. **`default_profile`** in `config.yaml` ([options](options.md#behaviour)): it opens there.
+3. **`default_profile`** in `config.yaml` ([options](options.md#behaviour)): it opens there (the same option names the profile every command line uses when `--profile` is not given).
 
 Otherwise the window appears. Once a profile has the link, that profile's own routing rules apply
 (including opening sign-ins started by other applications in an ephemeral window).

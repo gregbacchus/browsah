@@ -49,7 +49,8 @@ fn main() {
     }
 
     // `browsah --help` / `--version`: answered here, before config, GTK or CEF.
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // A global `--profile` written before a command (`browsah --profile=work workspace list`) moves behind it.
+    let args = profile::hoist_profile_option(&std::env::args().skip(1).collect::<Vec<String>>());
     if let Some((text, code)) = cli::root_info(&args) {
         println!("{text}");
         std::process::exit(code);
@@ -154,7 +155,8 @@ fn main() {
     let profile_id = match (&opts.profile, test_run) {
         (Some(id), _) => id.clone(),
         (None, true) => profile::TEST_ID.to_owned(),
-        (None, false) => profile::DEFAULT_ID.to_owned(),
+        // `default_profile` from the application file, else `default`.
+        (None, false) => profile::default_id_for(&opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path)),
     };
     let profile = match profile::Profile::resolve(&profile_id) {
         Ok(p) => p,
@@ -313,7 +315,8 @@ fn config_full(args: &[String]) -> i32 {
             (fullconfig::Level::Application, "browsah".to_owned(), file)
         }
         (id, ws) => {
-            let profile = match profile::Profile::resolve(&id.unwrap_or_else(|| profile::DEFAULT_ID.to_owned())) {
+            let id = id.unwrap_or_else(|| profile::default_id_for(&value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path)));
+            let profile = match profile::Profile::resolve(&id) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("browsah: {e}");
@@ -349,7 +352,7 @@ fn config_full(args: &[String]) -> i32 {
 /// which options each layer set.
 fn config_show(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned));
-    let id = value("--profile").unwrap_or_else(|| profile::DEFAULT_ID.to_owned());
+    let id = value("--profile").unwrap_or_else(|| profile::default_id_for(&value("--config").map(std::path::PathBuf::from).unwrap_or_else(config::default_path)));
     let profile = match profile::Profile::resolve(&id) {
         Ok(p) => p,
         Err(e) => {

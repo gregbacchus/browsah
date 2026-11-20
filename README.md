@@ -46,7 +46,7 @@ browsah profile remove work --yes
 browsah --profile=work https://example.com
 ```
 
-With no `--profile`, the `default` profile is used. Choose a profile's entry as the default browser
+With no `--profile` (it may come before or after a command: `browsah --profile=work workspace list`), the `default_profile` of `config.yaml` is used, else `default`. Choose a profile's entry as the default browser
 in GNOME's settings and links from other applications open in that profile. Details:
 [docs/config/profile.md](docs/config/profile.md). A profile's `profile.yaml` can also override any
 configuration option, and config files are reloaded when they change (`watch_config`, `--no-watch`);

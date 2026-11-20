@@ -293,7 +293,7 @@ const USAGE: &str = "usage:
 `app add` reads the site's web manifest (name, start page, scope, display, theme colour, icon) like installing from a page in the
 browser does; the flags override what it finds, and --no-manifest skips reading. Without <id> one is made from the name.
 A web app is one site in a window of its own (docs/config/webapp.md); its files are in the profile's apps/<id>/.
-The profile defaults to `default`. Launch one with: browsah --profile=<profile> --app=<id>, or from the desktop's launcher.";
+The profile defaults to `default_profile` from config.yaml, else `default`. Launch one with: browsah --profile=<profile> --app=<id>, or from the desktop's launcher.";
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
     let mut it = args.iter();
@@ -351,7 +351,7 @@ pub fn id_from_name(name: &str) -> String {
 
 /// `browsah app ...`. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
-    let profile_id = flag_value(args, "--profile").unwrap_or_else(|| profile::DEFAULT_ID.to_owned());
+    let profile_id = flag_value(args, "--profile").unwrap_or_else(crate::profile::cli_default_id);
     let profile = match Profile::resolve(&profile_id) {
         Ok(p) => p,
         Err(e) => {

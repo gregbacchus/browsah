@@ -244,7 +244,7 @@ answers (--origin, as shown by `list`) or all of them; it is refused while the p
 /// `browsah permissions ...`. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{name}=")).map(str::to_owned)).or_else(|| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned()));
-    let profile = match crate::profile::Profile::resolve(&value("--profile").unwrap_or_else(|| crate::profile::DEFAULT_ID.to_owned())) {
+    let profile = match crate::profile::Profile::resolve(&value("--profile").unwrap_or_else(crate::profile::cli_default_id)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");

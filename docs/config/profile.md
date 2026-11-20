@@ -16,13 +16,16 @@ browsah profile add work --name "Work" --color "#4a2f80 #7a56c2"   # light then 
 browsah profile list
 browsah profile remove work --yes            # deletes the directory; --keep-data keeps it
 browsah --profile=work [URL]                 # run a profile, or hand it a link if it is running
+browsah --profile=work workspace list        # the option may also come after the command (`--profile ID` works too)
 ```
+
+Every command that takes a profile uses, when `--profile` is not given, the `default_profile` of [`config.yaml`](options.md#behaviour), else `default`.
 
 `add` also writes a `.desktop` entry and an icon, so the profile appears in GNOME as its own
 application (application id `be.geee.browsah.<id>`) and can be chosen as the default
 browser. A profile is one process: launching it again, or opening a link with it, hands the work
 to the running process. The ids `default` and `selftest` exist without being created (`selftest`
-is used by `--selftest` and the benchmarks so they never touch a real profile). `default` is what a plain `browsah` starts. It is listed
+is used by `--selftest` and the benchmarks so they never touch a real profile). `default` is what a plain `browsah` starts when `default_profile` is not set. It is listed
 (`profile list`, the selector) once it exists, that is once it has been used, or when it is the only profile; with other profiles and no
 `default` directory it is not listed. `browsah profile remove default --yes` removes it like any other profile once there is another one
 (starting a plain `browsah` creates it again).

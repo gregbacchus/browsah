@@ -22,6 +22,50 @@ pub const APP_ID_PREFIX: &str = "be.geee.browsah";
 pub const DEFAULT_ID: &str = "default";
 pub const TEST_ID: &str = "selftest";
 
+/// Commands that take `--profile` and may be given the global `--profile` before them.
+const PROFILE_COMMANDS: &[&str] = &["workspace", "app", "history", "permissions", "sweep", "route", "extension", "log", "config"];
+
+/// `browsah --profile=work workspace list` (or `--profile work`): the global option written before a command is moved
+/// after it as `--profile=work`, where every command reads it. Other arguments are returned unchanged, as is a command
+/// that already carries its own `--profile` (the one after the command wins).
+pub fn hoist_profile_option(args: &[String]) -> Vec<String> {
+    let (id, rest) = match args.first().map(String::as_str) {
+        Some("--profile") if args.len() >= 3 => (args[1].clone(), &args[2..]),
+        Some(a) if a.starts_with("--profile=") => (a["--profile=".len()..].to_owned(), &args[1..]),
+        _ => return args.to_vec(),
+    };
+    if !rest.first().is_some_and(|c| PROFILE_COMMANDS.contains(&c.as_str())) {
+        return args.to_vec();
+    }
+    let mut out = rest.to_vec();
+    if !out.iter().any(|a| a == "--profile" || a.starts_with("--profile=")) {
+        out.push(format!("--profile={id}"));
+    }
+    out
+}
+
+/// Which profile to use: the one named with `--profile`, else `default_profile` from `config.yaml`, else `default`.
+pub fn choose_id(explicit: Option<&str>, configured: Option<&str>) -> String {
+    explicit.or(configured).filter(|s| !s.is_empty()).unwrap_or(DEFAULT_ID).to_owned()
+}
+
+/// `default_profile` in the application file (none when the file is missing, unreadable or does not set it).
+pub fn configured_default_in(app_file: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(app_file).ok()?;
+    let v: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).ok()?;
+    v.get("default_profile")?.as_str().map(str::to_owned).filter(|s| !s.is_empty())
+}
+
+/// The profile a command line uses when it names none: `default_profile` from the application file (`--config`), else `default`.
+pub fn default_id_for(app_file: &Path) -> String {
+    choose_id(None, configured_default_in(app_file).as_deref())
+}
+
+/// `default_profile` from the standard application file, else `default`: for the commands that read `--profile`.
+pub fn cli_default_id() -> String {
+    default_id_for(&crate::config::default_path())
+}
+
 /// A colour for light and dark appearance. In YAML either a single colour (used for both), two
 /// colours in one string separated by a space (`"#4a2f80 #7a56c2"`, light then dark) or a map
 /// with `light` and `dark`.
@@ -588,6 +632,48 @@ fn remove(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    fn argv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn global_profile_option_moves_behind_the_command() {
+        assert_eq!(hoist_profile_option(&argv(&["--profile=work", "workspace", "list"])), argv(&["workspace", "list", "--profile=work"]));
+        assert_eq!(hoist_profile_option(&argv(&["--profile", "work", "app", "list"])), argv(&["app", "list", "--profile=work"]));
+        for c in ["workspace", "app", "history", "permissions", "sweep", "route", "extension", "log", "config"] {
+            assert_eq!(hoist_profile_option(&argv(&["--profile=w", c])), argv(&[c, "--profile=w"]), "{c}");
+        }
+        // The command's own option wins; a plain start, a URL and other commands are left alone.
+        assert_eq!(hoist_profile_option(&argv(&["--profile=a", "workspace", "list", "--profile", "b"])), argv(&["workspace", "list", "--profile", "b"]));
+        for same in [&["--profile=work", "example.com"][..], &["--profile=work"], &["--profile", "work"], &["workspace", "list"], &["--profile=work", "--workspace=mail"]] {
+            assert_eq!(hoist_profile_option(&argv(same)), argv(same), "{same:?}");
+        }
+    }
+
+    #[test]
+    fn profile_choice_is_option_then_config_then_builtin() {
+        assert_eq!(choose_id(Some("a"), Some("b")), "a");
+        assert_eq!(choose_id(None, Some("b")), "b");
+        assert_eq!(choose_id(None, None), DEFAULT_ID);
+        assert_eq!(choose_id(None, Some("")), DEFAULT_ID);
+    }
+
+    #[test]
+    fn default_profile_is_read_from_the_application_file() {
+        let dir = std::env::temp_dir().join(format!("browsah-defprofile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("config.yaml");
+        assert_eq!(default_id_for(&f), DEFAULT_ID, "no file");
+        std::fs::write(&f, "default_profile: work\nwatch_config: true\n").unwrap();
+        assert_eq!(configured_default_in(&f).as_deref(), Some("work"));
+        assert_eq!(default_id_for(&f), "work");
+        std::fs::write(&f, "watch_config: true\n").unwrap();
+        assert_eq!(default_id_for(&f), DEFAULT_ID);
+        std::fs::write(&f, ": not yaml [").unwrap();
+        assert_eq!(default_id_for(&f), DEFAULT_ID);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     use super::*;
 
     fn temp(name: &str) -> PathBuf {

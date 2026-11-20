@@ -8,7 +8,7 @@ home_page: https://duckduckgo.com/
 search_url: https://duckduckgo.com/?q={query}
 
 watch_config: true         # reload this file and the profile's file when they change
-default_profile: work      # the selector opens web links in this profile without asking (omit to ask)
+default_profile: work      # the profile used when none is named: the selector opens links there without asking (omit to ask), and `browsah workspace list` etc. assume it
 
 # URL routing rules for every profile (docs/config/routing.md); profiles and workspaces add their own.
 routing:
