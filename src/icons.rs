@@ -37,7 +37,7 @@ icon!(STAR_PLUS, "star-plus", "non-starred-symbolic");
 icon!(STAR, "star", "starred-symbolic");
 icon!(ARROW_DOWN_TO_LINE, "arrow-down-to-line", "folder-download-symbolic");
 icon!(MENU, "menu", "open-menu-symbolic");
-icon!(SWATCH_BOOK, "swatch-book", "view-app-grid-symbolic");
+icon!(LAYOUT_GRID_CIRCLES, "layout-grid-circles", "view-app-grid-symbolic");
 icon!(ROTATE_CCW_CLOCK, "rotate-ccw-clock", "document-open-recent-symbolic");
 icon!(TRASH, "trash", "user-trash-symbolic");
 icon!(PEN_LINE, "pen-line", "document-edit-symbolic");
@@ -77,7 +77,7 @@ icon!(CHEVRON_LEFT, "chevron-left", "go-previous-symbolic");
 /// The bookmarked star: Lucide's star painted in.
 pub const STAR_FILLED: Icon = Icon { id: "star-filled", filled: true, ..STAR };
 
-pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, SWATCH_BOOK, ROTATE_CCW_CLOCK, TRASH, PEN_LINE, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
+pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, LAYOUT_GRID_CIRCLES, ROTATE_CCW_CLOCK, TRASH, PEN_LINE, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
 
 /// The icon with this Lucide id.
 pub fn by_id(id: &str) -> Option<Icon> {

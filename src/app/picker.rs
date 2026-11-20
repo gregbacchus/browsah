@@ -71,7 +71,7 @@ impl Ui {
             .halign(gtk::Align::Start).valign(gtk::Align::Start).visible(false).build();
         panel.append(&content);
         let button = gtk::ToggleButton::builder().tooltip_text("Workspaces").build();
-        crate::icons::bind(&button, crate::icons::SWATCH_BOOK);
+        crate::icons::bind(&button, crate::icons::LAYOUT_GRID_CIRCLES);
         let ui = Rc::new(Ui { button, panel, list, recent, alpha, current, syncing: std::cell::Cell::new(false) });
         ui.button.connect_toggled({
             let ui = Rc::downgrade(&ui);

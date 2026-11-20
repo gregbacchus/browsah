@@ -6,7 +6,7 @@
 in the colour of the current style, and **shown at the size the interface already uses** (16 px buttons; the grid scales down). Use Lucide for any new icon. Stock GNOME symbolic icons are left only where nothing has been
 converted yet.
 
-Why: the stock set has no icon for some of what browsah does (a broom for swept tabs, a swatch book for workspaces), and mixing
+Why: the stock set has no icon for some of what browsah does (a broom for swept tabs, a grid of circles for workspaces), and mixing
 filled and outlined icons looked uneven. Lucide is one consistent outline family with a permissive licence (ISC; a few icons
 derived from Feather are MIT; both texts are kept in `assets/icons/lucide/LICENSE`, which satisfies AGENTS.md's licence rule).
 
@@ -19,7 +19,7 @@ derived from Feather are MIT; both texts are kept in `assets/icons/lucide/LICENS
 | Bookmark (not bookmarked, bookmarked) | `star-plus`, `star` filled |
 | Downloads button | `arrow-down-to-line` |
 | Main menu | `menu` |
-| Workspace picker | `swatch-book` (`layout-grid` was the alternative: a grid says "apps"; a swatch book says colour-coded sets) |
+| Workspace picker | `layout-grid-circles` (was `swatch-book`; `layout-grid` was another alternative) |
 | History: Visited, Recently closed | `rotate-ccw-clock`, `trash` |
 | A tab's status marker: unsaved work, playing | `pen-line`, `volume-2` |
 | Recently swept button | the broom with sparkles supplied for it (`swept-broom.svg`; Lucide's own `brush-cleaning` and `broom-sparkles` are different drawings) |

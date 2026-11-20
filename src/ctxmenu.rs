@@ -314,7 +314,7 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
             let icon = match route {
                 crate::router::Action::App(_) => "app-window",
                 crate::router::Action::Profile { .. } => "users",
-                crate::router::Action::Workspace(_) => "swatch-book",
+                crate::router::Action::Workspace(_) => "layout-grid-circles",
                 crate::router::Action::Modal => "picture-in-picture-2",
                 _ => "external-link",
             };
@@ -327,11 +327,11 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
             let mut items: Vec<Item> = targets
                 .workspaces
                 .iter()
-                .map(|t| Item { badge: Some(t.color.clone()), icon: None, ..item("open-workspace", &t.name, "swatch-book", Action::Open { url: url.clone(), how: How::Route(crate::router::Action::Workspace(t.id.clone())) }) })
+                .map(|t| Item { badge: Some(t.color.clone()), icon: None, ..item("open-workspace", &t.name, "layout-grid-circles", Action::Open { url: url.clone(), how: How::Route(crate::router::Action::Workspace(t.id.clone())) }) })
                 .collect();
             items.extend(targets.apps.iter().map(|t| item("open-workspace", &t.name, "app-window", Action::Open { url: url.clone(), how: How::Route(crate::router::Action::App(t.id.clone())) })));
             if !items.is_empty() {
-                g.push(Entry::Submenu { id: "open-workspace", label: "Open in workspace".into(), icon: Some("swatch-book"), items });
+                g.push(Entry::Submenu { id: "open-workspace", label: "Open in workspace".into(), icon: Some("layout-grid-circles"), items });
             }
             if !targets.profiles.is_empty() {
                 let items = targets.profiles.iter().map(|t| item("open-profile", &t.name, "users", Action::Open { url: url.clone(), how: How::Route(crate::router::Action::Profile { profile: t.id.clone(), workspace: None }) })).collect();
@@ -463,9 +463,9 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
                 g.push(Entry::Item(item("install-app", "Install as web app\u{2026}", "app-window", Action::Page(PageCmd::InstallApp))));
             }
             if ctx.can_send_tab && !ctx.in_app {
-                let mut items: Vec<Item> = targets.send_to.iter().map(|t| Item { badge: Some(t.color.clone()), icon: None, ..item("send-tab", &t.name, "swatch-book", Action::SendTab(t.id.clone())) }).collect();
+                let mut items: Vec<Item> = targets.send_to.iter().map(|t| Item { badge: Some(t.color.clone()), icon: None, ..item("send-tab", &t.name, "layout-grid-circles", Action::SendTab(t.id.clone())) }).collect();
                 items.push(item("send-tab", "New window", "app-window", Action::SendTab(String::new())));
-                g.push(Entry::Submenu { id: "send-tab", label: "Send to workspace".into(), icon: Some("swatch-book"), items });
+                g.push(Entry::Submenu { id: "send-tab", label: "Send to workspace".into(), icon: Some("layout-grid-circles"), items });
             }
             if !g.is_empty() {
                 groups.push(g);

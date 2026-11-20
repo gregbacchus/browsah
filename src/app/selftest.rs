@@ -4039,7 +4039,7 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
         w.swept.button.icon_name(), w.star.icon_name(), w.downloads.button.icon_name(), w.menu_button.icon_name(),
         tab.page.indicator_icon().and_downcast::<gio::ThemedIcon>().and_then(|icon| icon.names().first().cloned()),
     ];
-    let expected = |variant| ["arrow-left", "arrow-right", "rotate-cw", "swatch-book", "swept-broom", "star-plus", "arrow-down-to-line", "menu", "pen-line"]
+    let expected = |variant| ["arrow-left", "arrow-right", "rotate-cw", "layout-grid-circles", "swept-broom", "star-plus", "arrow-down-to-line", "menu", "pen-line"]
         .map(|icon| Some(format!("browsah-{icon}-{variant}").into()));
     let variant = if dark { "light" } else { "dark" };
     r.check("window chrome icons contrast with the workspace tint", chrome_icons() == expected(variant), || format!("{:?}", chrome_icons()));
