@@ -1395,7 +1395,7 @@ fn handle_permission(shared: &Shared, browser: Option<&mut Browser>, id: u64, or
     PERMISSION_REQUESTS.fetch_add(1, Ordering::Relaxed);
     let cfg = shared.permissions.lock().unwrap().clone();
     if std::env::var_os("BROWSAH_DEBUG").is_some() {
-        eprintln!("browsah: permission request from {origin} for {kinds:?}");
+        eprintln!("browsah: permission request from {origin} for {kinds:?} (id {id}, {})", if matches!(responder, Responder::Media(_)) { "media access" } else { "prompt" });
     }
     let (mut decided, mut ask) = (Vec::new(), Vec::new());
     for k in kinds {

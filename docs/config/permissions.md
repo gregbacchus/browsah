@@ -29,8 +29,14 @@ Browsah, so a later `deny`, a forgotten answer or a changed rule would have no e
 what Chromium kept back to what it would answer.) Where the answer is already known (`allow` or `deny` in the configuration, or
 an answer you remembered) for notifications, location, clipboard and MIDI, Chromium is told the same at that moment, so a page that
 only *looks* (`Notification.permission`, `navigator.permissions.query`) sees "granted" or "denied" and does not nag: Microsoft Teams'
-"Turn on desktop notifications" banner does not return on every start once notifications are allowed for it. Where the answer is not
-known the page sees "default" and asking reaches you. Camera and microphone are asked through another path and are not mirrored.
+"Turn on desktop notifications" banner does not return on every start once notifications are allowed for it. Camera and microphone are mirrored the same way:
+a page that checks before it asks (`navigator.permissions.query`, `enumerateDevices`, which hides device ids and labels until the
+microphone or camera is granted, as Teams does) sees them granted, so Teams finds its devices instead of reporting none. Screen sharing
+is not mirrored. Where the answer is not known the page sees "default" and asking reaches you.
+
+Site patterns are exact hosts: `*.microsoft.com` covers `teams.microsoft.com` but not `microsoft.com`; Teams runs on
+`teams.microsoft.com`, `teams.live.com` and `teams.cloud.microsoft`, so allow all that you use (`**.microsoft.com` covers a domain and
+its subdomains). `BROWSAH_DEBUG=1` prints each request's origin and kinds, to see which address a page asked from.
 
 Remembered answers are kept per profile (in its database), for the site and the kind. They never override an
 explicit `allow` or `deny` in the configuration, only fill in for `ask`. Manage them from the command line:

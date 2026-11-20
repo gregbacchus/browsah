@@ -214,10 +214,13 @@ fn remembered(origin: &str, kind: &str) -> Option<bool> {
 
 /// What Chromium's own setting for `kind` at `origin` should be, so that a page that looks (`Notification.permission`) sees what
 /// browsah will answer: `Some(true)` granted, `Some(false)` denied, `None` still to be asked (Chromium's default). The
-/// configuration decides, then an answer remembered from a question. Only the kinds a page can read without asking (notifications,
-/// location, clipboard, MIDI): camera and microphone are asked through another path and are left alone.
+/// configuration decides, then an answer remembered from a question. Covers the kinds a page can read without asking
+/// (notifications, location, clipboard, MIDI) and camera and microphone: a page that looks first (`permissions.query`, or
+/// `enumerateDevices`, which hides device ids and labels until the microphone/camera is granted) must see what the media request
+/// will be answered, or it concludes there is no device (Microsoft Teams shows "no microphone/camera found"). Screen capture is not
+/// mirrored (setting its content setting crashes Chromium).
 pub fn mirrored_choice(cfg: &PermissionsConfig, origin: &str, kind: Kind) -> Option<bool> {
-    if !matches!(kind, Kind::Notifications | Kind::Location | Kind::Clipboard | Kind::Midi) {
+    if !matches!(kind, Kind::Notifications | Kind::Location | Kind::Clipboard | Kind::Midi | Kind::Camera | Kind::Microphone) {
         return None;
     }
     match cfg.decide(origin, kind) {
@@ -312,10 +315,19 @@ mod tests {
         assert_eq!(mirrored_choice(&cfg, "https://asked.example", Kind::Clipboard), Some(true));
         note_remembered("https://asked.example", "clipboard", false);
         assert_eq!(mirrored_choice(&cfg, "https://asked.example/", Kind::Clipboard), Some(false), "the last answer stands");
-        // Camera and microphone are asked through another path and are left alone.
+        // Camera and microphone are mirrored too (Teams reads them before it asks); screen capture is not.
         let allow_all: PermissionsConfig = serde_yaml_ng::from_str("default: allow").unwrap();
-        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Camera), None);
-        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Microphone), None);
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Camera), Some(true));
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Microphone), Some(true));
+        assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Screen), None);
+        let teams: PermissionsConfig = serde_yaml_ng::from_str("sites:\n  - match: ['teams.microsoft.com', 'teams.live.com']\n    camera: allow\n    microphone: allow\n").unwrap();
+        assert_eq!(mirrored_choice(&teams, "https://teams.live.com", Kind::Camera), Some(true));
+        assert_eq!(mirrored_choice(&teams, "https://teams.microsoft.com", Kind::Microphone), Some(true));
+        assert_eq!(mirrored_choice(&teams, "https://other.example", Kind::Microphone), None, "ask: left to the handler");
+        // A host written as `*.x` does not cover `x` itself, so a rule meant for Teams must name or `**.` it.
+        let wild: PermissionsConfig = serde_yaml_ng::from_str("sites:\n  - match: ['*.microsoft.com']\n    microphone: allow\n").unwrap();
+        assert_eq!(wild.decide("https://teams.microsoft.com", Kind::Microphone), Choice::Allow);
+        assert_eq!(wild.decide("https://microsoft.com", Kind::Microphone), Choice::Ask);
         assert_eq!(mirrored_choice(&allow_all, "https://a.example", Kind::Notifications), Some(true));
     }
 

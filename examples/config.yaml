@@ -64,7 +64,7 @@ permissions:                # what pages may do: allow, deny or ask (docs/config
   screen: ask               # sharing the screen or a window
   midi: deny
   sites:                    # per-site rules, first match that says something about a kind wins
-    - match: ["meet.example.com", "*.zoom.us"]
+    - match: ["meet.example.com", "*.zoom.us", "teams.microsoft.com", "teams.live.com"]   # exact hosts; *.x does not cover x
       default: ask          # any kind this rule does not name
       camera: allow
       microphone: allow
