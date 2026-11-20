@@ -77,6 +77,11 @@ pub enum AddressBar {
 }
 
 /// Which navigation controls the window shows (`nav:` in `workspace.yaml`).
+/// Old names of renamed options that still work (`#[serde(alias)]`). The docs and examples show only the current names, so the
+/// tests that read option names from serde's error message leave these out.
+#[cfg(test)]
+pub const OPTION_ALIASES: &[&str] = &["bookmarks_bar"];
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
@@ -87,13 +92,14 @@ pub struct NavConfig {
     pub address_bar: AddressBar,
     pub new_tab_button: bool,
     pub tab_bar: bool,
-    /// Bookmarks: the star button, `Ctrl+D`, and the bar (shown when there are bookmarks).
-    pub bookmarks_bar: bool,
+    /// Bookmarks: the star button, `Ctrl+D`, and the bookmarks menu. (Called `bookmarks_bar` before the bar became a menu.)
+    #[serde(alias = "bookmarks_bar")]
+    pub bookmarks: bool,
 }
 
 impl Default for NavConfig {
     fn default() -> Self {
-        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true, bookmarks_bar: true }
+        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true, bookmarks: true }
     }
 }
 
@@ -544,6 +550,13 @@ mod tests {
     }
 
     #[test]
+    fn nav_bookmarks_is_the_option_and_the_old_bar_name_still_works() {
+        assert!(parse_config("").unwrap().nav.bookmarks);
+        assert!(!parse_config("nav: { bookmarks: false }").unwrap().nav.bookmarks);
+        assert!(!parse_config("nav: { bookmarks_bar: false }").unwrap().nav.bookmarks, "old configs keep working");
+    }
+
+    #[test]
     fn nav_and_tabs_parse() {
         let c = parse_config("nav: { back: false, address_bar: readonly, tab_bar: false }\ntabs:\n  allow_new: false\n  pinned:\n    - url: https://a.example/\n      scope: [a.example]\n      size: full\n    - url: https://b.example/\n").unwrap();
         assert!(!c.nav.back && c.nav.forward && c.nav.reload && c.nav.new_tab_button && !c.nav.tab_bar);
@@ -568,7 +581,7 @@ mod tests {
         let docs = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/config/workspace.md")).expect("docs/config/workspace.md exists");
         fn fields<T: serde::de::DeserializeOwned>() -> Vec<String> {
             let err = serde_yaml_ng::from_str::<T>("{ __nope__: 1 }").err().unwrap().to_string();
-            err.split("expected").nth(1).unwrap_or("").split('`').skip(1).step_by(2).map(str::to_owned).collect()
+            err.split("expected").nth(1).unwrap_or("").split('`').skip(1).step_by(2).map(str::to_owned).filter(|f| !OPTION_ALIASES.contains(&f.as_str())).collect()
         }
         let mut paths: Vec<String> = fields::<WorkspaceConfig>();
         paths.extend(fields::<NavConfig>().into_iter().map(|f| format!("nav.{f}")));

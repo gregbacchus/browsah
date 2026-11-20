@@ -610,6 +610,29 @@ fn first_label_text(w: &gtk::Widget) -> Option<String> {
     None
 }
 
+/// Every label below `root` that is not in regular weight (menus and popups use regular weight: AGENTS.md, "Menus").
+fn bold_labels(root: &gtk::Widget) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(label) = root.downcast_ref::<gtk::Label>() {
+        let weight = label.pango_context().font_description().map(|f| f.weight());
+        if weight.is_some_and(|w| w != gtk::pango::Weight::Normal) && !label.text().is_empty() {
+            out.push(format!("{:?} {:?}", label.text().to_string(), weight));
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        out.extend(bold_labels(&c));
+        child = c.next_sibling();
+    }
+    out
+}
+
+/// A popup has no bold text.
+fn check_no_bold(r: &mut Report, what: &str, root: &impl IsA<gtk::Widget>) {
+    let bold = bold_labels(root.upcast_ref());
+    r.check(&format!("{what} has no bold text"), bold.is_empty(), || format!("{bold:?}"));
+}
+
 /// The label anywhere below `root` whose text is `text`.
 fn find_label(root: &gtk::Widget, text: &str) -> Option<gtk::Label> {
     if let Some(label) = root.downcast_ref::<gtk::Label>().filter(|label| label.text() == text) {
@@ -1447,6 +1470,14 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
 
 /// Bookmarks belong to a workspace: the star and Ctrl+D toggle them, the bar lists them, clicking
 /// one opens it, and they are still there when the workspace reopens.
+/// The bookmark rows of the window's bookmarks menu: opens it (the list is built when it opens) and closes it again.
+fn bookmark_rows(w: &Shell) -> Vec<gtk::Button> {
+    w.bookmarks_button.popup();
+    let rows = w.bookmark_buttons();
+    w.bookmarks_button.popdown();
+    rows
+}
+
 async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     use gtk::prelude::ActionGroupExt;
     let app = shell.window.application().expect("application");
@@ -1467,7 +1498,18 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     let ok = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().ready))).await;
     r.check("the bookmarks workspace opens", ok, || "not open".into());
     let Some(w) = find() else { return };
-    r.check("a workspace window shows the star and no bar yet", w.star.is_visible() && !w.bookmark_revealer.reveals_child(), || format!("star={} bar={}", w.star.is_visible(), w.bookmark_revealer.reveals_child()));
+    r.check("a workspace window shows the star and the bookmarks menu button, with no bookmarks in it yet", w.star.is_visible() && w.bookmarks_button.is_visible() && bookmark_rows(&w).is_empty(), || format!("star={} menu={}", w.star.is_visible(), w.bookmarks_button.is_visible()));
+    let at_tab_bar = w.tab_bar.start_action_widget().as_ref() == Some(w.bookmarks_button.upcast_ref());
+    r.check("the bookmarks menu button is at the left of the tab bar", at_tab_bar, || format!("{:?}", w.tab_bar.start_action_widget()));
+    {
+        let name = w.bookmarks_button.icon_name();
+        let known = name.as_deref().is_some_and(|n| gtk::IconTheme::for_display(&gtk::prelude::WidgetExt::display(&w.window)).has_icon(n));
+        r.check("the bookmarks menu button has a Lucide icon the theme knows", known && name.as_deref().is_some_and(|n| n.starts_with("browsah-list-star")), || format!("{name:?}"));
+    }
+    w.bookmarks_button.popup();
+    let empty = w.bookmarks_button.popover().and_then(|p| find_button(p.upcast_ref(), "No bookmarks yet"));
+    r.check("the empty menu says so, and the row cannot be clicked", empty.as_ref().is_some_and(|b| !b.is_sensitive()), || format!("{empty:?}"));
+    w.bookmarks_button.popdown();
 
     let tab = w.current().expect("tab");
     tab.view().navigate(&page("b.html"));
@@ -1476,11 +1518,11 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
     let ok = wait_until(5_000, || marks().len() == 1).await;
     r.check("the star bookmarks the page with its title", ok && marks()[0].title == "Page B" && marks()[0].url.ends_with("/b.html"), || format!("{:?}", marks()));
-    r.check("the star fills and the bar appears with the bookmark", w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str()) && w.bookmark_revealer.reveals_child() && w.bookmark_buttons().len() == 1, || {
-        format!("{:?} bar={} buttons={}", w.star.icon_name(), w.bookmark_revealer.reveals_child(), w.bookmark_buttons().len())
+    r.check("the star fills and the bookmarks menu lists the bookmark", w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str()) && bookmark_rows(&w).len() == 1 && w.bookmarks_button.tooltip_text().as_deref() == Some("Bookmarks (1)"), || {
+        format!("{:?} rows={} tip={:?}", w.star.icon_name(), bookmark_rows(&w).len(), w.bookmarks_button.tooltip_text())
     });
 
-    if let Some(button) = w.bookmark_buttons().first() {
+    if let Some(button) = bookmark_rows(&w).first() {
         w.bookmark_menu(button, &page("b.html"));
         let rename = button.last_child().and_downcast::<gtk::Popover>()
             .and_then(|p| find_button(p.upcast_ref(), "Rename bookmark…"));
@@ -1506,14 +1548,14 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     let ok = wait_until(5_000, renamed).await;
     r.check("renaming saves the new title for the same URL", ok, || format!("{:?}", marks()));
     let bar_title = |w: &Shell| {
-        w.bookmark_buttons().first().and_then(|b| b.child()).and_then(|c| c.last_child())
+        bookmark_rows(&w).first().and_then(|b| b.child()).and_then(|c| c.last_child())
             .and_downcast::<gtk::Label>().map(|l| l.text())
     };
-    r.check("the bookmark bar shows the new title", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
+    r.check("the bookmarks menu shows the new title", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
 
     // The menu is an ordinary autohiding popover like the page menu's: after it is shown and closed, nothing of it is left and the
     // window still takes clicks. (A headless run cannot show a real pointer grab or an outside click dismissing it.)
-    if let Some(button) = w.bookmark_buttons().first() {
+    if let Some(button) = bookmark_rows(&w).first() {
         let popover = || button.last_child().and_downcast::<gtk::Popover>();
         for round in 0..2 {
             w.bookmark_menu(button, &page("b.html"));
@@ -1559,7 +1601,7 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     tab.view().navigate(&page("a.html"));
     let ok = wait_until(15_000, || tab.state.borrow().title == "Page A" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_PLUS).as_str())).await;
     r.check("another page shows an empty star again", ok, || format!("{:?}", w.star.icon_name()));
-    if let Some(b) = w.bookmark_buttons().first() {
+    if let Some(b) = bookmark_rows(&w).first() {
         b.emit_clicked();
     }
     let ok = wait_until(15_000, || tab.state.borrow().title == "Page B").await;
@@ -1569,24 +1611,45 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
     w.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"bm".to_variant()));
-    let ok = wait_until(15_000, || find().is_some_and(|s| s.bookmark_buttons().len() == 1 && s.bookmark_revealer.reveals_child())).await;
-    r.check("bookmarks are still there when the workspace reopens", ok, || "bar empty".into());
+    let ok = wait_until(15_000, || find().is_some_and(|s| bookmark_rows(&s).len() == 1)).await;
+    r.check("bookmarks are still there when the workspace reopens", ok, || "menu empty".into());
     let Some(w) = find() else { return };
 
     r.check("the renamed title survives reopening", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
 
-    let weight = label_weight(w.bookmark_bar.upcast_ref(), "My bookmark");
-    r.check("bookmark titles in the bar have regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
+    bookmark_rows(&w);
+    let menu_rows = w.bookmarks_button.popover();
+    let weight = menu_rows.as_ref().and_then(|p| label_weight(p.upcast_ref(), "My bookmark"));
+    r.check("bookmark titles in the menu have regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
+    r.check("each bookmark row has an icon and a left-aligned title", bookmark_rows(&w).first().and_then(|b| b.child()).and_downcast::<gtk::Box>().is_some_and(|row| row.first_child().is_some_and(|lead| lead.is::<gtk::Image>() || lead.is::<gtk::Box>()) && row.last_child().and_downcast::<gtk::Label>().is_some_and(|l| l.xalign() == 0.0)), || "row layout".into());
+    if let Some(p) = &menu_rows {
+        check_no_bold(r, "the bookmarks menu", p);
+    }
     glib::timeout_future(Duration::from_millis(350)).await;
-    shot(&w.bookmark_bar, "bookmark-bar");
+    shot(&w.window, "bookmarks-button-window");
+    // Headless Wayland never maps a popup: show the menu's rows in an ordinary window for the picture.
+    w.bookmarks_button.popup();
+    if let Some(content) = w.bookmarks_button.popover().and_then(|p| p.child().map(|c| (p, c))) {
+        let (p, content) = content;
+        p.set_child(gtk::Widget::NONE);
+        let holder = gtk::Window::builder().child(&content).default_width(10).resizable(false).build();
+        holder.present();
+        let _ = wait_until(3_000, || content.width() > 0).await;
+        glib::timeout_future(Duration::from_millis(400)).await;
+        shot(&holder, "bookmarks-menu");
+        holder.set_child(gtk::Widget::NONE);
+        holder.destroy();
+        p.set_child(Some(&content));
+    }
+    w.bookmarks_button.popdown();
 
     // Ctrl+D on a bookmarked page removes the bookmark and hides the empty bar.
     let tab = w.current().expect("tab");
     let ok = wait_until(15_000, || tab.state.borrow().title == "Page B" && w.star.icon_name().as_deref() == Some(crate::icons::name(&crate::icons::STAR_FILLED).as_str())).await;
     r.check("the restored bookmarked page shows a filled star", ok, || format!("{:?} {:?}", tab.state.borrow().title, w.star.icon_name()));
     let _ = WidgetExt::activate_action(&w.window, "win.bookmark-page", None);
-    let ok = wait_until(5_000, || marks().is_empty() && !w.bookmark_revealer.reveals_child()).await;
-    r.check("the star removes the bookmark and hides the empty bar", ok, || format!("{:?} bar={}", marks(), w.bookmark_revealer.reveals_child()));
+    let ok = wait_until(5_000, || marks().is_empty() && bookmark_rows(&w).is_empty()).await;
+    r.check("the star removes the bookmark and the menu is empty again", ok, || format!("{:?} rows={}", marks(), bookmark_rows(&w).len()));
 
     w.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
@@ -2682,6 +2745,7 @@ async fn run_downloads(shell: &Rc<Shell>, r: &mut Report) {
         let pop = da.downloads.button.popover().expect("popover");
         pop.popup();
         glib::timeout_future(Duration::from_millis(400)).await;
+        check_no_bold(r, "the downloads list", &pop);
         shot(&pop, "downloads-finished");
         pop.popdown();
     }
@@ -3769,6 +3833,7 @@ async fn check_tab_menu(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the tab menu is an autohiding popover on the tab bar", menu.is_autohide() && menu.parent().as_ref() == Some(shell.tab_bar.upcast_ref()), || format!("autohide {} parent {:?}", menu.is_autohide(), menu.parent()));
     check_menu_rows(&menu, r, "the tab menu", &["Copy address", "Save as PDF\u{2026}", "Print\u{2026}", "Close tab"]);
     shot(&shell.window, "tab-menu-window");
+    check_no_bold(r, "the tab menu", &menu);
     shot(&menu, "tab-menu");
     shell.show_tab_menu(&shell.tab_bar, 60, 20, Some(&page));
     glib::timeout_future(Duration::from_millis(300)).await; // the replaced one is unparented from an idle callback
@@ -3815,6 +3880,7 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     }
     r.check("main-menu items have regular weight", ["New window", "Open workspace", "Find in page"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("New window: {:?}, Open workspace: {:?}", weight("New window"), weight("Open workspace")));
     if let Some(p) = &menu {
+        check_no_bold(r, "the main menu", p);
         shot(p, "main-menu-popover");
     }
     shell.menu_button.popdown();
@@ -4115,6 +4181,7 @@ async fn run_picker(shell: &Rc<Shell>, r: &mut Report) {
     r.check("last used order: the most recent first, never used last", order_of(&w.picker) == ["pk1", "pk2", "pk3"], || format!("{:?}", order_of(&w.picker)));
     glib::timeout_future(Duration::from_millis(400)).await;
     shot(&w.window, "workspace-picker-window");
+    check_no_bold(r, "the workspace picker", &w.picker.panel);
     shot(&w.picker.panel, "workspace-picker-recent");
     let weight = |label| label_weight(w.picker.panel.upcast_ref(), label);
     r.check("picker choices and the selected order have regular weight", ["No workspace", "Zebra", "Recent"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("No workspace: {:?}, Zebra: {:?}, Recent: {:?}", weight("No workspace"), weight("Zebra"), weight("Recent")));
@@ -4680,10 +4747,9 @@ async fn run_favicon(shell: &Rc<Shell>, r: &mut Report) {
     }
     ws.rebuild_bookmarks();
     glib::timeout_future(Duration::from_millis(600)).await;
-    fn has_image(w: &gtk::Widget) -> bool {
-        w.downcast_ref::<gtk::Image>().is_some() || { let mut c = w.first_child(); let mut found = false; while let Some(ch) = c { found |= has_image(&ch); c = ch.next_sibling(); } found }
-    }
-    r.check("a bookmark in the bookmark bar shows the site's icon", has_image(ws.bookmark_bar.upcast_ref()), || "no icon".into());
+    // The site's own icon is a picture (a texture); the fallback is a named theme icon.
+    let favicon_lead = bookmark_rows(&ws).first().and_then(|b| b.child()).and_then(|row| row.first_child()).and_downcast::<gtk::Image>().is_some_and(|i| i.icon_name().is_none() && i.paintable().is_some());
+    r.check("a bookmark in the bookmarks menu shows the site's icon", favicon_lead, || "no icon".into());
     shot(&ws.window, "favicon-bookmarks");
     if let Some(st) = super::store() {
         let _ = st.record_visit(None, &known, "Fav page", 1_700_000_000);
@@ -4756,6 +4822,7 @@ async fn run_swept(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(500)).await;
     let weight = label_weight(w.swept.popover.upcast_ref(), "Restore all");
     r.check("the swept-tabs menu action has regular weight", weight == Some(gtk::pango::Weight::Normal), || format!("{weight:?}"));
+    check_no_bold(r, "the recently swept list", &w.swept.popover);
     shot(&w.swept.popover, "recently-swept");
     w.swept.popover.popdown();
 
@@ -4908,6 +4975,7 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
         glib::timeout_future(Duration::from_millis(350)).await;
         let label = find_label(menu.upcast_ref(), long_title);
         r.check("the history menu is wide enough to show a long page title", menu.width() >= 360 && label.is_some_and(|label| !label.layout().is_ellipsized()), || format!("menu width {}", menu.width()));
+        check_no_bold(r, "the history menu", menu);
         shot(menu, "navigation-history");
     }
     tab.hist_back.borrow_mut().pop();
@@ -5177,6 +5245,7 @@ async fn run_ctxmenu(shell: &Rc<Shell>, r: &mut Report) {
     let page_items = ["Back", "Forward", "Reload", "Reload ignoring the cache", "Find in page", "Save as PDF\u{2026}", "Print\u{2026}", "Copy page address", "View page source", "Inspect"];
     r.check("the page's menu has navigation, page actions and developer items", menu.as_ref().is_some_and(|p| has(p, &page_items)), || format!("missing {:?}", menu.as_ref().map(|p| missing(p, &page_items))));
     if let Some(p) = &menu {
+        check_no_bold(r, "the page menu", p);
         shot(p, "ctxmenu-page");
     }
     let tabs = shell.tabs().len();

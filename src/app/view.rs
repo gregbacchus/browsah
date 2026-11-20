@@ -3296,7 +3296,7 @@ impl BrowserView {
             }
             let icon = [
                 (M::MENU_ID_BACK, "arrow-left"), (M::MENU_ID_FORWARD, "arrow-right"), (M::MENU_ID_RELOAD, "rotate-cw"), (M::MENU_ID_RELOAD_NOCACHE, "rotate-cw"),
-                (M::MENU_ID_STOPLOAD, "x"), (M::MENU_ID_UNDO, "undo-2"), (M::MENU_ID_REDO, "redo-2"), (M::MENU_ID_CUT, "scissors"), (M::MENU_ID_COPY, "copy"),
+                (M::MENU_ID_STOPLOAD, "circle-stop"), (M::MENU_ID_UNDO, "undo-2"), (M::MENU_ID_REDO, "redo-2"), (M::MENU_ID_CUT, "scissors"), (M::MENU_ID_COPY, "copy"),
                 (M::MENU_ID_PASTE, "clipboard-paste"), (M::MENU_ID_DELETE, "trash-2"), (M::MENU_ID_SELECT_ALL, "text-select"), (M::MENU_ID_PRINT, "printer"),
                 (M::MENU_ID_VIEW_SOURCE, "code-xml"),
             ]

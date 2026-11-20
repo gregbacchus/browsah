@@ -726,7 +726,7 @@ mod tests {
             .expect("config structs deny unknown fields in test builds")
             .to_string();
         let after = err.split("expected").nth(1).unwrap_or("");
-        after.split('`').skip(1).step_by(2).map(str::to_owned).collect()
+        after.split('`').skip(1).step_by(2).map(str::to_owned).filter(|f| !crate::workspace::OPTION_ALIASES.contains(&f.as_str())).collect()
     }
 
     /// Every config option as a dotted path (`rendering.frame_rate`). When you add a config

@@ -37,7 +37,7 @@ selection) are saved in the profile's database (`data.sqlite`), with a screensho
 next time it opens, the tabs come back: the selected one loads at once, and the others stay asleep
 (no browser process) behind a blurred screenshot until you first show them. Blank tabs are not
 remembered, and pinned tabs come from this file each time. Bookmarks are stored there too, per
-workspace. Right-click a bookmark in the bar and choose **Rename bookmark…** to change its name.
+workspace. Right-click a bookmark in the bookmarks menu (the list-with-a-star button at the left of the tab bar) and choose **Rename bookmark…** to change its name.
 Deleting a workspace (`browsah workspace remove`) deletes its tabs and bookmarks.
 
 ## Home page
@@ -81,7 +81,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `nav.address_bar` | `editable`, `readonly` or `hidden` | `editable` | `readonly` shows the address but cannot be typed in; `hidden` shows the page title instead (right-click the title for the tab menu, which has *Copy address*). In every case the address can be copied with `Ctrl+Alt+C`, the main menu's *Copy page address* or the tab menu's *Copy address*. |
 | `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. It is also hidden whenever the address bar is `readonly` or `hidden` (there is nothing to type a new tab's address in), and when `tabs.allow_new` is `false`. `Ctrl+T` still works where tabs are allowed. |
 | `nav.tab_bar` | bool | `true` | Show the tab bar. Hide it for a window with a single pinned tab. |
-| `nav.bookmarks_bar` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a bar under the tabs lists the bookmarks (it is shown only when there are some). Bookmarks belong to the workspace; ephemeral windows have none. |
+| `nav.bookmarks` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a **bookmarks menu** button (a list with a small star) lists them. The button sits at the left of the tab bar (at the left of the header when `nav.tab_bar` is `false`); click a bookmark to open it here, middle-click or Ctrl+click for a new tab, right-click for *Open in new tab*, *Rename bookmark…* and *Remove bookmark*. The menu says so when there are none. Bookmarks belong to the workspace; ephemeral windows have none. Applies to windows opened after the change. Called `nav.bookmarks_bar` until the bar became a menu: the old name still works. |
 | `tabs` | map | see below | Rules for the window's tabs. |
 | `tabs.allow_new` | bool | `true` | When `false`, tabs cannot be opened from the window (no `Ctrl+T`, no "+" button, links that would open a tab open in an ephemeral window instead); tabs can only be sent to the workspace. |
 | `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |

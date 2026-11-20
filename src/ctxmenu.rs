@@ -437,7 +437,7 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
         back.enabled = ctx.can_back;
         let mut forward = item("forward", "Forward", "arrow-right", Action::Page(PageCmd::Forward));
         forward.enabled = ctx.can_forward;
-        let reload = if ctx.loading { item("stop", "Stop", "x", Action::Page(PageCmd::Stop)) } else { item("reload", "Reload", "rotate-cw", Action::Page(PageCmd::Reload)) };
+        let reload = if ctx.loading { item("stop", "Stop", "circle-stop", Action::Page(PageCmd::Stop)) } else { item("reload", "Reload", "rotate-cw", Action::Page(PageCmd::Reload)) };
         groups.push(vec![Entry::Row(vec![back, forward, reload]), Entry::Item(item("hard-reload", "Reload ignoring the cache", "refresh-cw-off", Action::Page(PageCmd::HardReload)))]);
         let mut g = Vec::new();
         if !ctx.in_modal {

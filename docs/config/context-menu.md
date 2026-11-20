@@ -11,7 +11,7 @@ the state matters (Undo, Paste).
 | **Video or audio** | *Play* or *Pause*, *Mute* or *Unmute*, *Loop*, *Show controls*, *Open video in new tab*, *Save video as…*, *Copy video address* |
 | **Selected text** | *Copy*, *Search for "…"* (with `search_url`), *Open …* (when the selection reads like an address), *Copy link to selected text* (a `#:~:text=` link), *Select all* |
 | **An editable field** | spelling suggestions and *Add to dictionary* (when the spell checker has any), *Undo*, *Redo*, *Cut*, *Copy*, *Paste*, *Delete*, *Select all* |
-| **The page** | Back, Forward, Reload (Stop while loading) as a row, *Reload ignoring the cache*, *Bookmark this page* (a workspace with a bookmarks bar), *Find in page*, *Save as PDF…*, *Print…*, *Copy page address*, *Install as web app…* (in regular browser windows), *Send to workspace ▸*, *Open frame in new tab* and *Copy frame address* (inside a frame), *View page source* |
+| **The page** | Back, Forward, Reload (Stop while loading) as a row, *Reload ignoring the cache*, *Bookmark this page* (a workspace with bookmarks on), *Find in page*, *Save as PDF…*, *Print…*, *Copy page address*, *Install as web app…* (in regular browser windows), *Send to workspace ▸*, *Open frame in new tab* and *Copy frame address* (inside a frame), *View page source* |
 | **Anything** | *Inspect* (opens the developer tools on the element under the pointer) |
 
 Back and Forward in the menu use the tab's saved list as well as the browser's own (see [tab history](../research/tab-history.md)).

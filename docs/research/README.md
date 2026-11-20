@@ -10,6 +10,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | Note | Date | Question | Short answer |
 |---|---|---|---|
 | [2026-11-20-teams-camera-microphone.md](2026-11-20-teams-camera-microphone.md) | 2026-11-20 | Why can camera and microphone fail in Teams although config allows them? | Probably Chromium's own state was not mirrored for them (pages that look first saw "prompt"/no devices); now mirrored. Not reproduced: no devices or Teams here. |
+| [bookmarks-menu.md](bookmarks-menu.md) | 2026-11-21 | Can the bookmarks bar become a menu? | A star button at the left of the tab bar lists them as icon rows; `nav.bookmarks_bar` is now `nav.bookmarks` (old name still accepted). Real right-click hand-off not verified. |
 | [menus-icons-and-tab-menu.md](menus-icons-and-tab-menu.md) | 2026-11-21 | Can the tab menu (and the other native menus) have icons? | Native GTK menus cannot show icons (measured); all menus are now drawn by `menu.rs`, and the tab bar has no menu model so only our popover opens. Real pointer grab not verified. |
 | [chromium-error-page-theme.md](chromium-error-page-theme.md) | 2026-11-20 | Do Chromium network error pages use the tab’s theme? | Both palettes painted correctly for a closed loopback port on GNOME Wayland. |
 | [webapp-manifest-updates.md](webapp-manifest-updates.md) | 2026-11-20 | How can a site’s manifest update an installed app safely? | Preview changes and update only values that still match the last import. |

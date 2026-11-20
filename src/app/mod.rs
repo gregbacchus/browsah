@@ -295,9 +295,9 @@ pub struct Shell {
     menu_page: RefCell<Option<adw::TabPage>>,
     /// The title menu popover while it is open.
     title_popover: RefCell<Option<gtk::Popover>>,
-    /// Bookmarks: the bar's container and the star button (workspace windows only).
-    bookmark_bar: gtk::Box,
-    bookmark_revealer: gtk::Revealer,
+    /// Bookmarks (workspace windows only): the star button, and the menu button listing them (at the start of the tab bar, or of the
+    /// header when there is no tab bar).
+    bookmarks_button: gtk::MenuButton,
     star: gtk::Button,
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
@@ -603,7 +603,7 @@ impl Shell {
     // ---- bookmarks ------------------------------------------------------------------------------
 
     fn bookmark_workspace(&self) -> Option<&str> {
-        self.workspace.as_ref().filter(|_| self.nav.bookmarks_bar).map(|w| w.id.as_str())
+        self.workspace.as_ref().filter(|_| self.nav.bookmarks).map(|w| w.id.as_str())
     }
 
     /// The address and title to bookmark for the selected tab (not blank pages).
@@ -635,28 +635,54 @@ impl Shell {
         self.star.set_tooltip_text(Some(if marked { "Remove bookmark (Ctrl+D)" } else { "Bookmark this page (Ctrl+D)" }));
     }
 
-    /// Show the workspace's bookmarks in the bar (hidden when there are none).
+    /// The bookmarks changed: refresh the menu button's tooltip (the list itself is built when the menu opens).
     fn rebuild_bookmarks(&self) {
         let (Some(ws), Some(store)) = (self.bookmark_workspace(), store()) else { return };
-        while let Some(child) = self.bookmark_bar.first_child() {
-            self.bookmark_bar.remove(&child);
+        let n = store.bookmarks(ws).len();
+        self.bookmarks_button.set_tooltip_text(Some(&match n {
+            0 => "Bookmarks".to_owned(),
+            n => format!("Bookmarks ({n})"),
+        }));
+    }
+
+    /// Build the bookmarks menu afresh each time it opens (`menu::row` rows, like every menu): the workspace's bookmarks with their
+    /// page icons. Click: open here. Middle click or Ctrl+click: a new tab. Right click: the bookmark's own menu (rename, remove).
+    fn setup_bookmarks_menu(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.bookmarks_button.set_create_popup_func(move |button| {
+            let Some(s) = weak.upgrade() else { return };
+            button.set_popover(Some(&s.bookmarks_popover()));
+        });
+    }
+
+    fn bookmarks_popover(self: &Rc<Self>) -> gtk::Popover {
+        let popover = gtk::Popover::new();
+        popover.set_has_arrow(false);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.set_width_request(260);
+        let marks = match (self.bookmark_workspace(), store()) {
+            (Some(ws), Some(store)) => store.bookmarks(ws),
+            _ => Vec::new(),
+        };
+        if marks.is_empty() {
+            list.append(&menu::row("No bookmarks yet", &menu::icon_widget(Some("star")), None, false, false, false));
         }
-        let marks = store.bookmarks(ws);
         let window = self.window.downgrade();
         for b in &marks {
-            let label = gtk::Label::builder().label(b.title.as_str()).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build();
-            let content = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).build();
-            if let Some(icon) = favicon::small_image(&b.url) {
-                content.append(&icon);
-            }
-            content.append(&label);
-            let button = gtk::Button::builder().child(&content).has_frame(false).tooltip_text(b.url.as_str()).build();
+            let lead: gtk::Widget = match favicon::small_image(&b.url) {
+                Some(icon) => icon.upcast(),
+                None => menu::icon_widget(Some("link-2")),
+            };
+            let button = menu::row(&b.title, &lead, None, false, true, false);
+            button.set_tooltip_text(Some(&b.url));
             button.add_css_class("bookmark");
             let url = b.url.clone();
-            // Click: open here. Middle click or Ctrl+click: a new tab. Right click: a small menu.
             button.connect_clicked({
-                let (window, url) = (window.clone(), url.clone());
+                let (window, url, popover) = (window.clone(), url.clone(), popover.downgrade());
                 move |_| {
+                    if let Some(p) = popover.upgrade() {
+                        p.popdown();
+                    }
                     if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
                         s.open_bookmark(&url, false);
                     }
@@ -664,28 +690,37 @@ impl Shell {
             });
             let gesture = gtk::GestureClick::builder().button(0).build();
             gesture.connect_pressed({
-                let (window, url, button) = (window.clone(), url.clone(), button.downgrade());
+                let (window, url, popover) = (window.clone(), url.clone(), popover.downgrade());
                 move |g, _, _, _| {
                     let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) else { return };
+                    let close = || {
+                        if let Some(p) = popover.upgrade() {
+                            p.popdown();
+                        }
+                    };
                     match g.current_button() {
                         2 => {
                             g.set_state(gtk::EventSequenceState::Claimed);
+                            close();
                             s.open_bookmark(&url, true);
                         }
                         3 => {
+                            // One popover at a time: close this list, then open the bookmark's menu on the menu button.
                             g.set_state(gtk::EventSequenceState::Claimed);
-                            if let Some(button) = button.upgrade() {
-                                s.bookmark_menu(&button, &url);
-                            }
+                            close();
+                            let url = url.clone();
+                            glib::idle_add_local_once(move || s.bookmark_menu(&s.bookmarks_button, &url));
                         }
                         _ => {}
                     }
                 }
             });
             button.add_controller(gesture);
-            self.bookmark_bar.append(&button);
+            list.append(&button);
         }
-        self.bookmark_revealer.set_reveal_child(!marks.is_empty());
+        let scroller = gtk::ScrolledWindow::builder().child(&list).propagate_natural_height(true).propagate_natural_width(true).max_content_height(420).hscrollbar_policy(gtk::PolicyType::Never).build();
+        popover.set_child(Some(&scroller));
+        popover
     }
 
     /// A bookmark was activated: open it in the selected tab, or in a new tab if asked (and allowed).
@@ -699,7 +734,7 @@ impl Shell {
 
     /// The bookmark's right-click menu, in the page menu's style (`ctxmenu::row_button`: left-aligned labels, Lucide icons) and
     /// made like it: an ordinary autohiding `Popover` parented to the button, unparented when closed.
-    pub(super) fn bookmark_menu(self: &Rc<Self>, button: &gtk::Button, url: &str) {
+    pub(super) fn bookmark_menu(self: &Rc<Self>, button: &impl IsA<gtk::Widget>, url: &str) {
         use crate::ctxmenu::{Action, Item, PageCmd};
         let popover = gtk::Popover::new();
         popover.set_parent(button);
@@ -790,15 +825,24 @@ impl Shell {
         });
     }
 
-    /// The bookmark buttons currently in the bar (for the self-test).
+    /// The bookmark rows of the menu as last built (for the self-test: open the menu first).
     pub fn bookmark_buttons(&self) -> Vec<gtk::Button> {
-        let mut out = Vec::new();
-        let mut child = self.bookmark_bar.first_child();
-        while let Some(c) = child {
-            child = c.next_sibling();
-            if let Ok(b) = c.downcast::<gtk::Button>() {
-                out.push(b);
+        fn collect(widget: &gtk::Widget, out: &mut Vec<gtk::Button>) {
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                child = c.next_sibling();
+                if let Ok(b) = c.clone().downcast::<gtk::Button>() {
+                    if b.has_css_class("bookmark") {
+                        out.push(b);
+                        continue;
+                    }
+                }
+                collect(&c, out);
             }
+        }
+        let mut out = Vec::new();
+        if let Some(p) = self.bookmarks_button.popover() {
+            collect(p.upcast_ref(), &mut out);
         }
         out
     }
@@ -1811,7 +1855,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let back = icon_button(crate::icons::ARROW_LEFT, "Back (Alt+Left)", "win.back");
     let forward = icon_button(crate::icons::ARROW_RIGHT, "Forward (Alt+Right)", "win.forward");
     let reload = icon_button(crate::icons::ROTATE_CW, "Reload (Ctrl+R)", "win.reload");
-    let stop = icon_button("process-stop-symbolic", "Stop", "win.stop");
+    let stop = icon_button(crate::icons::CIRCLE_STOP, "Stop", "win.stop");
     stop.set_visible(false);
 
     let entry = gtk::Entry::builder()
@@ -1859,8 +1903,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         crate::workspace::AddressBar::Hidden => {}
     }
 
-    // Bookmarks (workspace windows with `nav.bookmarks_bar`): a star in the header and a bar under the tabs.
-    let bookmarks_on = workspace.is_some() && nav.bookmarks_bar;
+    // Bookmarks (workspace windows with `nav.bookmarks`): a star in the header and a bar under the tabs.
+    let bookmarks_on = workspace.is_some() && nav.bookmarks;
     let star = icon_button(crate::icons::STAR_PLUS, "Bookmark this page (Ctrl+D)", "win.bookmark-page");
     star.set_visible(bookmarks_on);
     // The main menu (not in a web app's window, which shows only its page).
@@ -1883,9 +1927,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     header.pack_end(&star);
     let extensions_ui = extensions::Ui::new();
     header.pack_end(&extensions_ui.bar);
-    let bookmark_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).margin_start(6).margin_end(6).margin_top(2).margin_bottom(2).build();
-    let bookmark_scroll = gtk::ScrolledWindow::builder().child(&bookmark_bar).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::Automatic).build();
-    let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
+    let bookmarks_button = gtk::MenuButton::builder().tooltip_text("Bookmarks").visible(bookmarks_on).build();
+    crate::icons::bind(&bookmarks_button, crate::icons::LIST_STAR);
 
     let tab_view = adw::TabView::new();
     // No menu model on the view: the tab menu is ours (`Shell::show_tab_menu`), and libadwaita would open its own popover as well.
@@ -1897,6 +1940,12 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     new_tab_button.set_visible(nav.new_tab_button && ws_config.tabs.allow_new && nav.address_bar == crate::workspace::AddressBar::Editable);
     tab_bar.set_end_action_widget(Some(&new_tab_button));
     tab_bar.set_visible(nav.tab_bar);
+    // The bookmarks menu sits at the left of the tab bar's row, or at the left of the header when the tab bar is hidden.
+    if nav.tab_bar {
+        tab_bar.set_start_action_widget(Some(&bookmarks_button));
+    } else {
+        header.pack_start(&bookmarks_button);
+    }
     // A web app with no address bar has room in its header: the tabs go there, and only while there is more than one (with a
     // single tab the header shows the title as usual). Otherwise the tab bar is a row of its own under the header.
     let tabs_in_header = workspace.as_ref().is_some_and(|w| w.is_app()) && nav.address_bar == crate::workspace::AddressBar::Hidden && nav.tab_bar;
@@ -1917,7 +1966,6 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     if !tabs_in_header {
         toolbar.add_top_bar(&tab_bar);
     }
-    toolbar.add_top_bar(&bookmark_revealer);
     let find_bar = find::Bar::new();
     toolbar.add_bottom_bar(&find_bar.revealer);
     // The page sits in a frame: in a coloured window the colour shows around it (see `workspace_css`).
@@ -2015,8 +2063,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         tab_menu: tab_menu.clone(),
         menu_page: RefCell::new(None),
         title_popover: RefCell::new(None),
-        bookmark_bar: bookmark_bar.clone(),
-        bookmark_revealer: bookmark_revealer.clone(),
+        bookmarks_button: bookmarks_button.clone(),
         star: star.clone(),
         color_css: RefCell::new(None),
         tab_width_css: RefCell::new(None),
@@ -2695,6 +2742,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         remember_app_window(&window, &w.id);
     }
     shell.purge_stale_session_cookies();
+    shell.setup_bookmarks_menu();
     shell.rebuild_bookmarks();
 
     // A workspace's pinned tabs come first. A web app has one tab, its start page, which opens on the address it was given
@@ -3235,7 +3283,6 @@ const WORKSPACE_PICKER_CSS: &str = ".browsah-workspace-picker { background-color
 const MENU_ITEM_CSS: &str = "
     popover button, popover button label,
     popover row, popover row label,
-    button.bookmark label,
     .browsah-workspace-picker button, .browsah-workspace-picker button label {
         font-weight: normal;
     }

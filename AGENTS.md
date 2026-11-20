@@ -78,8 +78,9 @@ All menus look and behave the same. GTK's own `PopoverMenu` cannot show an icon 
   for every row, never a bare `gtk::Button` with a label (that centres the label and has no icon).
 - **Every row has a Lucide icon** (`menu::icon_widget(Some(id))`; `None` is a 16 px spacer so labels line up, used only when no icon
   fits). New icons: see the icons rule below. Labels are left-aligned (`xalign(0)`), ellipsized, in **regular weight**
-  (`MENU_ITEM_CSS` covers every popover; docs/research/menu-item-weight.md). **No bold items.** Bold is allowed only for a section
-  heading that is not a choice (the "Recently swept tabs" title) and needs a reason in a comment.
+  (`MENU_ITEM_CSS` covers every popover; docs/research/menu-item-weight.md). **No bold text in any popup or menu**, headings
+  included (use `dim-label`/`caption` to set a heading apart). `check_no_bold` in `selftest.rs` walks every label of a popup and fails on
+  any that is not regular weight: call it for each new popup.
 - **One popover per click.** The popover is an ordinary autohiding `Popover` with `has_arrow(false)`, `halign(Start)` at a pointer
   position, parented by the caller (`set_parent`), unparented when `closed` (from an idle callback if the handler runs inside GTK's
   closing), replacing any earlier one. Run the action, then `popdown()`. Never open a second popover for the same click and never
@@ -87,7 +88,7 @@ All menus look and behave the same. GTK's own `PopoverMenu` cannot show an icon 
   tab menu broke the pop-up grab that way, docs/research/tab-menu-grab.md). The tab bar therefore has **no** menu model;
   `Shell::show_tab_menu` is called from right click and long press on a tab and the menu key on the bar.
 - **Test it:** add a `shot(...)` and look at it, and check rows with `check_menu_rows` in `selftest.rs` (icon, left alignment,
-  regular weight). A headless run cannot show a real pointer grab, a click outside or Escape: say so, and ask for a look on
+  regular weight). A scripted run (synthetic input, no real pointer serial) cannot show a real pointer grab, a click outside or Escape: say so, and ask for a look on
   real GNOME when you change how a popover is opened or closed.
 
 ## Rule: record findings in docs/research/

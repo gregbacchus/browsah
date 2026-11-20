@@ -22,11 +22,13 @@ derived from Feather are MIT; both texts are kept in `assets/icons/lucide/LICENS
 | Workspace picker | `layout-grid-circles` (was `swatch-book`; `layout-grid` was another alternative) |
 | History: Visited, Recently closed | `rotate-ccw-clock`, `trash` |
 | A tab's status marker: unsaved work, playing | `pen-line`, `volume-2` |
+| Bookmarks menu button | `list-star`: `list-video` with its triangle replaced by a small filled star (`list-star.svg`, modified). The header star and the star icons in lists are unchanged |
+| Stop (toolbar, page menu) | `circle-stop` with the square filled instead of stroked (`circle-stop.svg`, modified; `fill` colour is set with the stroke colour) |
 | Recently swept button | the broom with sparkles supplied for it (`swept-broom.svg`; Lucide's own `brush-cleaning` and `broom-sparkles` are different drawings) |
 
-Not converted yet, so still the stock symbolic icons: stop, new tab, the downloads list's row buttons, find bar, tab group and
+Not converted yet, so still the stock symbolic icons: new tab, the downloads list's row buttons, find bar, tab group and
 pinned-tab icons, the window buttons. When converting, add the file and a line in `src/icons.rs`; the toolbar will look uneven until
-stop and new tab follow.
+new tab follows.
 
 ## How it works
 

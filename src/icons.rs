@@ -61,6 +61,8 @@ icon!(SCISSORS, "scissors", "edit-cut-symbolic");
 icon!(CLIPBOARD_PASTE, "clipboard-paste", "edit-paste-symbolic");
 icon!(TRASH_2, "trash-2", "edit-delete-symbolic");
 icon!(X, "x", "process-stop-symbolic");
+icon!(CIRCLE_STOP, "circle-stop", "process-stop-symbolic");
+icon!(LIST_STAR, "list-star", "starred-symbolic");
 icon!(REFRESH_CW_OFF, "refresh-cw-off", "view-refresh-symbolic");
 icon!(FILE_DOWN, "file-down", "document-save-symbolic");
 icon!(PRINTER, "printer", "document-print-symbolic");
@@ -77,7 +79,7 @@ icon!(CHEVRON_LEFT, "chevron-left", "go-previous-symbolic");
 /// The bookmarked star: Lucide's star painted in.
 pub const STAR_FILLED: Icon = Icon { id: "star-filled", filled: true, ..STAR };
 
-pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, LAYOUT_GRID_CIRCLES, ROTATE_CCW_CLOCK, TRASH, PEN_LINE, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
+pub const ALL: &[Icon] = &[ROTATE_CW, ARROW_LEFT, ARROW_RIGHT, STAR_PLUS, STAR, STAR_FILLED, ARROW_DOWN_TO_LINE, MENU, LAYOUT_GRID_CIRCLES, ROTATE_CCW_CLOCK, TRASH, PEN_LINE, SWEPT_BROOM, EXTERNAL_LINK, APP_WINDOW, USERS, PICTURE_IN_PICTURE_2, LINK, LINK_2, TEXT_CURSOR, DOWNLOAD, IMAGE, COPY, SEARCH, TEXT_SELECT, BOOK_PLUS, UNDO_2, REDO_2, SCISSORS, CLIPBOARD_PASTE, TRASH_2, X, CIRCLE_STOP, LIST_STAR, REFRESH_CW_OFF, FILE_DOWN, PRINTER, CODE_XML, BUG, PLAY, PAUSE, VOLUME_X, VOLUME_2, REPEAT, SLIDERS_HORIZONTAL, CHEVRON_RIGHT, CHEVRON_LEFT];
 
 /// The icon with this Lucide id.
 pub fn by_id(id: &str) -> Option<Icon> {
@@ -93,6 +95,7 @@ pub fn render(icon: &Icon, color: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .replace("stroke=\"currentColor\"", &format!("stroke=\"{color}\""))
+        .replace("fill=\"currentColor\"", &format!("fill=\"{color}\""))
         .replace("stroke-width=\"2\"", &format!("stroke-width=\"{STROKE}\""))
         .replacen("<svg", &format!("<svg width=\"{SIZE}\" height=\"{SIZE}\""), 1);
     if icon.filled {
@@ -333,6 +336,20 @@ mod tests {
             assert!(dir.join(format!("{file}.svg")).is_file(), "{file}.svg");
             assert_eq!(by_id(i.id).map(|x| x.id), Some(i.id));
         }
+    }
+
+    #[test]
+    fn the_stop_icon_has_a_filled_square_in_a_stroked_circle() {
+        let svg = render(&CIRCLE_STOP, "#abcdef");
+        assert!(svg.contains("<rect") && svg.contains("fill=\"#abcdef\"") && !svg.contains("currentColor"), "{svg}");
+        assert_eq!(svg.matches("fill=\"#abcdef\"").count(), 1, "only the square is filled: {svg}");
+    }
+
+    #[test]
+    fn the_bookmarks_icon_is_a_list_with_one_filled_star() {
+        let svg = render(&LIST_STAR, "#abcdef");
+        assert_eq!(svg.matches("fill=\"#abcdef\"").count(), 1, "only the star is filled: {svg}");
+        assert!(svg.contains("M21 5H3") && !svg.contains("currentColor"), "{svg}");
     }
 
     #[test]

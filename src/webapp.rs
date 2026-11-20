@@ -116,7 +116,7 @@ pub fn window_config(app: AppConfig) -> WorkspaceConfig {
         // The app's own choice of the four controls; the tab bar follows `multiple_tabs`, and there is no new-tab button or bookmarks.
         AppDisplay::Custom => {
             let n = app.nav.clone().unwrap_or_default();
-            NavConfig { back: n.back, forward: n.forward, reload: n.reload, address_bar: n.address_bar, new_tab_button: false, tab_bar: app.multiple_tabs, bookmarks_bar: false }
+            NavConfig { back: n.back, forward: n.forward, reload: n.reload, address_bar: n.address_bar, new_tab_button: false, tab_bar: app.multiple_tabs, bookmarks: false }
         }
         display => NavConfig {
             address_bar: match display {
@@ -126,7 +126,7 @@ pub fn window_config(app: AppConfig) -> WorkspaceConfig {
             },
             new_tab_button: false, // an app's tabs come from its links (Ctrl+click, "open in new tab"), not from a button
             tab_bar: display == AppDisplay::Browser || app.multiple_tabs,
-            bookmarks_bar: false,
+            bookmarks: false,
             ..NavConfig::default()
         },
     };
@@ -957,11 +957,11 @@ mod tests {
         let d = window_config(parse_app("url: https://a.example/\ndisplay: custom\n").unwrap());
         assert!(d.nav.back && d.nav.forward && d.nav.reload && d.nav.address_bar == AddressBar::Editable);
         // The tab bar follows multiple_tabs, and an app has no new-tab button or bookmarks, whatever the nav section is.
-        assert!(!c.nav.tab_bar && !c.nav.new_tab_button && !c.nav.bookmarks_bar && !c.tabs.allow_new);
+        assert!(!c.nav.tab_bar && !c.nav.new_tab_button && !c.nav.bookmarks && !c.tabs.allow_new);
         let t = window_config(parse_app("url: https://a.example/\ndisplay: custom\nmultiple_tabs: true\n").unwrap());
-        assert!(t.nav.tab_bar && !t.nav.new_tab_button && !t.nav.bookmarks_bar && t.tabs.allow_new);
+        assert!(t.nav.tab_bar && !t.nav.new_tab_button && !t.nav.bookmarks && t.tabs.allow_new);
         // Those three are not options of an app's nav (a misspelt or removed key is an error in tests).
-        for key in ["tab_bar", "new_tab_button", "bookmarks_bar", "nope"] {
+        for key in ["tab_bar", "new_tab_button", "bookmarks", "nope"] {
             assert!(parse_app(&format!("url: https://a.example/\ndisplay: custom\nnav:\n  {key}: true\n")).is_err(), "{key}");
         }
         // The other displays are unchanged, with or without a nav section (which they ignore).

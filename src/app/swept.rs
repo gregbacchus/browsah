@@ -21,7 +21,7 @@ impl Ui {
         let list = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
         let scroller = gtk::ScrolledWindow::builder().child(&list).propagate_natural_height(true).max_content_height(360).min_content_width(360).hscrollbar_policy(gtk::PolicyType::Never).build();
         let restore_all = gtk::Button::builder().label("Restore all").build();
-        let heading = gtk::Label::builder().label("Recently swept tabs").xalign(0.0).css_classes(["heading"]).margin_start(6).build();
+        let heading = gtk::Label::builder().label("Recently swept tabs").xalign(0.0).css_classes(["dim-label"]).margin_start(6).build();
         let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_top(8).margin_bottom(8).margin_start(8).margin_end(8).build();
         content.set_size_request(380, -1);
         content.append(&heading);
