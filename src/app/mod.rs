@@ -290,8 +290,8 @@ pub struct Shell {
     /// The tab context menu (rebuilt each time it opens) and the page it was opened on.
     tab_menu: gio::Menu,
     menu_page: RefCell<Option<adw::TabPage>>,
-    /// The tab menu popover while it is open.
-    tab_popover: RefCell<Option<gtk::Popover>>,
+    /// The title menu popover while it is open.
+    title_popover: RefCell<Option<gtk::PopoverMenu>>,
     /// Bookmarks: the bar's container and the star button (workspace windows only).
     bookmark_bar: gtk::Box,
     bookmark_revealer: gtk::Revealer,
@@ -492,6 +492,38 @@ impl Shell {
     // ---- the tab context menu -------------------------------------------------------------------
 
     /// Fill the right-click menu for `page` (None: the menu closed).
+    /// The tab menu for the selected tab as a native popover menu on `parent` at (x, y) (a web app's title). Autohide stays on (a click
+    /// away or Escape closes it); the popover is unparented when closed and replaces any earlier one.
+    pub(super) fn show_title_menu(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>, x: i32, y: i32) {
+        let old = self.title_popover.borrow_mut().take(); // released before popdown: the closed handler borrows it again
+        if let Some(old) = old {
+            old.popdown();
+        }
+        self.setup_tab_menu(self.tab_view.selected_page().as_ref());
+        let popover = gtk::PopoverMenu::from_model(Some(&self.tab_menu));
+        popover.set_has_arrow(false);
+        popover.set_halign(gtk::Align::Start);
+        popover.set_parent(parent);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x, y, 1, 1)));
+        popover.connect_closed({
+            let weak = Rc::downgrade(self);
+            move |p| {
+                let p = p.clone();
+                // Unparent after the close has finished: GTK is still using the popover inside this signal.
+                glib::idle_add_local_once({ let p = p.clone(); move || p.unparent() });
+                if let Some(s) = weak.upgrade() {
+                    let mine = s.title_popover.borrow().as_ref().is_some_and(|t| *t == p);
+                    if mine {
+                        s.title_popover.borrow_mut().take();
+                        s.setup_tab_menu(None);
+                    }
+                }
+            }
+        });
+        *self.title_popover.borrow_mut() = Some(popover.clone());
+        popover.popup();
+    }
+
     fn setup_tab_menu(&self, page: Option<&adw::TabPage>) {
         *self.menu_page.borrow_mut() = page.cloned();
         self.tab_menu.remove_all();
@@ -499,14 +531,14 @@ impl Shell {
         let blocked = self.tab_for_page(page).map(|t| t.view().blocked_cookie_sites().len()).unwrap_or(0);
         let cookies = gio::Menu::new();
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
-        cookies.append_item(&icon_menu_item(&label, if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }, crate::icons::COPY));
-        cookies.append_item(&icon_menu_item("Copy address", "win.copy-address", crate::icons::LINK));
+        cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
+        cookies.append(Some("Copy address"), Some("win.copy-address"));
         let in_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
         if !in_app {
-            cookies.append_item(&icon_menu_item("Install as web app\u{2026}", "win.install-app", crate::icons::APP_WINDOW));
+            cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
         }
-        cookies.append_item(&icon_menu_item("Save as PDF\u{2026}", "win.save-pdf", crate::icons::FILE_DOWN));
-        cookies.append_item(&icon_menu_item("Print\u{2026}", "win.print", crate::icons::PRINTER));
+        cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
+        cookies.append(Some("Print\u{2026}"), Some("win.print"));
         self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
         if self.page_is_pinned(page) || in_app {
@@ -527,14 +559,12 @@ impl Shell {
         let new_window = gio::MenuItem::new(Some("New window"), None);
         new_window.set_action_and_target_value(Some("win.send-tab"), Some(&"".to_variant()));
         send.append_item(&new_window);
-        let send_item = gio::MenuItem::new_submenu(Some("Send to workspace"), &send);
-        send_item.set_attribute_value("browsah-icon", Some(&crate::icons::EXTERNAL_LINK.id.to_variant()));
-        self.tab_menu.append_item(&send_item);
+        self.tab_menu.append_submenu(Some("Send to workspace"), &send);
         let close = gio::Menu::new();
         if self.sweeper.borrow().is_some() {
-            close.append_item(&icon_menu_item("Sweep unused tabs now", "win.sweep-now", crate::icons::SWEPT_BROOM));
+            close.append(Some("Sweep unused tabs now"), Some("win.sweep-now"));
         }
-        close.append_item(&icon_menu_item("Close tab", "win.close-menu-tab", crate::icons::X));
+        close.append(Some("Close tab"), Some("win.close-menu-tab"));
         self.tab_menu.append_section(None, &close);
     }
 
@@ -1825,10 +1855,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
 
     let tab_view = adw::TabView::new();
-    // The tab menu is drawn by `Shell::show_tab_menu` (the page menu's style); AdwTabView only needs some model to emit `setup-menu`
-    // at a right click, and its own popover has nothing to show.
     let tab_menu = gio::Menu::new();
-    tab_view.set_menu_model(Some(&gio::Menu::new()));
+    tab_view.set_menu_model(Some(&tab_menu));
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
     new_tab_button.add_css_class("browsah-new-tab");
@@ -1952,7 +1980,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         popup_policy: ws_config.tabs.popups,
         tab_menu: tab_menu.clone(),
         menu_page: RefCell::new(None),
-        tab_popover: RefCell::new(None),
+        title_popover: RefCell::new(None),
         bookmark_bar: bookmark_bar.clone(),
         bookmark_revealer: bookmark_revealer.clone(),
         star: star.clone(),
@@ -2211,26 +2239,16 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
-    let menu_at = Rc::new(Cell::new((0, 0)));
-    let tab_click = gtk::GestureClick::new();
-    tab_click.set_button(3);
-    tab_click.set_propagation_phase(gtk::PropagationPhase::Capture);
-    tab_click.connect_pressed({
-        let menu_at = menu_at.clone();
-        move |_, _, x, y| menu_at.set((x as i32, y as i32))
-    });
-    tab_bar.add_controller(tab_click);
     tab_view.connect_setup_menu({
-        let (weak, tab_bar, menu_at) = (weak.clone(), tab_bar.clone(), menu_at.clone());
+        let weak = weak.clone();
         move |_, page| {
-            // `None` is AdwTabView's own (empty) popover closing: ours has its own life.
-            let (Some(s), Some(page)) = (weak.upgrade(), page) else { return };
-            s.setup_tab_menu(Some(page));
-            let (x, y) = menu_at.get();
-            s.show_tab_menu(&tab_bar, x, y);
+            if let Some(s) = weak.upgrade() {
+                s.setup_tab_menu(page);
+            }
         }
     });
-    // With no address bar the header shows the page title: right-clicking it opens the tab menu (copy the address, print, ...).
+    // With no address bar the header shows the page title: right-clicking it opens the tab menu (copy the address, print, ...) as a
+    // native GTK popover menu (docs/research/tab-menu-grab.md).
     if nav.address_bar == crate::workspace::AddressBar::Hidden {
         let click = gtk::GestureClick::new();
         click.set_button(3);
@@ -2249,8 +2267,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                     widget = w.parent();
                 }
                 if let Some(s) = weak.upgrade() {
-                    s.setup_tab_menu(s.tab_view.selected_page().as_ref());
-                    s.show_tab_menu(&header, x as i32, y as i32);
+                    s.show_title_menu(&header, x as i32, y as i32);
                 }
             }
         });
@@ -3261,13 +3278,6 @@ fn windows_workspace_kind(window: &adw::ApplicationWindow) -> (Option<String>, b
 }
 
 /// The main menu: a window with no workspace, the profile's workspaces, and the page tools.
-/// A menu entry with a Lucide icon (its id is the `browsah-icon` attribute, drawn by `ctxmenu::model_popover`).
-fn icon_menu_item(label: &str, action: &str, icon: crate::icons::Icon) -> gio::MenuItem {
-    let item = gio::MenuItem::new(Some(label), Some(action));
-    item.set_attribute_value("browsah-icon", Some(&icon.id.to_variant()));
-    item
-}
-
 fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let windows = gio::Menu::new();
