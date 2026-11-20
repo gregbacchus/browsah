@@ -13,7 +13,7 @@ reads this before asking and reports no microphone/camera. Camera and microphone
 - Read (measured by inspection): `on_request_media_access_permission` (CEF Alloy style) handles camera/microphone, `cont(mask)` with
   the allowed bits; permission-prompt bit values in `permissions.rs` match `CEF_PERMISSION_TYPE_*` in cef-dll-sys 156.5.0; site patterns
   are exact hosts (`*.x` excludes `x`).
-- Unit test added (`scripts/test unit what_chromium_is_told`); the cold release build had not finished in this sandbox when the work was committed, so it was written but not seen to pass.
+- Unit test added (`scripts/test unit what_chromium_is_told`); it passes (run after the cold release build finished). The docs_ and example tests and all self-test sections were not run.
 
 ## Suspected causes, in order
 
