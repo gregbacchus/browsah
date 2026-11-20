@@ -3160,13 +3160,21 @@ fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> S
     let fg = crate::icons::foreground(dark);
     // Selected text is black on white or white on black, whichever is opposite the header, so it never blends into the window colour.
     let (sel_bg, sel_fg) = if dark { ("#ffffff", "#1c1c1c") } else { ("#1c1c1c", "#ffffff") };
+    // The address bar and the selected tab are surfaces that must stand out from the colour (see `icons::surface_on`).
+    let field = crate::icons::surface_on(bg, crate::icons::MIN_SURFACE_CONTRAST);
+    let tab = crate::icons::surface_on(bg, crate::icons::MIN_SURFACE_CONTRAST);
     let mut css = format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
          window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
          window.{class} toolbarview > revealer.bottom-bar, window.{class} toolbarview > revealer.bottom-bar > windowhandle {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} headerbar button, window.{class} headerbar windowcontrols button, window.{class} tabbar button.browsah-new-tab, window.{class} tabbar tab, window.{class} .browsah-find-bar button {{ color: {fg}; }}\n\
-         window.{class} entry text selection, window.{class} entry text selection:focus-within {{ background-color: {sel_bg}; color: {sel_fg}; }}"
+         window.{class} entry text selection, window.{class} entry text selection:focus-within {{ background-color: {sel_bg}; color: {sel_fg}; }}\n\
+         window.{class} headerbar entry, window.{class} headerbar entry:focus-within {{ background-color: {fbg}; color: {ffg}; }}\n\
+         window.{class} headerbar entry text, window.{class} headerbar entry image {{ color: {ffg}; }}\n\
+         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected:hover {{ background-color: {tbg}; }}\n\
+         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected label, window.{class} tabbar tab:selected button {{ color: {tfg}; }}",
+        fbg = field.bg, ffg = field.fg, tbg = tab.bg, tfg = tab.fg
     );
     let t = frame.thickness.clamp(0, 40);
     if frame.enabled && t > 0 {

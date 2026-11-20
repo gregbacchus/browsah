@@ -122,7 +122,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -470,6 +470,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("tabwidth") {
         run_tabwidth(shell, r).await;
+    }
+    if wants("contrast") {
+        run_contrast(shell, r).await;
     }
     if wants("redirects") {
         run_redirects(shell, r).await;
@@ -5086,5 +5089,43 @@ async fn run_probe(shell: &Rc<Shell>, r: &mut Report) {
         let _ = wait_until(5_000, || v.cdp_result(id).is_some()).await;
         let p = probe().await;
         r.check(&format!("and not once the handler stops asking ({what})"), p.as_ref().is_some_and(|p| !p.0), || format!("{p:?}"));
+    }
+}
+
+/// The address bar and the selected tab stand out from a strongly coloured header (purple, yellow, navy): looked at with
+/// `BROWSAH_SHOTS` (`contrast-*`) and measured from the window's pixels (docs/research/chrome-contrast.md).
+async fn run_contrast(shell: &Rc<Shell>, r: &mut Report) {
+    use gtk::prelude::ActionGroupExt;
+    let app = shell.window.application().expect("application");
+    let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
+    let db = profile.dir.join("data.sqlite");
+    let port = start_test_server();
+    for (name, color) in [("purple", "#b000ff"), ("yellow", "#ffe600"), ("navy", "#0a1a40")] {
+        let id = format!("ct-{name}");
+        let dir = profile.workspaces_dir().join(&id);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace(&id));
+        std::fs::write(dir.join("workspace.yaml"), format!("name: Contrast {name}
+color: '{color}'
+home_page: 'http://localhost:{port}/white.html'
+")).expect("ws");
+        let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == id));
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&id.to_variant()));
+        let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "White" && !t.state.borrow().loading))).await;
+        let Some(w) = find() else { r.check(&format!("{name}: the workspace opened"), false, || "no window".into()); continue };
+        w.open_tab(&format!("http://localhost:{port}/scope.html"), true);
+        glib::timeout_future(Duration::from_millis(1200)).await;
+        shot(&w.window, &format!("contrast-{name}"));
+        // The entry's own pixels differ from the header beside it.
+        let entry: &gtk::Widget = w.entry.upcast_ref();
+        let inside = entry.compute_point(&w.window, &gtk::graphene::Point::new(6.0, entry.height() as f32 / 2.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0));
+        let beside = (inside.0, 2);
+        let px = pixels(&w.window, &[inside, beside]);
+        let ratio = |a: (u8, u8, u8), b: (u8, u8, u8)| crate::icons::contrast_ratio(&format!("#{:02x}{:02x}{:02x}", a.0, a.1, a.2), &format!("#{:02x}{:02x}{:02x}", b.0, b.1, b.2));
+        let c = if px.len() == 2 { ratio(px[0], px[1]) } else { 0.0 };
+        r.check(&format!("{name}: the address bar differs from the header by at least 1.5:1"), c >= 1.5, || format!("{c:.2}:1 ({px:?})"));
+        w.window.close();
+        glib::timeout_future(Duration::from_millis(300)).await;
     }
 }

@@ -122,6 +122,102 @@ pub fn foreground(dark_background: bool) -> &'static str {
     if dark_background { DARK } else { LIGHT }
 }
 
+/// WCAG contrast ratio of two normalized `#rrggbb` colours (1.0 to 21.0).
+pub fn contrast_ratio(a: &str, b: &str) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+fn mix_hex(from: &str, to: &str, t: f64) -> String {
+    let ch = |h: &str, i: usize| f64::from(u8::from_str_radix(&h[i..i + 2], 16).expect("normalized colour"));
+    let m = |i| (ch(from, i) + (ch(to, i) - ch(from, i)) * t).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", m(1), m(3), m(5))
+}
+
+/// The least contrast the entry and the selected tab keep against the window colour behind them.
+pub const MIN_SURFACE_CONTRAST: f64 = 1.6;
+
+/// A surface drawn on a window colour, with the text that goes on it.
+pub struct Surface {
+    pub bg: String,
+    pub fg: &'static str,
+}
+
+/// Text for a surface: the usual light or dark text, or pure white or black where that is what it takes to reach 4.5:1.
+fn text_on(surface: &str) -> &'static str {
+    let usual = foreground(dark_background(surface));
+    if contrast_ratio(surface, usual) >= 4.5 {
+        usual
+    } else if dark_background(surface) {
+        "#ffffff"
+    } else {
+        "#000000"
+    }
+}
+
+/// A field (the address bar) or selected-tab surface for a window colour `bg`: the colour mixed toward white or black just far
+/// enough to differ from `bg` by `ratio` (WCAG contrast), whichever direction can reach it and leaves the more readable text; the text
+/// is light or dark as the surface needs. Libadwaita's own field is a 10 % tint of the text colour, which vanishes on a saturated
+/// header (docs/research/chrome-contrast.md).
+pub fn surface_on(bg: &str, ratio: f64) -> Surface {
+    let mut best: Option<(f64, Surface)> = None;
+    for target in ["#ffffff", "#000000"] {
+        // The smallest mix (in 1 % steps) that reaches the ratio; none if even 85 % does not.
+        let Some(step) = (1..=85).find(|s| contrast_ratio(bg, &mix_hex(bg, target, f64::from(*s) / 100.0)) >= ratio) else { continue };
+        let surface = mix_hex(bg, target, f64::from(step) / 100.0);
+        let fg = text_on(&surface);
+        let text = contrast_ratio(&surface, fg);
+        if best.as_ref().is_none_or(|(t, _)| text > *t) {
+            best = Some((text, Surface { bg: surface, fg }));
+        }
+    }
+    // Both directions are always reachable for ratio 1.6 except in a corner (mid grey reaches both); fall back to the far pole.
+    best.map(|(_, s)| s).unwrap_or_else(|| {
+        let target = if dark_background(bg) { "#ffffff" } else { "#000000" };
+        let surface = mix_hex(bg, target, 0.85);
+        Surface { fg: text_on(&surface), bg: surface }
+    })
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    #[test]
+    fn surfaces_differ_clearly_and_keep_readable_text() {
+        for bg in ["#b000ff", "#ff00ff", "#ffee00", "#0a1a40", "#000000", "#ffffff", "#808080", "#2a6f97", "#61a5c2", "#00ff00", "#ff0000", "#242424"] {
+            let s = surface_on(bg, MIN_SURFACE_CONTRAST);
+            let c = contrast_ratio(bg, &s.bg);
+            assert!(c >= MIN_SURFACE_CONTRAST, "{bg}: surface {} only {c:.2}:1", s.bg);
+            let t = contrast_ratio(&s.bg, s.fg);
+            assert!(t >= 4.5, "{bg}: text {} on {} only {t:.2}:1", s.fg, s.bg);
+        }
+    }
+
+    #[test]
+    fn surface_sweep_of_the_colour_cube() {
+        let mut worst = 99.0f64;
+        for r in (0..=255).step_by(51) {
+            for g in (0..=255).step_by(51) {
+                for b in (0..=255).step_by(51) {
+                    let bg = format!("#{r:02x}{g:02x}{b:02x}");
+                    let s = surface_on(&bg, MIN_SURFACE_CONTRAST);
+                    assert!(contrast_ratio(&bg, &s.bg) >= MIN_SURFACE_CONTRAST - 0.05, "{bg} -> {}", s.bg);
+                    worst = worst.min(contrast_ratio(&s.bg, s.fg));
+                }
+            }
+        }
+        assert!(worst >= 4.5, "worst text contrast {worst:.2}");
+    }
+
+    #[test]
+    fn mixing_endpoints() {
+        assert_eq!(mix_hex("#102030", "#ffffff", 0.0), "#102030");
+        assert_eq!(mix_hex("#102030", "#ffffff", 1.0), "#ffffff");
+        assert!((contrast_ratio("#000000", "#ffffff") - 21.0).abs() < 1e-9);
+    }
+}
+
 thread_local! {
     static INSTALLED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
     /// Widget, icon, and the window tint override when it sits directly on window chrome.
