@@ -86,13 +86,41 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
     println!("shot {name}: {}", if ok { "saved" } else { "failed" });
 }
 
-/// Open the window's tab menu as a popover (the menu model is already filled in) and take a picture of it.
-async fn shot_tab_menu(shell: &Rc<Shell>, name: &str) {
-    shell.show_tab_menu(&shell.window, 60, 60);
-    let Some(popover) = shell.tab_popover.borrow().clone() else { return };
-    glib::timeout_future(Duration::from_millis(600)).await;
-    shot(&popover, name);
-    popover.popdown();
+/// The title menu (right-click on a web app's title) opens as an autohiding native popover and leaves nothing behind when closed: it
+/// is unparented, the header's buttons are sensitive and take clicks. A headless compositor cannot show a real popup grab or a real
+/// click outside, so only autohide, parenting and clean-up are checked (docs/research/tab-menu-grab.md).
+async fn check_title_menu_lifecycle(w: &Rc<Shell>, r: &mut Report, id: &str) {
+    let clicks = Rc::new(Cell::new(0));
+    let handler = w.reload.connect_clicked({
+        let clicks = clicks.clone();
+        move |_| clicks.set(clicks.get() + 1)
+    });
+    for how in ["popdown", "replaced"] {
+        w.show_title_menu(&w.header, 30, 10);
+        let Some(first) = w.title_popover.borrow().clone() else {
+            r.check(&format!("the title menu opens ({id}, {how})"), false, || "no popover".into());
+            continue;
+        };
+        r.check(&format!("the title menu autohides and sits on the header ({id}, {how})"), first.is_autohide() && first.parent().as_ref() == Some(w.header.upcast_ref()), || format!("autohide {} parent {:?}", first.is_autohide(), first.parent()));
+        glib::timeout_future(Duration::from_millis(300)).await;
+        if how == "popdown" {
+            first.popdown();
+        } else {
+            w.show_title_menu(&w.header, 60, 10);
+            let second = w.title_popover.borrow().clone(); // not held while closing: the closed handler borrows it
+            if let Some(second) = second {
+                second.popdown();
+            }
+        }
+        glib::timeout_future(Duration::from_millis(300)).await;
+        r.check(&format!("a closed title menu is gone and unparented ({id}, {how})"), first.parent().is_none() && w.title_popover.borrow().is_none() && !first.is_mapped(), || format!("parent {:?}", first.parent()));
+        r.check(&format!("the header still works after the title menu closed ({id}, {how})"), w.reload.is_sensitive() && w.header.is_sensitive() && w.window.is_sensitive(), || "insensitive".into());
+        let before = clicks.get();
+        w.reload.emit_clicked();
+        r.check(&format!("a header button still takes a click after the title menu closed ({id}, {how})"), clicks.get() == before + 1, || "no click".into());
+        r.check(&format!("the tab menu's state is cleared after the title menu closed ({id}, {how})"), w.tab_menu.n_items() == 0, || format!("{} items", w.tab_menu.n_items()));
+    }
+    w.reload.disconnect(handler);
 }
 
 /// The colours (r, g, b) of the window's pixels at the given points (window coordinates), as GTK renders them.
@@ -1544,7 +1572,6 @@ async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the tab menu has a send-to-workspace submenu listing the other workspaces and a new window", submenu_labels.contains(&"Receiver".to_string()) && submenu_labels.contains(&"New window".to_string()) && !submenu_labels.contains(&"Sender".to_string()), || format!("{submenu_labels:?}"));
     let has_close = (0..menu.n_items()).filter_map(|i| menu.item_link(i, "section")).any(|sec| (0..sec.n_items()).any(|j| sec.item_attribute_value(j, "label", None).and_then(|v| v.get::<String>()).as_deref() == Some("Close tab")));
     r.check("the tab menu also offers closing the tab", has_close, || "no close item".into());
-    shot_tab_menu(&s1, "tab-menu").await;
 
     // Send it.
     ActionGroupExt::activate_action(&s1.window, "send-tab", Some(&"s2".to_variant()));
@@ -2968,8 +2995,8 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
                 .flat_map(|section| (0..section.n_items()).filter_map(move |i| section.item_attribute_value(i, "action", None).and_then(|v| v.get::<String>())))
                 .collect::<Vec<_>>();
             r.check("a web app tab menu offers Print and omits Install as web app", actions.iter().any(|a| a == "win.print") && !actions.iter().any(|a| a == "win.install-app"), || format!("{actions:?}"));
-            shot_tab_menu(&w, &format!("app-title-menu-{id}")).await;
             w.setup_tab_menu(None);
+            check_title_menu_lifecycle(&w, r, id).await;
 
             // Ctrl+click on a link asks for a new tab: an app that allows tabs gets one, not an overlay.
             let (view, held) = (w.view(), gdk::ModifierType::CONTROL_MASK);
