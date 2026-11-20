@@ -660,10 +660,16 @@ impl Shell {
         }
     }
 
-    fn bookmark_menu(self: &Rc<Self>, button: &gtk::Button, url: &str) {
+    /// The bookmark's right-click menu, in the page menu's style (`ctxmenu::row_button`: left-aligned labels, Lucide icons) and
+    /// made like it: an ordinary autohiding `Popover` parented to the button, unparented when closed.
+    pub(super) fn bookmark_menu(self: &Rc<Self>, button: &gtk::Button, url: &str) {
+        use crate::ctxmenu::{Action, Item, PageCmd};
         let popover = gtk::Popover::new();
         popover.set_parent(button);
+        popover.set_has_arrow(false);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.set_width_request(220);
+        #[derive(Clone, Copy)]
         enum Command {
             Open,
             Rename,
@@ -671,12 +677,13 @@ impl Shell {
         }
         let mut entries = Vec::new();
         if self.allow_new_tabs {
-            entries.push(("Open in new tab", Command::Open));
+            entries.push(("Open in new tab", "external-link", Command::Open));
         }
-        entries.push(("Rename bookmark…", Command::Rename));
-        entries.push(("Remove bookmark", Command::Remove));
-        for (label, command) in entries {
-            let b = gtk::Button::builder().label(label).has_frame(false).build();
+        entries.push(("Rename bookmark…", "pen-line", Command::Rename));
+        entries.push(("Remove bookmark", "trash-2", Command::Remove));
+        for (label, icon, command) in entries {
+            let item = Item { id: "bookmark", label: label.into(), icon: Some(icon), shortcut: None, enabled: true, checked: false, badge: None, action: Action::Page(PageCmd::Reload) };
+            let b = ctxmenu::row_button(&item, false);
             b.connect_clicked({
                 let (window, url, popover) = (self.window.downgrade(), url.to_owned(), popover.downgrade());
                 move |_| {

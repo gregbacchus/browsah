@@ -33,7 +33,7 @@ fn icon_widget(item: &Item) -> gtk::Widget {
     }
 }
 
-fn row_button(item: &Item, chevron: bool) -> gtk::Button {
+pub(super) fn row_button(item: &Item, chevron: bool) -> gtk::Button {
     let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
     row.append(&icon_widget(item));
     let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).build();
