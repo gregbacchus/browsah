@@ -1469,7 +1469,7 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
         w.bookmark_menu(button, &page("b.html"));
         let rename = button.last_child().and_downcast::<gtk::Popover>()
             .and_then(|p| find_button(p.upcast_ref(), "Rename bookmark…"));
-        r.check("the bookmark menu offers Rename bookmark", rename.as_ref().and_then(|b| b.label()).as_deref() == Some("Rename bookmark…"), || "rename action missing".into());
+        r.check("the bookmark menu offers Rename bookmark", rename.is_some(), || "rename action missing".into());
         if let Some(rename) = rename {
             rename.emit_clicked();
         }
@@ -1495,6 +1495,50 @@ async fn run_bookmarks(shell: &Rc<Shell>, r: &mut Report) {
             .and_downcast::<gtk::Label>().map(|l| l.text())
     };
     r.check("the bookmark bar shows the new title", bar_title(&w).as_deref() == Some("My bookmark"), || format!("{:?}", bar_title(&w)));
+
+    // The menu is an ordinary autohiding popover like the page menu's: after it is shown and closed, nothing of it is left and the
+    // window still takes clicks. (A headless run cannot show a real pointer grab or an outside click dismissing it.)
+    if let Some(button) = w.bookmark_buttons().first() {
+        let popover = || button.last_child().and_downcast::<gtk::Popover>();
+        for round in 0..2 {
+            w.bookmark_menu(button, &page("b.html"));
+            let Some(p) = popover() else {
+                r.check("the bookmark menu opens", false, || format!("round {round}: no popover"));
+                break;
+            };
+            if round == 0 {
+                let rows = ["Open in new tab", "Rename bookmark\u{2026}", "Remove bookmark"].map(|l| find_button(p.upcast_ref(), l));
+                let aligned = rows.iter().flatten().all(|b| {
+                    b.child().and_then(|c| c.first_child()).and_then(|c| c.next_sibling()).and_downcast::<gtk::Label>().is_some_and(|l| l.xalign() == 0.0)
+                });
+                r.check("bookmark menu labels are left-aligned", aligned && rows.iter().flatten().count() == 3, || format!("{} rows", rows.iter().flatten().count()));
+                r.check("the bookmark menu autohides like the page menu", p.is_autohide(), || "not autohide".into());
+                // Headless Wayland never maps a popup (the page menu's pictures fail the same way), so for the picture and the width
+                // check put the menu's rows into an ordinary window: it shows the rows, not the popover's frame.
+                if let Some(content) = p.child() {
+                    p.set_child(gtk::Widget::NONE);
+                    let holder = gtk::Window::builder().child(&content).default_width(10).resizable(false).build();
+                    holder.present();
+                    let ok = wait_until(3_000, || content.width() > 0).await;
+                    glib::timeout_future(Duration::from_millis(400)).await;
+                    r.check("the bookmark menu is as wide as the page menu's", ok && content.width() >= 200, || format!("{}", content.width()));
+                    shot(&holder, "bookmark-menu");
+                    holder.set_child(gtk::Widget::NONE);
+                    holder.destroy();
+                    p.set_child(Some(&content));
+                }
+            }
+            if let Some(p) = popover() {
+                p.popdown();
+            }
+            let ok = wait_until(3_000, || popover().is_none()).await;
+            r.check("a closed bookmark menu is unparented", ok, || format!("round {round}"));
+        }
+        let url = page("b.html");
+        button.emit_clicked();
+        let ok = wait_until(10_000, || tab.state.borrow().address == url && !tab.state.borrow().loading).await;
+        r.check("the window still takes clicks after the bookmark menu closed", ok && w.window.is_sensitive(), || tab.state.borrow().address.clone());
+    }
 
     // Leave the page, then use the bookmark.
     tab.view().navigate(&page("a.html"));
