@@ -610,6 +610,21 @@ fn first_label_text(w: &gtk::Widget) -> Option<String> {
     None
 }
 
+/// The label anywhere below `root` whose text is `text`.
+fn find_label(root: &gtk::Widget, text: &str) -> Option<gtk::Label> {
+    if let Some(label) = root.downcast_ref::<gtk::Label>().filter(|label| label.text() == text) {
+        return Some(label.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(label) = find_label(&widget, text) {
+            return Some(label);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 fn label_weight(root: &gtk::Widget, text: &str) -> Option<gtk::pango::Weight> {
     if let Some(label) = root.downcast_ref::<gtk::Label>().filter(|label| label.text() == text) {
         return label.pango_context().font_description().map(|font| font.weight());
@@ -1607,7 +1622,7 @@ async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(15_000, || moving.state.borrow().title == "Page B").await;
 
     // The menu for that tab.
-    s1.tab_view.emit_by_name::<()>("setup-menu", &[&moving.page]);
+    s1.setup_tab_menu(Some(&moving.page));
     let menu = s1.tab_menu.clone();
     let submenu_labels: Vec<String> = (0..menu.n_items())
         .filter_map(|i| menu.item_link(i, "submenu"))
@@ -1629,7 +1644,7 @@ async fn run_send_to_workspace(shell: &Rc<Shell>, r: &mut Report) {
 
     // Send the sender's last tab to a new window: the emptied window closes.
     let last = s1.current().expect("last tab");
-    s1.tab_view.emit_by_name::<()>("setup-menu", &[&last.page]);
+    s1.setup_tab_menu(Some(&last.page));
     let before = super::windows().len();
     ActionGroupExt::activate_action(&s1.window, "send-tab", Some(&"".to_variant()));
     let ok = wait_until(10_000, || find("s1").is_none() && super::windows().len() == before).await;
@@ -3716,7 +3731,64 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
 }
 
 /// The main menu: it lists a window with no workspace, the profile's workspaces and the page tools.
+/// Every row of a popover menu: left-aligned regular-weight label, led by an icon (or the spacer), with the icon bound to a Lucide file.
+fn check_menu_rows(popover: &gtk::Popover, r: &mut Report, what: &str, labels: &[&str]) {
+    for label in labels {
+        let Some(button) = find_button(popover.upcast_ref(), label) else {
+            r.check(&format!("{what} has a {label:?} row"), false, || "missing".into());
+            continue;
+        };
+        let row = button.child().and_downcast::<gtk::Box>();
+        let lead = row.as_ref().and_then(|b| b.first_child());
+        let icon = lead.as_ref().and_then(|w| w.downcast_ref::<gtk::Image>()).and_then(|i| i.icon_name());
+        r.check(&format!("{what}: {label:?} has a Lucide icon"), icon.as_deref().is_some_and(|n| n.starts_with("browsah-")), || format!("{icon:?}"));
+        let text = row.as_ref().and_then(|b| b.first_child()).and_then(|w| w.next_sibling()).and_downcast::<gtk::Label>();
+        r.check(&format!("{what}: {label:?} is left aligned"), text.as_ref().is_some_and(|l| l.xalign() == 0.0), || format!("{:?}", text.map(|l| l.xalign())));
+        r.check(&format!("{what}: {label:?} has regular weight"), label_weight(popover.upcast_ref(), label) == Some(gtk::pango::Weight::Normal), || format!("{:?}", label_weight(popover.upcast_ref(), label)));
+    }
+}
+
+/// The tab menu is our own popover (icons), opened once per request on the tab bar, and libadwaita has no menu of its own to open too.
+async fn check_tab_menu(shell: &Rc<Shell>, r: &mut Report) {
+    r.check("the tab view has no menu model (libadwaita would open a second popover)", shell.tab_view.menu_model().is_none(), || "has a model".into());
+    let Some(page) = shell.tab_view.selected_page() else { return };
+    let tab = super::tab_of_page(&shell.tab_bar, &page);
+    r.check("the tab bar has a tab widget for the selected page", tab.is_some(), || "none".into());
+    if let Some(tab) = &tab {
+        if let Some(b) = tab.compute_bounds(&shell.tab_bar) {
+            let hit = super::tab_at(&shell.tab_bar, f64::from(b.x() + b.width() / 2.0), f64::from(b.y() + b.height() / 2.0));
+            r.check("a point on a tab finds that tab (what a right click uses)", hit.as_ref() == Some(tab), || format!("{hit:?}"));
+        }
+    }
+    shell.show_tab_menu(&shell.tab_bar, 40, 20, Some(&page));
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let Some(menu) = shell.title_popover.borrow().clone() else {
+        r.check("the tab menu opens", false, || "no popover".into());
+        return;
+    };
+    r.check("the tab menu is an autohiding popover on the tab bar", menu.is_autohide() && menu.parent().as_ref() == Some(shell.tab_bar.upcast_ref()), || format!("autohide {} parent {:?}", menu.is_autohide(), menu.parent()));
+    check_menu_rows(&menu, r, "the tab menu", &["Copy address", "Save as PDF\u{2026}", "Print\u{2026}", "Close tab"]);
+    shot(&shell.window, "tab-menu-window");
+    shot(&menu, "tab-menu");
+    shell.show_tab_menu(&shell.tab_bar, 60, 20, Some(&page));
+    glib::timeout_future(Duration::from_millis(300)).await; // the replaced one is unparented from an idle callback
+    let mut popovers = 0;
+    let mut child = shell.tab_bar.first_child();
+    while let Some(c) = child {
+        popovers += usize::from(c.is::<gtk::Popover>());
+        child = c.next_sibling();
+    }
+    r.check("opening the menu again replaces it: one popover on the bar", popovers == 1, || format!("{popovers} popovers"));
+    let current = shell.title_popover.borrow().clone();
+    if let Some(current) = current {
+        current.popdown();
+    }
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("a closed tab menu leaves no popover and no model behind", shell.title_popover.borrow().is_none() && shell.tab_menu.n_items() == 0 && shell.tab_bar.is_sensitive(), || format!("{} items", shell.tab_menu.n_items()));
+}
+
 async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
+    check_tab_menu(shell, r).await;
     let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
     let dir = profile.workspaces_dir().join("mn1");
     let _ = std::fs::remove_dir_all(&dir);
@@ -3724,7 +3796,7 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     std::fs::write(dir.join("workspace.yaml"), "name: Menu test\n").expect("ws");
     shell.menu_button.popup();
     glib::timeout_future(Duration::from_millis(600)).await;
-    let model = shell.menu_button.menu_model();
+    let model = Some(super::main_menu());
     let mut labels = Vec::new();
     if let Some(m) = &model {
         for i in 0..m.n_items() {
@@ -3738,6 +3810,9 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     shot(&shell.window, "main-menu");
     let menu = shell.menu_button.popover();
     let weight = |label| menu.as_ref().and_then(|p| label_weight(p.upcast_ref(), label));
+    if let Some(p) = &menu {
+        check_menu_rows(p, r, "the main menu", &["New window", "Open workspace", "Find in page", "Print\u{2026}", "History"]);
+    }
     r.check("main-menu items have regular weight", ["New window", "Open workspace", "Find in page"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("New window: {:?}, Open workspace: {:?}", weight("New window"), weight("Open workspace")));
     if let Some(p) = &menu {
         shot(p, "main-menu-popover");
@@ -3777,7 +3852,7 @@ async fn run_fullconfig(shell: &Rc<Shell>, r: &mut Report) {
     shell.menu_button.popup();
     glib::timeout_future(Duration::from_millis(600)).await;
     let menu_ok = {
-        let model = shell.menu_button.menu_model();
+        let model = Some(super::main_menu());
         let mut labels = Vec::new();
         if let Some(m) = &model {
             for i in 0..m.n_items() {
@@ -4831,7 +4906,7 @@ async fn run_navhistory(shell: &Rc<Shell>, r: &mut Report) {
     r.check("holding Back lists native pages nearest first", back_menu.as_ref().and_then(|p| named_rows(p, &["Page B", "Scope test"])).is_some(), || "history rows missing or out of order".into());
     if let Some(menu) = &back_menu {
         glib::timeout_future(Duration::from_millis(350)).await;
-        let label = find_button(menu.upcast_ref(), long_title).and_then(|button| button.child()).and_downcast::<gtk::Label>();
+        let label = find_label(menu.upcast_ref(), long_title);
         r.check("the history menu is wide enough to show a long page title", menu.width() >= 360 && label.is_some_and(|label| !label.layout().is_ellipsized()), || format!("menu width {}", menu.width()));
         shot(menu, "navigation-history");
     }

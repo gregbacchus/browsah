@@ -71,7 +71,7 @@ impl Shell {
             .propagate_natural_width(true).max_content_height(360).hscrollbar_policy(gtk::PolicyType::Never).build();
         for (target, entry) in rows {
             let name = if entry.title.trim().is_empty() { &entry.url } else { &entry.title };
-            let button = history_row(name);
+            let button = history_row(name, Some(&entry.url));
             button.set_tooltip_text(Some(&entry.url));
             let (shell, tab, popover) = (Rc::downgrade(self), Rc::downgrade(&tab), popover.downgrade());
             let (snapshot, entry, address) = (snapshot.clone(), entry.clone(), address.clone());
@@ -100,7 +100,7 @@ impl Shell {
             content.append(&scroller);
             content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         }
-        let more = history_row("More history…");
+        let more = super::menu::row("More history…", &super::menu::icon_widget(Some("rotate-ccw-clock")), None, false, true, false);
         more.connect_clicked({
             let (shell, popover) = (Rc::downgrade(self), popover.downgrade());
             move |_| {
@@ -119,9 +119,15 @@ impl Shell {
     }
 }
 
-fn history_row(text: &str) -> gtk::Button {
-    let label = gtk::Label::builder().label(text).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(64).build();
-    gtk::Button::builder().child(&label).has_frame(false).build()
+/// A row of the history menu: the page's icon (remembered per site) or a generic one, then its title.
+fn history_row(text: &str, url: Option<&str>) -> gtk::Button {
+    let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
+    match url.and_then(super::favicon::small_image) {
+        Some(icon) => row.append(&icon),
+        None => row.append(&super::menu::icon_widget(Some("link-2"))),
+    }
+    row.append(&gtk::Label::builder().label(text).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(64).build());
+    gtk::Button::builder().child(&row).has_frame(false).build()
 }
 
 /// Use Chromium's entry ID, so a jump preserves the native history and works with repeated URLs.

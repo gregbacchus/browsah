@@ -3294,8 +3294,16 @@ impl BrowserView {
                 list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
                 continue;
             }
-            let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).build();
-            let button = gtk::Button::builder().child(&label).has_frame(false).sensitive(item.enabled).build();
+            let icon = [
+                (M::MENU_ID_BACK, "arrow-left"), (M::MENU_ID_FORWARD, "arrow-right"), (M::MENU_ID_RELOAD, "rotate-cw"), (M::MENU_ID_RELOAD_NOCACHE, "rotate-cw"),
+                (M::MENU_ID_STOPLOAD, "x"), (M::MENU_ID_UNDO, "undo-2"), (M::MENU_ID_REDO, "redo-2"), (M::MENU_ID_CUT, "scissors"), (M::MENU_ID_COPY, "copy"),
+                (M::MENU_ID_PASTE, "clipboard-paste"), (M::MENU_ID_DELETE, "trash-2"), (M::MENU_ID_SELECT_ALL, "text-select"), (M::MENU_ID_PRINT, "printer"),
+                (M::MENU_ID_VIEW_SOURCE, "code-xml"),
+            ]
+            .iter()
+            .find(|(id, _)| *id as i32 == item.id)
+            .map(|(_, icon)| *icon);
+            let button = super::menu::row(&item.label, &super::menu::icon_widget(icon), None, false, item.enabled, false);
             let (view, req, id) = (Rc::downgrade(self), req.clone(), item.id);
             let popover_weak = popover.downgrade();
             button.connect_clicked(move |_| {

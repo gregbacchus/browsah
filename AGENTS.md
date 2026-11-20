@@ -65,6 +65,31 @@ proof the docs are right: the tests only check that paths exist.
 default, the reload behaviour, the example, the README) and say in your message what you checked and anything you
 could not verify. If an item is unaffected, verify that and say so; no empty edit is needed.
 
+## Rule: every menu is built with `src/app/menu.rs` (read before adding or changing a menu)
+
+All menus look and behave the same. GTK's own `PopoverMenu` cannot show an icon beside a label (checked: an icon set on a
+`gio::MenuItem` does not render), so menus are `gtk::Popover`s of rows that we draw.
+
+- **Describe a menu as a `gio::Menu`, draw it with `menu::popover(&model, &window, 250)`.** Build items with `menu::item(label,
+  "win.action", Some("lucide-id"))` / `menu::targeted(..)`; sections become separators, submenus become pages with a back row
+  (`gio::MenuItem::new_submenu`, give it an icon with `ICON`), a group colour is `menu::DOT`. Shortcuts are shown from the
+  application's accelerators. A missing action is shown dimmed. The model stays readable by the self-tests.
+- **Hand-built lists** (a page menu, a bookmark menu, a chooser) use `menu::row(label, &lead, shortcut, checked, enabled, chevron)`
+  for every row, never a bare `gtk::Button` with a label (that centres the label and has no icon).
+- **Every row has a Lucide icon** (`menu::icon_widget(Some(id))`; `None` is a 16 px spacer so labels line up, used only when no icon
+  fits). New icons: see the icons rule below. Labels are left-aligned (`xalign(0)`), ellipsized, in **regular weight**
+  (`MENU_ITEM_CSS` covers every popover; docs/research/menu-item-weight.md). **No bold items.** Bold is allowed only for a section
+  heading that is not a choice (the "Recently swept tabs" title) and needs a reason in a comment.
+- **One popover per click.** The popover is an ordinary autohiding `Popover` with `has_arrow(false)`, `halign(Start)` at a pointer
+  position, parented by the caller (`set_parent`), unparented when `closed` (from an idle callback if the handler runs inside GTK's
+  closing), replacing any earlier one. Run the action, then `popdown()`. Never open a second popover for the same click and never
+  hand libadwaita a menu model for something we also draw (`AdwTabView` opens its own popover when it has a model: the first custom
+  tab menu broke the pop-up grab that way, docs/research/tab-menu-grab.md). The tab bar therefore has **no** menu model;
+  `Shell::show_tab_menu` is called from right click and long press on a tab and the menu key on the bar.
+- **Test it:** add a `shot(...)` and look at it, and check rows with `check_menu_rows` in `selftest.rs` (icon, left alignment,
+  regular weight). A headless run cannot show a real pointer grab, a click outside or Escape: say so, and ask for a look on
+  real GNOME when you change how a popover is opened or closed.
+
 ## Rule: record findings in docs/research/
 
 Research, measurements and design decisions go in `docs/research/` (one dated note per question,
@@ -111,7 +136,7 @@ take minutes.
 | Path | What lives there |
 |---|---|
 | `src/main.rs` | Entry: CEF subprocess handling, config, GPU workarounds, then the app or a benchmark |
-| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest), `downloads.rs` (the downloads button and list; rows are the profile's, thread-local, remembered in the `downloads` table) |
+| `src/app/` | The browser: `mod.rs` (window, tab bar and tab model, navigation bar, actions), `view.rs` (`BrowserView`: CEF handlers, frames, input controllers, popups, clipboard bridge, context menu), `input.rs` (key/modifier/wheel/cursor mapping, unit tested), `nav.rs` (address bar to URL), `menu.rs` (the one way to draw a menu: see the Menus rule), `selftest.rs` (`--selftest`), `latency.rs` (`--latency`), `install.rs` (install a page as a web app from its manifest), `downloads.rs` (the downloads button and list; rows are the profile's, thread-local, remembered in the `downloads` table) |
 | `src/cef_rt.rs` | CEF start-up and settings, `HostHandle`/`BrowserHandle` |
 | `src/frames.rs` | `View` geometry and dmabuf frame import shared by app and benchmarks |
 | `src/extensions.rs` | Chrome extensions: which folders to load (`extensions.*`, the profile's `extensions/<id>/<version>/`), the `--load-extension` switch, native messaging host discovery and copy, Web Store install and update (`browsah extension`), id derivation; `src/crx.rs` is the CRX3 package format (parse, signature check, unzip, add `key`); `src/app/extensions.rs` is the header button and popup popover (pure, tested; Chromium itself loads the extensions: CEF 156 has no extension API) |

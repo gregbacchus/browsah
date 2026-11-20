@@ -30,6 +30,7 @@ Wayland is a hard requirement and is met.
 | **Choose chrome icon strokes from the active window tint** | The higher-contrast stroke stays readable when tint brightness and desktop appearance differ. See [chrome icon contrast](navigation-icon-contrast.md). |
 | **Keep the workspace picker on the toplevel surface** | Its input can be used for compositor activation of another window. See [workspace picker focus](workspace-picker-focus.md). |
 | **Use regular weight for menu choices** | A shared CSS rule covers native menus, custom popovers and the workspace picker. See [menu item weight](menu-item-weight.md). |
+| **Draw every menu with `menu.rs`** | Native GTK menus cannot show icons (measured), so every menu is a popover of icon rows; the tab bar has no libadwaita menu model, so only our popover opens. Real pointer grab not verified. See [menus](menus-icons-and-tab-menu.md). |
 | **Jump to entries from Back and Forward** | A long press lists the tab’s native and saved entries. See [the history menu](navigation-history-menu.md). |
 | **Use the profile palette and Wayland identity for DevTools** | Chromium still owns the native frame. See [DevTools appearance](devtools-branding.md). |
 | **Update web app metadata on request** | Verify the manifest identity and keep local edits. See [web app manifest updates](webapp-manifest-updates.md). |

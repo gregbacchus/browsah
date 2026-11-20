@@ -103,7 +103,7 @@ impl Shell {
 
         // A window with no workspace, then the workspaces to choose from.
         {
-            let b = gtk::Button::builder().label("No workspace").has_frame(false).build();
+            let b = super::menu::row("No workspace", &super::menu::icon_widget(Some("app-window")), None, false, true, false);
             let (m, popover) = (Rc::downgrade(&modal), popover.downgrade());
             b.connect_clicked(move |_| {
                 if let Some(p) = popover.upgrade() {
@@ -118,7 +118,7 @@ impl Shell {
         if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
             let here = self.workspace.as_ref().map(|w| w.id.clone());
             for w in crate::workspace::Workspace::list(&profile) {
-                let b = gtk::Button::builder().label(w.display_name()).has_frame(false).build();
+                let b = super::menu::row(w.display_name(), &super::menu::icon_widget(Some("layout-grid-circles")), None, false, true, false);
                 let (m, id, popover) = (Rc::downgrade(&modal), w.id.clone(), popover.downgrade());
                 b.connect_clicked(move |_| {
                     if let Some(p) = popover.upgrade() {

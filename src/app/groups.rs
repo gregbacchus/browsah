@@ -4,7 +4,7 @@
 //! A collapsed group is one *placeholder* page in the tab bar; its tabs are detached from the tab view but kept
 //! alive (`parked`), so nothing is lost. Selecting the placeholder expands the group.
 
-use super::{Shell, Tab};
+use super::{menu, Shell, Tab};
 use crate::groups::{collapsed_title, dot_svg, join_position, next_color, next_id, Group, PALETTE};
 use crate::store::GroupRecord;
 use adw::prelude::*;
@@ -317,33 +317,33 @@ impl Shell {
         if let Some(id) = gid {
             let own = gio::Menu::new();
             if is_placeholder {
-                own.append(Some("Expand group"), Some("win.group-toggle"));
+                own.append_item(&menu::item("Expand group", "win.group-toggle", None));
             } else {
-                own.append(Some("Collapse group"), Some("win.group-toggle"));
-                own.append(Some("Remove from group"), Some("win.group-remove"));
+                own.append_item(&menu::item("Collapse group", "win.group-toggle", None));
+                own.append_item(&menu::item("Remove from group", "win.group-remove", Some("x")));
             }
-            own.append(Some("Rename group\u{2026}"), Some("win.group-rename"));
+            own.append_item(&menu::item("Rename group\u{2026}", "win.group-rename", Some("pen-line")));
             let colors = gio::Menu::new();
             for (name, hex) in PALETTE {
-                let item = gio::MenuItem::new(Some(name), None);
-                item.set_action_and_target_value(Some("win.group-color"), Some(&(*hex).to_variant()));
+                let item = menu::targeted(name, "win.group-color", &(*hex).to_variant(), None);
+                item.set_attribute_value(menu::DOT, Some(&(*hex).to_variant()));
                 colors.append_item(&item);
             }
             own.append_submenu(Some("Group colour"), &colors);
-            own.append(Some("Ungroup"), Some("win.group-ungroup"));
-            own.append(Some("Close group"), Some("win.group-close"));
+            own.append_item(&menu::item("Ungroup", "win.group-ungroup", None));
+            own.append_item(&menu::item("Close group", "win.group-close", Some("x")));
             menu.append_section(None, &own);
             let _ = id;
         }
         if !is_placeholder && !self.page_is_pinned(page) {
             let add = gio::Menu::new();
-            add.append(Some("Add to new group\u{2026}"), Some("win.group-new"));
+            add.append_item(&menu::item("Add to new group\u{2026}", "win.group-new", None));
             let others: Vec<Group> = self.groups().into_iter().filter(|g| Some(g.id) != gid).collect();
             if !others.is_empty() {
                 let list = gio::Menu::new();
                 for g in &others {
-                    let item = gio::MenuItem::new(Some(if g.name.is_empty() { "Unnamed group" } else { &g.name }), None);
-                    item.set_action_and_target_value(Some("win.group-add"), Some(&g.id.to_string().to_variant()));
+                    let item = menu::targeted(if g.name.is_empty() { "Unnamed group" } else { &g.name }, "win.group-add", &g.id.to_string().to_variant(), None);
+                    item.set_attribute_value(menu::DOT, Some(&g.color.to_variant()));
                     list.append_item(&item);
                 }
                 add.append_submenu(Some("Add to group"), &list);

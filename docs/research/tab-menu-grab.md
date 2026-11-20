@@ -34,3 +34,8 @@ A headless compositor gives no input serial, so a real popup grab, a real click 
 exercised, nor the tab bar's own right-click menu (AdwTabView's, unchanged from before a34133d). Needs a look on real GNOME.
 
 Reproduce: `scripts/test selftest webapp` (weston headless; do not run two self-tests at once).
+
+## Update 2026-11-21
+
+Superseded for the tab bar: the tab menu is our own popover again, with icons, but this time the tab view has no menu model, so
+libadwaita opens no popover of its own. See menus-icons-and-tab-menu.md.

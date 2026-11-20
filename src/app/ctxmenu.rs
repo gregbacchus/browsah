@@ -21,36 +21,15 @@ fn badge(color: Option<&str>) -> gtk::Image {
 /// The icon widget of an item: its Lucide icon, a workspace badge, or empty space of the same size so labels line up.
 fn icon_widget(item: &Item) -> gtk::Widget {
     let dark = adw::StyleManager::default().is_dark();
-    match (&item.badge, item.icon.and_then(crate::icons::by_id)) {
-        (Some(color), _) => badge(crate::picker::badge_color(color.as_ref(), dark)).upcast(),
-        (None, Some(icon)) => {
-            let image = gtk::Image::new();
-            image.set_pixel_size(16);
-            crate::icons::bind(&image, icon);
-            image.upcast()
-        }
-        _ => gtk::Box::builder().width_request(16).build().upcast(),
+    match &item.badge {
+        Some(color) => badge(crate::picker::badge_color(color.as_ref(), dark)).upcast(),
+        None => super::menu::icon_widget(item.icon),
     }
 }
 
+/// One row of the page menu (the shared row of `menu::row`).
 pub(super) fn row_button(item: &Item, chevron: bool) -> gtk::Button {
-    let row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).build();
-    row.append(&icon_widget(item));
-    let label = gtk::Label::builder().label(item.label.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(36).build();
-    row.append(&label);
-    if let Some(keys) = item.shortcut {
-        row.append(&gtk::Label::builder().label(keys).css_classes(["dim-label", "caption"]).margin_start(18).build());
-    }
-    if item.checked {
-        row.append(&gtk::Image::from_icon_name("object-select-symbolic"));
-    }
-    if chevron {
-        let image = gtk::Image::new();
-        image.set_pixel_size(16);
-        crate::icons::bind(&image, crate::icons::CHEVRON_RIGHT);
-        row.append(&image);
-    }
-    gtk::Button::builder().child(&row).has_frame(false).sensitive(item.enabled).build()
+    super::menu::row(&item.label, &icon_widget(item), item.shortcut, item.checked, item.enabled, chevron)
 }
 
 impl Shell {

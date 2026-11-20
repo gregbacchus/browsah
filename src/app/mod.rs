@@ -6,6 +6,7 @@ mod downloads;
 mod extensions;
 mod favicon;
 mod ctxmenu;
+mod menu;
 mod find;
 mod groups;
 mod fullscreen;
@@ -293,7 +294,7 @@ pub struct Shell {
     tab_menu: gio::Menu,
     menu_page: RefCell<Option<adw::TabPage>>,
     /// The title menu popover while it is open.
-    title_popover: RefCell<Option<gtk::PopoverMenu>>,
+    title_popover: RefCell<Option<gtk::Popover>>,
     /// Bookmarks: the bar's container and the star button (workspace windows only).
     bookmark_bar: gtk::Box,
     bookmark_revealer: gtk::Revealer,
@@ -493,17 +494,18 @@ impl Shell {
 
     // ---- the tab context menu -------------------------------------------------------------------
 
-    /// Fill the right-click menu for `page` (None: the menu closed).
-    /// The tab menu for the selected tab as a native popover menu on `parent` at (x, y) (a web app's title). Autohide stays on (a click
-    /// away or Escape closes it); the popover is unparented when closed and replaces any earlier one.
-    pub(super) fn show_title_menu(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>, x: i32, y: i32) {
+    /// The tab menu for `page` as our own popover (`menu::popover`: icons, left-aligned rows) on `parent` at (x, y): a right click or long
+    /// press on a tab, the menu key on the tab bar, or a web app's title. Autohide stays on (a click away or Escape closes it); the
+    /// popover is unparented when closed and replaces any earlier one, so a click never leaves two popovers fighting for the grab
+    /// (docs/research/tab-menu-grab.md). AdwTabView has no menu model: libadwaita would open a second popover of its own.
+    pub(super) fn show_tab_menu(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>, x: i32, y: i32, page: Option<&adw::TabPage>) {
         let old = self.title_popover.borrow_mut().take(); // released before popdown: the closed handler borrows it again
         if let Some(old) = old {
             old.popdown();
         }
-        self.setup_tab_menu(self.tab_view.selected_page().as_ref());
-        let popover = gtk::PopoverMenu::from_model(Some(&self.tab_menu));
-        popover.set_has_arrow(false);
+        let Some(page) = page.cloned().or_else(|| self.tab_view.selected_page()) else { return };
+        self.setup_tab_menu(Some(&page));
+        let popover = menu::popover(&self.tab_menu, &self.window, 250);
         popover.set_halign(gtk::Align::Start);
         popover.set_parent(parent);
         popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x, y, 1, 1)));
@@ -526,6 +528,11 @@ impl Shell {
         popover.popup();
     }
 
+    /// The tab menu for the selected tab, from a click on a web app's title.
+    pub(super) fn show_title_menu(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>, x: i32, y: i32) {
+        self.show_tab_menu(parent, x, y, None);
+    }
+
     fn setup_tab_menu(&self, page: Option<&adw::TabPage>) {
         *self.menu_page.borrow_mut() = page.cloned();
         self.tab_menu.remove_all();
@@ -533,14 +540,14 @@ impl Shell {
         let blocked = self.tab_for_page(page).map(|t| t.view().blocked_cookie_sites().len()).unwrap_or(0);
         let cookies = gio::Menu::new();
         let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
-        cookies.append(Some(&label), Some(if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }));
-        cookies.append(Some("Copy address"), Some("win.copy-address"));
+        cookies.append_item(&menu::item(&label, if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }, Some("copy")));
+        cookies.append_item(&menu::item("Copy address", "win.copy-address", Some("link")));
         let in_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
         if !in_app {
-            cookies.append(Some("Install as web app\u{2026}"), Some("win.install-app"));
+            cookies.append_item(&menu::item("Install as web app\u{2026}", "win.install-app", Some("app-window")));
         }
-        cookies.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
-        cookies.append(Some("Print\u{2026}"), Some("win.print"));
+        cookies.append_item(&menu::item("Save as PDF\u{2026}", "win.save-pdf", Some("file-down")));
+        cookies.append_item(&menu::item("Print\u{2026}", "win.print", Some("printer")));
         self.tab_menu.append_section(None, &self.group_menu(page));
         self.tab_menu.append_section(None, &cookies);
         if self.page_is_pinned(page) || in_app {
@@ -553,20 +560,18 @@ impl Shell {
                 if Some(w.id.as_str()) == here {
                     continue;
                 }
-                let item = gio::MenuItem::new(Some(w.display_name()), None);
-                item.set_action_and_target_value(Some("win.send-tab"), Some(&w.id.to_variant()));
-                send.append_item(&item);
+                send.append_item(&menu::targeted(w.display_name(), "win.send-tab", &w.id.to_variant(), Some("layout-grid-circles")));
             }
         }
-        let new_window = gio::MenuItem::new(Some("New window"), None);
-        new_window.set_action_and_target_value(Some("win.send-tab"), Some(&"".to_variant()));
-        send.append_item(&new_window);
-        self.tab_menu.append_submenu(Some("Send to workspace"), &send);
+        send.append_item(&menu::targeted("New window", "win.send-tab", &"".to_variant(), Some("app-window")));
+        let send_item = gio::MenuItem::new_submenu(Some("Send to workspace"), &send);
+        send_item.set_attribute_value(menu::ICON, Some(&"layout-grid-circles".to_variant()));
+        self.tab_menu.append_item(&send_item);
         let close = gio::Menu::new();
         if self.sweeper.borrow().is_some() {
-            close.append(Some("Sweep unused tabs now"), Some("win.sweep-now"));
+            close.append_item(&menu::item("Sweep unused tabs now", "win.sweep-now", Some("swept-broom")));
         }
-        close.append(Some("Close tab"), Some("win.close-menu-tab"));
+        close.append_item(&menu::item("Close tab", "win.close-menu-tab", Some("x")));
         self.tab_menu.append_section(None, &close);
     }
 
@@ -1861,7 +1866,15 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     // The main menu (not in a web app's window, which shows only its page).
     let menu_button = gtk::MenuButton::builder().tooltip_text("Menu").build();
     crate::icons::bind(&menu_button, crate::icons::MENU);
-    menu_button.set_create_popup_func(|button| button.set_menu_model(Some(&main_menu())));
+    // Built afresh each time it opens (the workspaces change); drawn by us for the icons (`menu::popover`).
+    menu_button.set_create_popup_func({
+        let window = window.downgrade();
+        move |button| {
+            if let Some(window) = window.upgrade() {
+                button.set_popover(Some(&menu::popover(&main_menu(), &window, 250)));
+            }
+        }
+    });
     if !workspace.as_ref().is_some_and(|w| w.is_app()) {
         header.pack_end(&menu_button);
     }
@@ -1875,8 +1888,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmark_revealer = gtk::Revealer::builder().child(&bookmark_scroll).reveal_child(false).transition_type(gtk::RevealerTransitionType::SlideDown).build();
 
     let tab_view = adw::TabView::new();
+    // No menu model on the view: the tab menu is ours (`Shell::show_tab_menu`), and libadwaita would open its own popover as well.
     let tab_menu = gio::Menu::new();
-    tab_view.set_menu_model(Some(&tab_menu));
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
     new_tab_button.add_css_class("browsah-new-tab");
@@ -2260,14 +2273,63 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
-    tab_view.connect_setup_menu({
-        let weak = weak.clone();
-        move |_, page| {
-            if let Some(s) = weak.upgrade() {
-                s.setup_tab_menu(page);
+    // The tab menu is ours: a right click or long press on a tab, or the menu key on the bar (libadwaita's `setup-menu` only fires for
+    // a menu model, which would open a second popover; see `Shell::show_tab_menu`).
+    {
+        let bar = tab_bar.clone();
+        let open = {
+            let (weak, bar) = (weak.clone(), bar.clone());
+            move |x: f64, y: f64| -> bool {
+                let Some(tab) = tab_at(&bar, x, y) else { return false };
+                let Some(page) = tab.property::<Option<adw::TabPage>>("page") else { return false };
+                if let Some(s) = weak.upgrade() {
+                    s.show_tab_menu(&bar, x as i32, y as i32, Some(&page));
+                }
+                true
             }
-        }
-    });
+        };
+        let click = gtk::GestureClick::new();
+        click.set_button(3);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click.connect_pressed({
+            let open = open.clone();
+            move |gesture, _, x, y| {
+                if open(x, y) {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            }
+        });
+        bar.add_controller(click);
+        let hold = gtk::GestureLongPress::new();
+        hold.set_touch_only(true);
+        hold.set_propagation_phase(gtk::PropagationPhase::Capture);
+        hold.connect_pressed({
+            let open = open.clone();
+            move |gesture, x, y| {
+                if open(x, y) {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            }
+        });
+        bar.add_controller(hold);
+        // The menu key (and Shift+F10) opens the menu of the selected tab.
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed({
+            let (weak, bar) = (weak.clone(), bar.clone());
+            move |_, key, _, state| {
+                let shift_f10 = key == gtk::gdk::Key::F10 && state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                if key != gtk::gdk::Key::Menu && !shift_f10 {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(s) = weak.upgrade() else { return glib::Propagation::Proceed };
+                let Some(page) = s.tab_view.selected_page() else { return glib::Propagation::Proceed };
+                let at = tab_of_page(&bar, &page).and_then(|t| t.compute_bounds(&bar)).map(|b| (b.x() as i32 + 8, b.y() as i32 + b.height() as i32 - 4)).unwrap_or((8, 24));
+                s.show_tab_menu(&bar, at.0, at.1, Some(&page));
+                glib::Propagation::Stop
+            }
+        });
+        bar.add_controller(keys);
+    }
     // With no address bar the header shows the page title: right-clicking it opens the tab menu (copy the address, print, ...) as a
     // native GTK popover menu (docs/research/tab-menu-grab.md).
     if nav.address_bar == crate::workspace::AddressBar::Hidden {
@@ -3306,43 +3368,74 @@ fn windows_workspace_kind(window: &adw::ApplicationWindow) -> (Option<String>, b
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).map(|s| (s.workspace.as_ref().map(|w| w.id.clone()), s.workspace.as_ref().is_some_and(|w| w.is_app()))).unwrap_or((None, false)))
 }
 
+/// libadwaita's tab widget (private API, named by its type) under (x, y) of the tab bar, if the point is on a tab.
+fn tab_at(bar: &adw::TabBar, x: f64, y: f64) -> Option<gtk::Widget> {
+    let mut widget = bar.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(w) = widget {
+        if w.type_().name() == "AdwTab" {
+            return Some(w);
+        }
+        widget = w.parent();
+    }
+    None
+}
+
+/// The tab widget that shows `page`.
+fn tab_of_page(bar: &adw::TabBar, page: &adw::TabPage) -> Option<gtk::Widget> {
+    fn find(widget: &gtk::Widget, page: &adw::TabPage) -> Option<gtk::Widget> {
+        if widget.type_().name() == "AdwTab" && widget.property::<Option<adw::TabPage>>("page").as_ref() == Some(page) {
+            return Some(widget.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Some(found) = find(&c, page) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+    find(bar.upcast_ref(), page)
+}
+
 /// The main menu: a window with no workspace, the profile's workspaces, and the page tools.
 fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let windows = gio::Menu::new();
-    windows.append(Some("New window"), Some("app.new-window"));
-    windows.append(Some("Quit profile"), Some("app.quit-profile"));
+    windows.append_item(&menu::item("New window", "app.new-window", Some("app-window")));
+    windows.append_item(&menu::item("Quit profile", "app.quit-profile", Some("x")));
     if let Some(profile) = PROFILE.with(|p| p.borrow().clone()) {
         let mut list = crate::workspace::Workspace::list(&profile);
         list.extend(crate::workspace::Workspace::list_apps(&profile));
         if !list.is_empty() {
             let sub = gio::Menu::new();
             for w in &list {
-                let item = gio::MenuItem::new(Some(&format!("{}{}", w.display_name(), if w.is_app() { " (app)" } else { "" })), None);
-                item.set_action_and_target_value(Some("app.open-workspace"), Some(&w.id.to_variant()));
-                sub.append_item(&item);
+                let label = format!("{}{}", w.display_name(), if w.is_app() { " (app)" } else { "" });
+                sub.append_item(&menu::targeted(&label, "app.open-workspace", &w.id.to_variant(), Some(if w.is_app() { "app-window" } else { "layout-grid-circles" })));
             }
-            windows.append_submenu(Some("Open workspace"), &sub);
+            let open = gio::MenuItem::new_submenu(Some("Open workspace"), &sub);
+            open.set_attribute_value(menu::ICON, Some(&"layout-grid-circles".to_variant()));
+            windows.append_item(&open);
         }
     }
     menu.append_section(None, &windows);
     let page = gio::Menu::new();
-    page.append(Some("Copy page address"), Some("win.copy-address"));
-    page.append(Some("Find in page"), Some("win.find"));
-    page.append(Some("Save as PDF\u{2026}"), Some("win.save-pdf"));
-    page.append(Some("Print\u{2026}"), Some("win.print"));
-    page.append(Some("Developer tools"), Some("win.devtools"));
+    page.append_item(&menu::item("Copy page address", "win.copy-address", Some("link")));
+    page.append_item(&menu::item("Find in page", "win.find", Some("search")));
+    page.append_item(&menu::item("Save as PDF\u{2026}", "win.save-pdf", Some("file-down")));
+    page.append_item(&menu::item("Print\u{2026}", "win.print", Some("printer")));
+    page.append_item(&menu::item("Developer tools", "win.devtools", Some("code-xml")));
     menu.append_section(None, &page);
     let tabs = gio::Menu::new();
-    tabs.append(Some("History"), Some("win.history"));
-    tabs.append(Some("Reopen closed tab"), Some("win.reopen-tab"));
+    tabs.append_item(&menu::item("History", "win.history", Some("rotate-ccw-clock")));
+    tabs.append_item(&menu::item("Reopen closed tab", "win.reopen-tab", Some("undo-2")));
     menu.append_section(None, &tabs);
     let config = gio::Menu::new();
-    config.append(Some("Documentation"), Some("win.docs"));
-    config.append(Some("Browser test page"), Some("win.test-page"));
-    config.append(Some("Application config (all options)\u{2026}"), Some("win.config-app"));
-    config.append(Some("Profile config (all options)\u{2026}"), Some("win.config-profile"));
-    config.append(Some("Workspace config (all options)\u{2026}"), Some("win.config-workspace"));
+    config.append_item(&menu::item("Documentation", "win.docs", None));
+    config.append_item(&menu::item("Browser test page", "win.test-page", None));
+    config.append_item(&menu::item("Application config (all options)\u{2026}", "win.config-app", Some("sliders-horizontal")));
+    config.append_item(&menu::item("Profile config (all options)\u{2026}", "win.config-profile", Some("sliders-horizontal")));
+    config.append_item(&menu::item("Workspace config (all options)\u{2026}", "win.config-workspace", Some("sliders-horizontal")));
     menu.append_section(None, &config);
     menu
 }
