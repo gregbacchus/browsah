@@ -1089,6 +1089,26 @@ async fn run_restore(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a sleeping tab wakes when shown and replaces its screenshot", ok && !tabs[0].view().is_dormant(), || format!("{:?} blurred={}", tabs[0].state.borrow(), tabs[0].view().showing_placeholder()));
     r.check("a tab that was never shown is still asleep", tabs[2].view().is_dormant(), || "woken".into());
 
+    // A woken tab's page must be focused (hasFocus) or its text fields show no caret.
+    {
+        let d = Driver { shell: &w };
+        let v = tabs[0].view();
+        v.navigate(&page("input.html"));
+        let _ = wait_until(15_000, || tabs[0].state.borrow().title.contains("input") || tabs[0].state.borrow().address.ends_with("input.html")).await;
+        glib::timeout_future(Duration::from_millis(800)).await;
+        d.click(170.0, 130.0);
+        let ok = wait_until(5_000, || {
+            let t = tabs[0].state.borrow().title.clone();
+            field(&t, "f") == "ta" && field(&t, "hf") == "true"
+        })
+        .await;
+        r.check("after a tab is woken, clicking a text field gives the page focus (caret)", ok, || format!("{:?}", tabs[0].state.borrow().title));
+        if std::env::var_os("BROWSAH_SHOTS").is_some() {
+            glib::timeout_future(Duration::from_millis(600)).await;
+            shot(&w.window, "restored-focus");
+        }
+    }
+
     w.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
     if let Ok(s) = crate::store::Store::open(&db) {
