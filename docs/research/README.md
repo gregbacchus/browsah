@@ -48,6 +48,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [pinned-tab-size.md](pinned-tab-size.md) | 2026-11-18 | How can a titled workspace pin match the ordinary tabs? | Use the ordinary tab strip and keep workspace pin rules in the app. Verified on libadwaita 1.9.1. |
 | [workspace-restart.md](workspace-restart.md) | 2026-11-18 | Why did some workspaces disappear on restart? | Quit preserves the open list and cold launches restore it, including launches that name a workspace. |
 | [Slow start](2026-11-21-slow-start.md) | 2026-11-21 | Why did a start sometimes crawl and show Not Responding? | One slow tab tripped the 3 s first-frame watchdog and switched the whole process to readback (about 7x CPU); inferred from the journal, not reproduced. Fixed, plus a main-loop stall log. |
+| [Task manager](2026-11-21-task-manager.md) | 2026-11-21 | How to show which tabs burn CPU or memory? | Page counters (`Performance.getMetrics`) per tab, `/proc` per process; zygote-forked processes are told apart by thread names. |
 
 ## Conventions
 

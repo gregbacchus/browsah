@@ -77,6 +77,8 @@ window, with a read-only address bar and a *Move to workspace* button), and a wo
 page's script popup becomes a tab, a modal or nothing (`tabs.popups`). See
 [docs/config/routing.md](docs/config/routing.md#modals) and [docs/config/workspace.md](docs/config/workspace.md).
 
+Task manager: `Shift+Esc` (or the main menu) shows what each tab and each browser process costs: the page's main-thread CPU, script memory and element count per tab, CPU and memory per process, sorted by either. A tab can be put to sleep or closed from its row. Nothing is measured while it is closed (docs/research/2026-11-21-task-manager.md).
+
 History: each profile remembers the pages visited (with the workspace) and the tabs closed. `Ctrl+H` opens
 the history window, `Ctrl+Shift+T` reopens the last closed tab (in an ephemeral window: the last closed
 window, so ephemeral windows are recoverable). `browsah history` lists and clears it from the command line.

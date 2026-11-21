@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Busy page</title>
+<body style="font: 24px sans-serif; background: #ffe8e8">
+<h1>Busy page</h1>
+<p id="n">spinning</p>
+<script>
+// Keeps the main thread busy about 70% of the time (for the task manager's self-test) and holds some script memory.
+const keep = [];
+for (let i = 0; i < 200000; i++) keep.push({ i, s: 'x' + i });
+function spin() {
+  const end = performance.now() + 70;
+  let x = 0;
+  while (performance.now() < end) x += Math.sqrt(x + 1);
+  document.getElementById('n').textContent = 'spinning ' + keep.length;
+  setTimeout(spin, 30);
+}
+spin();
+</script>

@@ -27,6 +27,7 @@ mod prompts;
 mod split;
 mod stall;
 mod sweep;
+mod taskman;
 mod nav;
 mod navmenu;
 mod selftest;
@@ -2507,6 +2508,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         }
     });
+    add_action(&window, "task-manager", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.open_task_manager();
+            }
+        }
+    });
     add_action(&window, "history", {
         let weak = weak.clone();
         move || {
@@ -2671,6 +2680,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     app.set_accels_for_action("win.bookmark-page", &["<Ctrl>D"]);
     app.set_accels_for_action("win.reopen-tab", &["<Ctrl><Shift>T"]);
     app.set_accels_for_action("win.history", &["<Ctrl>H"]);
+    app.set_accels_for_action("win.task-manager", &["<Shift>Escape"]);
     app.set_accels_for_action("win.print", &["<Ctrl>P"]);
     app.set_accels_for_action("win.save-pdf", &["<Ctrl><Shift>P"]);
     app.set_accels_for_action("win.devtools", &["F12", "<Ctrl><Shift>I"]);
@@ -3381,7 +3391,8 @@ const WORKSPACE_PICKER_CSS: &str = ".browsah-workspace-picker { background-color
 const MENU_ITEM_CSS: &str = "
     popover button, popover button label,
     popover row, popover row label,
-    .browsah-workspace-picker button, .browsah-workspace-picker button label {
+    .browsah-workspace-picker button, .browsah-workspace-picker button label,
+    .browsah-sort button, .browsah-sort button label {
         font-weight: normal;
     }
     popover.browsah-navigation-history button label { color: var(--popover-fg-color); }
@@ -3582,6 +3593,7 @@ fn main_menu() -> gio::Menu {
     let tabs = gio::Menu::new();
     tabs.append_item(&menu::item("History", "win.history", Some("rotate-ccw-clock")));
     tabs.append_item(&menu::item("Reopen closed tab", "win.reopen-tab", Some("undo-2")));
+    tabs.append_item(&menu::item("Task manager", "win.task-manager", Some("activity")));
     menu.append_section(None, &tabs);
     let config = gio::Menu::new();
     config.append_item(&menu::item("Documentation", "win.docs", None));

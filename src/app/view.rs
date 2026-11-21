@@ -2574,6 +2574,16 @@ impl BrowserView {
         self.shared.images.lock().unwrap().get(url).copied()
     }
 
+    /// The result of a `cdp` call once it has arrived, taken out of the table (for a caller that polls: the table would only grow).
+    pub fn take_cdp_result(&self, id: i32) -> Option<(bool, String)> {
+        self.shared.cdp_results.lock().unwrap().remove(&id)
+    }
+
+    /// A number that tells this view from every other (it is not reused).
+    pub fn uid(&self) -> u64 {
+        self.shared.id
+    }
+
     /// The result of a `cdp` call once it has arrived: (success, JSON).
     pub fn cdp_result(&self, id: i32) -> Option<(bool, String)> {
         self.shared.cdp_results.lock().unwrap().get(&id).cloned()

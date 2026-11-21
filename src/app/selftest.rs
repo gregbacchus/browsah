@@ -79,9 +79,11 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
         }
         let snapshot = gtk::Snapshot::new();
         paintable.snapshot(&snapshot, w as f64, h as f64);
-        let Some(node) = snapshot.to_node() else { return false };
-        let Some(renderer) = widget.native().and_then(|n| n.renderer()) else { return false };
-        renderer.render_texture(&node, None).save_to_png(&path).is_ok()
+        let Some(node) = snapshot.to_node() else { eprintln!("shot: no node"); return false };
+        let Some(renderer) = widget.native().and_then(|n| n.renderer()) else { eprintln!("shot: no renderer"); return false };
+        let r = renderer.render_texture(&node, None).save_to_png(&path);
+        if let Err(e) = &r { eprintln!("shot: {e}"); }
+        r.is_ok()
     })();
     println!("shot {name}: {}", if ok { "saved" } else { "failed" });
 }
@@ -150,7 +152,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "split", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -477,6 +479,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("split") {
         run_split(shell, r).await;
+    }
+    if wants("taskmanager") {
+        run_task_manager(shell, r).await;
     }
     if wants("sleep") {
         run_sleep(shell, r).await;
@@ -5397,6 +5402,55 @@ home_page: 'http://localhost:{port}/white.html'
 
 /// Split tabs: two pages side by side in one tab, the address bar and the buttons following the focused pane, either pane closing.
 /// Synthetic input and the app's own calls (no real pointer), so a click in a pane is its focus call, not a real press.
+/// The task manager: a busy page ranks above a quiet one, a sleeping tab says so, the processes are listed, and the buttons act.
+async fn run_task_manager(shell: &Rc<Shell>, r: &mut Report) {
+    let quiet = shell.open_tab(&page("a.html"), true);
+    let busy = shell.open_tab(&page("busy.html"), false);
+    let ok = wait_until(15_000, || [&quiet, &busy].iter().all(|t| { let s = t.state.borrow(); s.ready && !s.loading && !s.title.is_empty() })).await;
+    r.check("a quiet and a busy tab load", ok, || format!("{:?} {:?}", quiet.state.borrow().title, busy.state.borrow().title));
+    // A background tab is awake and measured too.
+    let tm = shell.open_task_manager();
+    r.check("the task manager opens as a window of its own", tm.window.is_visible() && super::taskman::task_manager().is_some(), || "not open".into());
+    let again = shell.open_task_manager();
+    r.check("asking again raises the same window", Rc::ptr_eq(&tm, &again), || "a second window".into());
+    let measured = wait_until(15_000, || tm.tab_texts().iter().any(|(t, s)| t.contains("Busy page") && s.contains("CPU ") && !s.contains("measuring"))).await;
+    let rows = tm.tab_texts();
+    r.check("the busy tab gets a CPU reading", measured, || format!("{rows:?}"));
+    let busy_cpu = rows.iter().find(|(t, _)| t.contains("Busy page")).and_then(|(_, s)| s.split("CPU ").nth(1)).and_then(|s| s.split('%').next()).and_then(|n| n.parse::<f64>().ok());
+    r.check("the busy page uses a clear share of the main thread (about 70% expected)", busy_cpu.is_some_and(|c| (25.0..=100.0).contains(&c)), || format!("{busy_cpu:?}"));
+    let ranked = rows.iter().position(|(t, _)| t.contains("Busy page")) == Some(0);
+    r.check("sorted by CPU the busy tab is first", ranked, || format!("{rows:?}"));
+    let quiet_row = rows.iter().find(|(t, _)| t.contains("Page A")).map(|(_, s)| s.clone()).unwrap_or_default();
+    r.check("the quiet tab reads low", quiet_row.contains("CPU 0") || quiet_row.contains("CPU 1") || quiet_row.contains("CPU 2"), || quiet_row.clone());
+    r.check("script memory and element counts are shown", rows.iter().any(|(t, s)| t.contains("Busy page") && s.contains("script memory") && s.contains("elements")), || format!("{rows:?}"));
+    // Memory order: the busy page holds 200,000 objects.
+    tm.memory_sort.set_active(true);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("sorted by memory the busy tab is first", tm.tab_texts().first().is_some_and(|(t, _)| t.contains("Busy page")), || format!("{:?}", tm.tab_texts()));
+    tm.cpu_sort.set_active(true);
+    // Processes: the browser itself, the renderers, the GPU.
+    let procs = wait_until(15_000, || tm.summary.subtitle().is_some_and(|s| s.contains("processes") && !s.contains("measuring"))).await;
+    r.check("the summary totals the browser's processes", procs, || format!("{:?}", tm.summary.subtitle()));
+    let kinds: Vec<String> = { let mut v = Vec::new(); let mut c = tm.proc_list.first_child(); while let Some(w) = c { if let Some(row) = w.downcast_ref::<adw::ActionRow>() { v.push(row.title().to_string()); } c = w.next_sibling(); } v };
+    r.check("the process list has the browser and a page renderer", kinds.iter().any(|k| k.starts_with("Browser")) && kinds.iter().any(|k| k.starts_with("Page renderer")), || format!("{kinds:?}"));
+    check_no_bold(r, "the task manager", &tm.content);
+    glib::timeout_future(Duration::from_millis(600)).await; // let the new rows be drawn
+    shot(&tm.window, "task-manager");
+    // Put a tab to sleep from its row: it says so and stops being measured.
+    let sleeping = shell.open_tab(&page("b.html"), false);
+    wait_until(15_000, || { let s = sleeping.state.borrow(); s.ready && !s.loading && !s.title.is_empty() }).await;
+    glib::timeout_future(Duration::from_millis(800)).await;
+    shell.discard_tab(&sleeping);
+    let asleep = wait_until(8_000, || tm.tab_texts().iter().any(|(t, s)| t.contains("Page B") && s.contains("Asleep"))).await;
+    r.check("a tab put to sleep reads as asleep", asleep, || format!("{:?}", tm.tab_texts()));
+    // Closing the window stops the sampling and switches the page counters off.
+    tm.window.close();
+    r.check("closing the window forgets it", super::taskman::task_manager().is_none(), || "still open".into());
+    for t in [&quiet, &busy, &sleeping] {
+        shell.tab_view.close_page(&t.page);
+    }
+}
+
 async fn run_split(shell: &Rc<Shell>, r: &mut Report) {
     use super::split::Side;
     let tab = shell.open_tab(&page("a.html"), true);

@@ -30,6 +30,7 @@ mod selector;
 mod store;
 mod suggest;
 mod sweep;
+mod taskman;
 mod system_install;
 mod webapp;
 mod workspace;
