@@ -47,6 +47,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [web-apps-own-config.md](web-apps-own-config.md) | 2026-11-18 | Should a web app be a workspace with an `app:` section? | No: its own `apps/<id>/app.yaml`, sharing the window code; shared storage by default; link delivery by `multiple_windows`/`multiple_tabs`. |
 | [pinned-tab-size.md](pinned-tab-size.md) | 2026-11-18 | How can a titled workspace pin match the ordinary tabs? | Use the ordinary tab strip and keep workspace pin rules in the app. Verified on libadwaita 1.9.1. |
 | [workspace-restart.md](workspace-restart.md) | 2026-11-18 | Why did some workspaces disappear on restart? | Quit preserves the open list and cold launches restore it, including launches that name a workspace. |
+| [Slow start](2026-11-21-slow-start.md) | 2026-11-21 | Why did a start sometimes crawl and show Not Responding? | One slow tab tripped the 3 s first-frame watchdog and switched the whole process to readback (about 7x CPU); inferred from the journal, not reproduced. Fixed, plus a main-loop stall log. |
 
 ## Conventions
 

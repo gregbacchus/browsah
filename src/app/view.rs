@@ -91,6 +91,14 @@ fn supported(id: i32) -> bool {
     .any(|m| *m as i32 == id)
 }
 
+/// Accelerated (dmabuf) frames any view of this process has received: proof that the GPU path works here, whatever one slow tab does.
+static ACCELERATED_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Whether any view has ever received an accelerated frame in this process.
+pub fn accelerated_path_works() -> bool {
+    ACCELERATED_FRAMES.load(Ordering::Relaxed) > 0
+}
+
 /// What a page tells the shell about itself.
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
@@ -659,6 +667,7 @@ wrap_render_handler! {
             }
             if !popup {
                 self.shared.frames.fetch_add(1, Ordering::Relaxed);
+                ACCELERATED_FRAMES.fetch_add(1, Ordering::Relaxed);
             }
             let id = self.shared.id;
             if let Some(frame) = DmabufFrame::from_info(info) {

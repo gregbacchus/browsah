@@ -25,6 +25,7 @@ mod swept;
 mod pinned_tabs;
 mod prompts;
 mod split;
+mod stall;
 mod sweep;
 mod nav;
 mod navmenu;
@@ -1648,7 +1649,13 @@ impl Shell {
                         if let (Some(shell), Some(tab)) = (shell.upgrade(), tab.upgrade()) {
                             // Still the same view, still visible or not, and nothing ever arrived.
                             if Rc::ptr_eq(&tab.view(), &view) && view.frames() == 0 && !view.is_hidden() {
-                                shell.fall_back(&tab);
+                                // One tab that is slow to paint (a busy start, a page still loading) says nothing about the GPU:
+                                // switching the whole process to readback costs several times the CPU and made the browser crawl.
+                                if view::accelerated_path_works() {
+                                    crate::log_info!("a tab has shown no frame for {FIRST_FRAME_WATCHDOG:?}, but other tabs get accelerated frames: not falling back to readback");
+                                } else {
+                                    shell.fall_back(&tab);
+                                }
                             }
                         }
                     });
@@ -2938,6 +2945,7 @@ pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, pro
         let app_file = opts.config_path.as_deref().map(std::path::PathBuf::from).unwrap_or_else(config::default_path);
         fullconfig::set_app_file(app_file.clone());
         sweep::start_background_sweeping(profile.clone(), app_file);
+        stall::watch_main_loop();
         // Launcher entries of web apps follow their settings (for example `multiple_windows` and "New Window").
         let for_launchers = profile.clone();
         std::thread::spawn(move || crate::webapp::refresh_launchers(&for_launchers));
