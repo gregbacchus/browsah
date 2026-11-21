@@ -288,16 +288,39 @@ fn bound_name(icon: &Icon, background: Option<bool>) -> String {
     background.map_or_else(|| name(icon), |dark| name_for_background(icon, dark))
 }
 
-/// Set a tint override for icons on the window chrome. Popovers use their own surface colours.
-pub fn set_chrome_background(widgets: &[&glib::Object], dark: bool) {
+/// Whether `widget` is part of the window chrome: inside one of `roots` (the header bar, the tab bar) and not inside a popover, which has its
+/// own surface colours.
+fn within_chrome(widget: &glib::Object, roots: &[gtk::Widget]) -> bool {
+    let mut current = widget.downcast_ref::<gtk::Widget>().cloned();
+    while let Some(w) = current {
+        if w.is::<gtk::Popover>() {
+            return false;
+        }
+        if roots.iter().any(|r| *r == w) {
+            return true;
+        }
+        current = w.parent();
+    }
+    false
+}
+
+/// Set the tint override for **every** icon bound inside `roots` (the window's header bar and tab bar). Do not list buttons by hand: a button
+/// added to the chrome later (the split button, the bookmarks menu) was missed that way and showed a light icon on a light tint.
+/// Popovers use their own surface colours and are left alone.
+pub fn set_chrome_background(roots: &[gtk::Widget], dark: bool) {
     BOUND.with(|bindings| {
         for (weak, icon, background) in bindings.borrow_mut().iter_mut() {
-            if let Some(widget) = weak.upgrade().filter(|widget| widgets.contains(&widget)) {
+            if let Some(widget) = weak.upgrade().filter(|w| within_chrome(w, roots)) {
                 *background = Some(dark);
                 widget.set_property("icon-name", name_for_background(icon, dark));
             }
         }
     });
+}
+
+/// The icons bound inside `roots` and whether each has a tint override (for the self-test: on a tinted window every one must).
+pub fn chrome_icons(roots: &[gtk::Widget]) -> Vec<(&'static str, Option<bool>)> {
+    BOUND.with(|bindings| bindings.borrow().iter().filter(|(w, _, _)| w.upgrade().is_some_and(|w| within_chrome(&w, roots))).map(|(_, icon, background)| (icon.id, *background)).collect())
 }
 
 /// Bind an icon to a widget, preserving its background when the icon changes.
@@ -355,10 +378,10 @@ mod tests {
     }
 
     #[test]
-    fn the_split_icon_is_one_filled_outline() {
+    fn the_split_icon_is_two_columns_with_a_filled_block_and_the_same_stroke_as_the_rest() {
         let svg = render(&SPLIT_RIGHT, "#abcdef");
-        assert_eq!(svg.matches("fill=\"#abcdef\"").count(), 1, "{svg}");
-        assert!(svg.contains("fill-rule=\"evenodd\"") && svg.contains("scale(1.5)") && !svg.contains("currentColor"), "{svg}");
+        assert!(svg.contains("stroke=\"#abcdef\"") && svg.contains("stroke-width=\"1.5\"") && !svg.contains("transform") && !svg.contains("currentColor"), "{svg}");
+        assert_eq!(svg.matches("fill=\"#abcdef\"").count(), 1, "only the block in the right pane is filled: {svg}");
     }
 
     #[test]

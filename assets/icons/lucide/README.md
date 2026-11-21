@@ -13,8 +13,7 @@ Stop icon. `src/icons.rs` sets the fill colour along with the stroke colour.
 `list-star.svg` is the bookmarks menu button: Lucide's `list-video` (drawn from memory, so its lines may differ slightly from the published
 file) with the play triangle replaced by Lucide's `star`, scaled to 0.4 and filled (`fill="currentColor"`).
 
-`split-right.svg` is the split pane button: the `split-right-symbolic` icon of the Paua terminal (same author, MIT), a filled 16 px drawing put on the
-24 px grid with `scale(1.5)`. It is a filled shape, not a Lucide stroke.
+`split-right.svg` is the split pane button: Lucide's `columns-2` with a small filled block in the right pane (the block is a `fill="currentColor"` rect, like the star of `list-star.svg`). An earlier version was a filled drawing from another icon set whose outline was thicker than the 1.5 stroke of the rest: draw every icon here with strokes, and use fills only for small blocks.
 
 `activity.svg` is the task manager's icon, unchanged from Lucide.
 

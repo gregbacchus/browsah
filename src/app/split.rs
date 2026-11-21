@@ -22,6 +22,9 @@ pub enum Side {
 
 /// The radius of a pane's corners when the window has no colour frame to take it from.
 pub const PANE_RADIUS: i32 = 10;
+/// The focus ring: the card's own border, inside it (`MENU_ITEM_CSS`). With a frame of thickness `b` around the page the split's gap and edges stay `b`
+/// wide: the outer padding is `b - RING` while a split tab is shown (`split-active` on the frame) and the separator is `b - 2 * RING` (`workspace_css`).
+pub const RING: i32 = 2;
 
 /// The right pane and the widgets that lay the two out.
 pub struct Pane {
@@ -349,6 +352,13 @@ impl Shell {
     pub(super) fn refresh_split_button(&self) {
         let split = self.current().is_some_and(|t| t.is_split());
         self.split_button.set_tooltip_text(Some(if split { "Split panes" } else { "Split the page into two panes" }));
+        if let Some(frame) = self.tab_view.parent() {
+            if split {
+                frame.add_css_class("split-active");
+            } else {
+                frame.remove_css_class("split-active");
+            }
+        }
         if split {
             self.split_button.add_css_class("active");
         } else {

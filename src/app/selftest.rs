@@ -4316,6 +4316,15 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
         .map(|icon| Some(format!("browsah-{icon}-{variant}").into()));
     let variant = if dark { "light" } else { "dark" };
     r.check("window chrome icons contrast with the workspace tint", chrome_icons() == expected(variant), || format!("{:?}", chrome_icons()));
+    // Every icon inside the header and tab bar follows the tint, found by walking the chrome (not from a list: the split button and the bookmarks
+    // menu were once left out of a list and showed a light icon on a light tint).
+    let walked = || crate::icons::chrome_icons(&w.chrome_roots());
+    let ids = || walked().iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    r.check("the chrome walk finds the split button and the bookmarks menu", ids().contains(&"split-right") && ids().contains(&"list-star") && ids().len() >= 10, || format!("{:?}", ids()));
+    let untinted = || walked().iter().filter(|(_, b)| b.is_none()).map(|(id, _)| *id).collect::<Vec<_>>();
+    r.check("every icon in the chrome has the tint override (none left on the desktop's colour)", untinted().is_empty(), || format!("{:?}", untinted()));
+    r.check("they all contrast the same way", walked().iter().all(|(_, b)| *b == walked()[0].1), || format!("{:?}", walked()));
+    r.check("the split and bookmarks icons are in the contrasting variant", w.split_button.icon_name().is_some_and(|n| n.ends_with(variant)) && w.bookmarks_button.icon_name().is_some_and(|n| n.ends_with(variant)), || format!("{:?} {:?}", w.split_button.icon_name(), w.bookmarks_button.icon_name()));
     crate::icons::bind(&w.star, crate::icons::STAR_FILLED);
     r.check("changing the bookmark star keeps the tint override", w.star.icon_name().as_deref() == Some(format!("browsah-star-filled-{variant}").as_str()), || format!("{:?}", w.star.icon_name()));
     w.update_star();
@@ -4323,7 +4332,26 @@ async fn run_frame(shell: &Rc<Shell>, r: &mut Report) {
     let original_scheme = style.color_scheme();
     style.set_color_scheme(if dark { adw::ColorScheme::ForceLight } else { adw::ColorScheme::ForceDark });
     r.check("chrome icons follow the new tint after the appearance changes", chrome_icons() == expected(if dark { "dark" } else { "light" }), || format!("{:?}", chrome_icons()));
+    let flipped = if dark { "dark" } else { "light" };
+    r.check("the split and bookmarks icons follow the new tint too", w.split_button.icon_name().is_some_and(|n| n.ends_with(flipped)) && w.bookmarks_button.icon_name().is_some_and(|n| n.ends_with(flipped)), || format!("{:?} {:?}", w.split_button.icon_name(), w.bookmarks_button.icon_name()));
     style.set_color_scheme(original_scheme);
+    // A split tab keeps the frame's thickness (4 px): the page is 4 px from the window's edges and from the other pane, the focus ring included.
+    w.open_in_split(&format!("http://localhost:{port}/white.html"));
+    let t = 4.0_f64;
+    let laid_out = wait_until(15_000, || tab.split_pane().is_some_and(|p| p.view.widget.width() > 100 && tab.view().widget.width() > 100)).await;
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let bounds = |v: &gtk::Overlay| v.compute_bounds(&w.window).map(|b| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width()), f64::from(b.height())));
+    if let (true, Some(left), Some(right)) = (laid_out, bounds(&tab.view().widget), tab.split_pane().and_then(|p| bounds(&p.view.widget))) {
+        let window_width = f64::from(w.window.width());
+        r.check("split: the frame is as thick at the window's edges as without a split (ring included)", (left.0 - t).abs() <= 1.0 && (window_width - (right.0 + right.2) - t).abs() <= 1.0, || format!("left x {} right margin {} want {t}", left.0, window_width - (right.0 + right.2)));
+        r.check("split: the gap between the pages is the frame's thickness (ring + separator + ring)", ((right.0 - (left.0 + left.2)) - t).abs() <= 1.0, || format!("gap {} want {t}", right.0 - (left.0 + left.2)));
+    } else {
+        r.check("split: the panes were laid out", false, || "no layout".into());
+    }
+    shot(&w.window, "frame-split");
+    w.close_split_pane(super::split::Side::Right);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("closing the split gives the frame its full thickness back", (bounds(&tab.view().widget).map_or(-1.0, |b| b.0) - t).abs() <= 1.0, || format!("{:?}", bounds(&tab.view().widget)));
     tab.dirty.set(false);
     w.mark_tab(&tab);
     let tint = {

@@ -91,6 +91,26 @@ All menus look and behave the same. GTK's own `PopoverMenu` cannot show an icon 
   regular weight). A scripted run (synthetic input, no real pointer serial) cannot show a real pointer grab, a click outside or Escape: say so, and ask for a look on
   real GNOME when you change how a popover is opened or closed.
 
+## Rule: icons and text in the header bar and tab bar must contrast with the window tint (read before adding or changing anything in the nav bar)
+
+The header bar (nav bar) and tab bar are painted in the workspace's or profile's colour (`workspace_css`), which can be light while the desktop is
+dark or the reverse. The desktop's style says nothing about what is readable there. This has gone wrong repeatedly (a light split icon and a light
+bookmarks icon on a cream tint, which looked like a missing button), so follow all of this:
+
+1. **Icons are always `icons::bind(&widget, ICON)`** (Lucide, see the icons rule). Never `set_icon_name` a stock or symbolic name on a chrome button,
+   never set a colour by hand, never keep your own copy of the SVG. To change a bound icon later, `bind` again (it keeps the tint override).
+2. **Do not list buttons.** `Shell::refresh_color_css` calls `icons::set_chrome_background(&self.chrome_roots(), dark)`, which finds *every* bound
+   icon inside the header bar and tab bar by walking the widget tree (popovers are skipped: they have their own surface). A new button needs only
+   to be put in the header or tab bar and bound. If it is created after the window was built, call `refresh_color_css()` afterwards.
+3. **Text and surfaces come from `workspace_css`**, from `icons::foreground`, `icons::dark_background` and `icons::surface_on` (WCAG contrast, no
+   hard-coded colours). A new kind of chrome text, entry, selected surface or button class needs its own selector there (libadwaita draws entries and selected
+   tabs as a translucent tint of the text colour, which vanishes on saturated colours: docs/research/chrome-contrast.md). Do not trust the desktop's colours.
+4. **Favicons and extension artwork keep their own colours**; disabled buttons are dimmed by GTK: do not fight either.
+5. **Test it, and look.** The `frame` self-test section walks the chrome and fails when any bound icon has no tint override, then checks the split button and
+   bookmarks menu in both styles; `contrast` checks the entry on purple, yellow and navy. Run `BROWSAH_SHOTS=/some/dir scripts/test selftest frame,contrast`
+   and open `frame-maximized.png`: every icon must be clearly visible on the cream tint and `contrast-*.png` on the others. Passing checks do not show a
+   pale icon, a picture does. Notes: docs/research/navigation-icon-contrast.md, docs/research/chrome-contrast.md.
+
 ## Rule: record findings in docs/research/
 
 Research, measurements and design decisions go in `docs/research/` (one dated note per question,
@@ -173,7 +193,7 @@ take minutes.
 
 ## Conventions and gotchas
 
-- **Icons are Lucide** (24 px grid, 1.5 stroke, shown at the usual 16 px; `src/icons.rs`, `assets/icons/lucide/`, docs/research/icons-lucide.md). Add the SVG unchanged to `assets/icons/lucide/`, list it in `src/icons.rs` and `icons::bind` it to the widget. Do not use a `-symbolic` name for an outline icon: GTK fills symbolic icons. Stock symbolic icons remain only where nothing is converted yet.
+- **Icons are Lucide** (24 px grid, 1.5 stroke, shown at the usual 16 px; `src/icons.rs`, `assets/icons/lucide/`, docs/research/icons-lucide.md). Add the SVG unchanged to `assets/icons/lucide/`, list it in `src/icons.rs` and `icons::bind` it to the widget. Only Lucide stroke icons: a drawing from elsewhere put on the 24 px grid has its own line weight and looks heavier or lighter than its neighbours (the split icon did, 1.9 px against 1.5 px), so pick the closest Lucide icon instead, and compare a picture of the nav bar. Do not use a `-symbolic` name for an outline icon: GTK fills symbolic icons. Stock symbolic icons remain only where nothing is converted yet.
 
 - **CEF runs on its own UI thread** (`multi_threaded_message_loop`). Never pump it from the GTK
   loop: that pins the main thread at 100 % CPU (docs/research/cef-multi-tab-cost.md).

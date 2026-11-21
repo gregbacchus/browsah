@@ -24,3 +24,13 @@ test_dir="$(mktemp -d)"
 XDG_CONFIG_HOME="$test_dir/config" XDG_DATA_HOME="$test_dir/data" \
 XDG_CACHE_HOME="$test_dir/cache" BROWSAH_SHOTS="$test_dir/shots" scripts/test selftest frame
 ```
+
+## 2026-11-21: the split button and the bookmarks menu were missed
+
+`Shell::refresh_color_css` listed the chrome buttons by hand (`back`, `forward`, `reload`, the workspace picker, swept, star, downloads, menu), so the split
+button and the bookmarks menu button, added later, kept the desktop-style icon: light on the cream tint (`#f7f1e8`) of the `frame` self-test, nearly
+invisible. The test listed the same eight icons, so it passed.
+
+Fix: `icons::set_chrome_background(roots, dark)` now walks every bound icon inside the header bar and tab bar (skipping popovers), and the `frame` section
+walks the same tree (`icons::chrome_icons`) and fails for any icon without an override. Measured on this machine: the picture `frame-maximized.png` now
+shows both icons dark on the cream tint; 32 of 32 checks. The rule for adding to the nav bar is in `AGENTS.md`.

@@ -407,11 +407,12 @@ impl Shell {
         let dark = adw::StyleManager::default().is_dark();
         let bg = if dark { &pair.dark } else { &pair.light };
         provider.load_from_string(&workspace_css(&format!("ws-{id}"), bg, &frame));
-        crate::icons::set_chrome_background(&[
-            self.back.upcast_ref(), self.forward.upcast_ref(), self.reload.upcast_ref(),
-            self.picker.button.upcast_ref(), self.swept.button.upcast_ref(), self.star.upcast_ref(),
-            self.downloads.button.upcast_ref(), self.menu_button.upcast_ref(),
-        ], crate::icons::dark_background(bg));
+        crate::icons::set_chrome_background(&self.chrome_roots(), crate::icons::dark_background(bg));
+    }
+
+    /// What counts as the window's chrome for icon colours: everything inside the header bar and the tab bar (see `icons::set_chrome_background`).
+    pub(crate) fn chrome_roots(&self) -> Vec<gtk::Widget> {
+        vec![self.header.clone().upcast(), self.tab_bar.clone().upcast()]
     }
 
     fn chrome_icon_name(&self, icon: &crate::icons::Icon) -> String {
@@ -3400,9 +3401,10 @@ const MENU_ITEM_CSS: &str = "
     popover.browsah-navigation-history button label { color: var(--popover-fg-color); }
     /* A split tab: two rounded cards with the window colour showing between them (docs/research/split-panes.md). */
     paned.browsah-split { background-color: @window_bg_color; }
-    paned.browsah-split > separator { min-width: 6px; min-height: 6px; background: transparent; border: none; box-shadow: none; }
-    .browsah-pane { border-radius: 10px; }
-    .browsah-pane.focused { box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.6); }
+    paned.browsah-split > separator { min-width: 0; min-height: 0; background: transparent; border: none; box-shadow: none; }
+    /* The focus ring is the card's own border, inside it: a box-shadow outside the card is cut off at the window's edges and showed only in the gap between the panes. */
+    .browsah-pane { border-radius: 10px; border: 2px solid transparent; } /* split::RING */
+    .browsah-pane.focused { border-color: alpha(@accent_bg_color, 0.6); }
 ";
 
 /// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
@@ -3432,9 +3434,15 @@ fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> S
     if frame.enabled && t > 0 {
         let r = frame.radius.clamp(0, 40);
         let pane = if r > 0 { r } else { split::PANE_RADIUS }; // the panes of a split tab take the frame's corners
+        // The frame is `t` thick all round the page, and between the panes of a split tab. The focus ring (RING, inside each pane's card) is part of
+        // that: so a split tab's frame padding is `t - RING` and the separator `t - 2 * RING` (never below 0).
+        let ring = split::RING;
+        let (outer, gap) = ((t - ring).max(0), (t - 2 * ring).max(0));
         css.push_str(&format!(
             "\nwindow.{class}:not(.fullscreen) .browsah-frame {{ background-color: {bg}; padding: 0 {t}px {t}px {t}px; }}\n\
-             window.{class}:not(.fullscreen).has-footer .browsah-frame {{ padding-bottom: 0; }}\n\
+             window.{class}:not(.fullscreen) .browsah-frame.split-active {{ padding: 0 {outer}px {outer}px {outer}px; }}\n\
+             window.{class}:not(.fullscreen) paned.browsah-split > separator {{ min-width: {gap}px; min-height: {gap}px; }}\n\
+             window.{class}:not(.fullscreen).has-footer .browsah-frame, window.{class}:not(.fullscreen).has-footer .browsah-frame.split-active {{ padding-bottom: 0; }}\n\
              window.{class}:not(.fullscreen) .browsah-frame > tabview {{ border-radius: {r}px; }}\n\
              window.{class}:not(.fullscreen) paned.browsah-split {{ background-color: {bg}; }}\n\
              window.{class}:not(.fullscreen) .browsah-pane {{ border-radius: {pane}px; }}"
@@ -3649,6 +3657,14 @@ mod frame_css_tests {
         for off in [FrameConfig { enabled: false, thickness: 9, radius: 9 }, FrameConfig { enabled: true, thickness: 0, radius: 9 }] {
             let css = workspace_css("ws-a", &pair().dark, &off);
             assert!(!css.contains("browsah-frame") && css.contains("headerbar"), "{css}");
+        }
+        // A split tab keeps the frame's thickness b: the ring r is part of it, so the outer padding is b - r and the separator b - 2r.
+        let r = split::RING;
+        assert!(MENU_ITEM_CSS.contains(&format!("border: {r}px solid transparent")), "the ring's border is split::RING");
+        for (b, outer, gap) in [(9, 9 - r, 9 - 2 * r), (4, 4 - r, 0), (3, 1, 0), (1, 0, 0)] {
+            let css = workspace_css("ws-a", &pair().dark, &FrameConfig { enabled: true, thickness: b, radius: 11 });
+            assert!(css.contains(&format!(".browsah-frame.split-active {{ padding: 0 {outer}px {outer}px {outer}px; }}")), "b={b}: {css}");
+            assert!(css.contains(&format!("paned.browsah-split > separator {{ min-width: {gap}px; min-height: {gap}px; }}")), "b={b}: {css}");
         }
         // Silly values are held to a sensible range.
         let big = workspace_css("ws-a", &pair().light, &FrameConfig { enabled: true, thickness: 900, radius: -5 });

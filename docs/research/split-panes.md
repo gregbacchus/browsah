@@ -29,7 +29,7 @@ the Paua terminal. At most two panes, always side by side. The tab bar and the a
   pane and puts the cursor in the address bar; in a split tab it opens *Close left pane* / *Close right pane*. Links, images and media
   have *Open in split pane* (`open-split`, `open-image-split`), bookmarks have it in their right-click menu, and a split tab's page menu
   has *Close this pane* (`close-pane`). With a split already open these replace the right page: there is never a third pane.
-- **Icon.** Paua's `split-right-symbolic` (same author, MIT), a filled 16 px drawing scaled onto the 24 px grid (`split-right.svg`).
+- **Icon.** `split-right.svg`: Lucide's `columns-2` (rounded square, divider) with a small filled block in the right pane, drawn with the same 1.5 stroke as every other icon. It was first Paua's `split-right-symbolic`, a filled 16 px drawing whose outline came out 1.9 px thick on the 24 px grid, visibly heavier than the Lucide strokes beside it; the block is kept, the lines are now 1.5 (changed 2026-11-21).
 
 ## Not done, on purpose
 
@@ -50,3 +50,9 @@ scripts/test unit ctxmenu
 
 (If the binary answers "this browsah installation differs from the codec runtime", an installed codec runtime is hashing the old binary:
 set `BROWSAH_CODEC_ACTIVE=1` for the run instead of reinstalling.)
+
+## 2026-11-21: the focus ring showed only in the gap
+
+The focused pane's ring was a `box-shadow` outside its card. The panes fill the tab area, so the part of the shadow that fell outside the window (top, bottom and the outer side) was cut off and only the strip in the gap between the panes showed. The ring is now the card's own 2 px border (transparent on the unfocused pane, so nothing moves when focus changes), drawn inside the card on all four sides. Checked in the `split` section's picture (`split.png`: the right pane's ring runs all round); 43 of 43 checks. A ring drawn outside a widget that fills its parent will always be clipped: draw it inside.
+
+Follow-up, same day: **the frame stays `b` thick round and between the panes.** With the ring (`r` = 2 px, `split::RING`) inside the cards, the outer padding of a split tab is `b - r` (class `split-active` on the frame, set in `refresh_split_button`) and the separator is `b - 2r`, never below 0, so ring + padding and ring + separator + ring are both `b` (`window.frame.thickness`, default 4: padding 2, separator 0). Measured in the `frame` self-test with the 4 px frame: the page is 4 px from the window's edges and 4 px from the other pane (66 of 66 checks, and `frame-split.png` looked at); closing the split gives the full 4 px back. Without a frame (no workspace colour) the separator is 0 and the gap is the two rings, 4 px. **Not checked:** dragging the divider by hand with a 0 px separator (GTK may or may not give the handle extra grab area); check on real input.
