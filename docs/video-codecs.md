@@ -27,11 +27,16 @@ process and continues to use its CEF. Normal commands and profile launchers use 
 after installation. Close all codec-enabled windows and run `browsah codecs uninstall` to remove
 the downloaded runtime and use bundled CEF again.
 
-The installer copies the current browsah binary beside the selected CEF resources. After a browsah
-upgrade the copy no longer matches: browsah starts without the codec runtime (bundled CEF, no
-H.264/AAC) and says so, until you run `browsah install refresh` (or `browsah codecs refresh`), which
-points the runtime at the new program and keeps its Chromium files (no download), or uninstall the
-codec runtime. The
+The runtime is only CEF (the library and its resources). browsah is not copied into it: the `browsah`
+launcher script (Homebrew's, or the one `system-install` writes) puts the runtime's folder ahead of the
+bundled CEF on `LD_LIBRARY_PATH` when `codec-runtime/current/libcef.so` exists, so a browsah upgrade
+needs nothing done to the runtime. A program run directly (for example `target/release/browsah`) does
+not use it. At start browsah compares the API fingerprint (`cef_api_hash`) of the CEF it loaded with the one it
+was built for (about 30 microseconds). After a browsah upgrade that changes the CEF API, the old
+runtime no longer fits: browsah shows a dialog (and prints the same text) and does not start. It says to run
+`browsah codecs install`, which downloads the runtime again and checks, after the download, that it reports the API
+this browsah needs; if it does not, nothing is installed and the message says to run `browsah codecs uninstall` to go back
+to the bundled CEF. `browsah codecs status` checks the installed runtime the same way. The
 installer currently accepts only the tested stock CEF 156.0.28 / Chromium 156.0.8078.88 and the
 pinned Karere CEF 156.0.26 with its expected API hash. A browsah upgrade to a different CEF version
 therefore needs a compatible installer update; reinstalling alone will not override that check.
@@ -62,6 +67,6 @@ sudo /usr/local/bin/browsah codecs install
 
 Launch the browser as your normal user. Close other Browsah windows using the same profile first
 so the launch starts a new process. Run `sudo /usr/local/bin/browsah codecs uninstall` to go back to
-bundled CEF on the system copy. A system upgrade replaces the installation directory but keeps its `codec-runtime`, so after
-upgrading run `browsah install refresh` (or `sudo /usr/local/bin/browsah codecs refresh`) to point the system runtime at the new program. The Homebrew copy keeps using its own per-user codec
+bundled CEF on the system copy. A system upgrade replaces the installation directory but keeps its `codec-runtime`, which is only
+CEF, so nothing more is needed after upgrading. The Homebrew copy keeps using its own per-user codec
 runtime. Actual 1Password integration with the codec runtime still needs testing.

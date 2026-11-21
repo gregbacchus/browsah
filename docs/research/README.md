@@ -49,7 +49,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [workspace-restart.md](workspace-restart.md) | 2026-11-18 | Why did some workspaces disappear on restart? | Quit preserves the open list and cold launches restore it, including launches that name a workspace. |
 | [Slow start](2026-11-21-slow-start.md) | 2026-11-21 | Why did a start sometimes crawl and show Not Responding? | One slow tab tripped the 3 s first-frame watchdog and switched the whole process to readback (about 7x CPU); inferred from the journal, not reproduced. Fixed, plus a main-loop stall log. |
 | [Task manager](2026-11-21-task-manager.md) | 2026-11-21 | How to show which tabs burn CPU or memory? | Page counters (`Performance.getMetrics`) per tab, `/proc` per process; zygote-forked processes are told apart by thread names. |
-| [install refresh](2026-11-21-install-refresh.md) | 2026-11-21 | Must `codecs install` be rerun after every upgrade? | Yes it was, and start-up failed until then. `browsah install refresh` does the upgrade steps in one go with no download; a stale runtime no longer blocks start. |
+| [install refresh](2026-11-21-install-refresh.md) | 2026-11-21 | Must `codecs install` be rerun after every upgrade? Why does CEF depend on the browsah hash? | It did, needlessly: the runtime kept a copy of the program. It is now only CEF and the launcher script puts it on LD_LIBRARY_PATH, so an upgrade needs nothing. `browsah install refresh` is the one upgrade command. |
 
 ## Conventions
 

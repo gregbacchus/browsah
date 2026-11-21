@@ -61,50 +61,15 @@ fn main() {
     let own_exe = std::env::current_exe().ok();
     let system_source = own_exe.as_deref().and_then(system_install::installed_root_prefix);
     if args.first().map(String::as_str) == Some("codecs") {
-        let (launcher, source) = match profile::launcher() {
-            Ok(paths) => paths,
-            Err(e) => { eprintln!("codecs: cannot find browsah installation: {e}"); std::process::exit(1); }
-        };
         let status = std::process::Command::new("bash")
             .arg("-c").arg(include_str!("codecs.sh")).arg("browsah-codecs")
-            .args(&args[1..]).env("BROWSAH_CODEC_SOURCE", source)
-            .env("BROWSAH_CODEC_LAUNCHER", launcher)
+            .args(&args[1..]).env("BROWSAH_CODEC_API", cef_rt::EXPECTED_API_HASH)
             .env("BROWSAH_CODEC_SYSTEM", system_source.unwrap_or(std::path::Path::new("")))
             .status();
         std::process::exit(match status {
             Ok(s) => s.code().unwrap_or(1),
             Err(e) => { eprintln!("codecs: cannot start bash: {e}"); 1 }
         });
-    }
-
-    // The loader has already loaded the bundled CEF. Re-exec into the selected runtime
-    // before starting GTK or CEF so its matching library and resources are used together.
-    // System installation must continue to copy the bundled build, not the user override.
-    if std::env::var_os("BROWSAH_CODEC_ACTIVE").is_none()
-        && !matches!(args.first().map(String::as_str), Some("system-install" | "system-upgrade" | "system-uninstall" | "install"))
-        && system_source.map(|prefix| prefix.join("codec-runtime"))
-            .unwrap_or_else(|| gtk::glib::user_data_dir().join("browsah/codec-runtime"))
-            .join("current").is_symlink()
-    {
-        use std::os::unix::process::CommandExt;
-        let Some(source) = &own_exe else {
-            eprintln!("codecs: cannot find browsah executable");
-            std::process::exit(1);
-        };
-        let script = |action: &str| {
-            let mut c = std::process::Command::new("bash");
-            c.arg("-c").arg(include_str!("codecs.sh")).arg("browsah-codecs").arg(action);
-            c.env("BROWSAH_CODEC_CALLER", source).env("BROWSAH_CODEC_SYSTEM", system_source.unwrap_or(std::path::Path::new("")));
-            c
-        };
-        // A runtime that no longer matches this program (after an upgrade) must not stop the browser from starting: carry on with the
-        // bundled CEF (no H.264/AAC) and say how to bring the runtime up to date.
-        if script("status").stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success()) {
-            let e = script("run").args(&args).env("BROWSAH_CODEC_CHECKED", "1").exec();
-            eprintln!("codecs: cannot start the selected runtime: {e}");
-            std::process::exit(1);
-        }
-        eprintln!("browsah: starting without the codec runtime (no H.264/AAC video). After an upgrade, run `browsah install refresh` to bring it up to date.");
     }
 
     // `browsah profile ...` manages profiles on disk and needs neither CEF nor a window.
@@ -301,6 +266,13 @@ fn main() {
         // SAFETY: nothing else is running yet; this is the start of main, before CEF's threads exist.
         unsafe { std::env::set_var("CHROME_DESKTOP", format!("{}.desktop", profile.app_id())) };
     }
+    // The optional codec runtime is another CEF put ahead of the bundled one: make sure the library that was loaded fits this program.
+    if let cef_rt::Compat::Mismatch { dir, found } = cef_rt::check_loaded_cef() {
+        let (title, detail) = cef_rt::mismatch_text(&dir, &found);
+        eprintln!("browsah: {title}\n{detail}");
+        app::show_cef_mismatch(&title, &detail);
+        std::process::exit(1);
+    }
     let runtime = match cef_rt::init(flags, Some(profile.cef_dir())) {
         cef_rt::Init::Subprocess(code) => std::process::exit(code),
         cef_rt::Init::Browser(rt) => rt,
@@ -414,34 +386,45 @@ fn config_show(args: &[String]) -> i32 {
 mod codecs_tests {
     use std::{fs, os::unix::fs::symlink, process::Command, time::{SystemTime, UNIX_EPOCH}};
 
-    #[test]
-    fn runtime_rejects_a_different_browsah_installation() {
-        let tmp = std::env::temp_dir().join(format!("browsah-codecs-caller-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+    fn fake_runtime(tmp: &std::path::Path, with_libcef: bool) -> std::path::PathBuf {
         let base = tmp.join("browsah/codec-runtime");
         let generation = base.join("cef-156.0.26.test");
         fs::create_dir_all(&generation).unwrap();
-        fs::write(generation.join("browsah"), "original").unwrap();
-        fs::write(generation.join("source-dir"), "/unused\n").unwrap();
-        fs::write(generation.join("source-launcher"), "/unused\n").unwrap();
-        fs::write(generation.join("source-sha256"), "different-hash\n").unwrap();
+        if with_libcef {
+            fs::write(generation.join("libcef.so"), "not a real library").unwrap();
+        }
         symlink("cef-156.0.26.test", base.join("current")).unwrap();
-        let result = Command::new("bash").arg("-c").arg(include_str!("codecs.sh"))
-            .arg("browsah-codecs").arg("run").env("XDG_DATA_HOME", &tmp)
-            .env("BROWSAH_CODEC_CALLER", "/bin/bash").output().unwrap();
+        generation
+    }
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("browsah-codecs-{name}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()))
+    }
+
+    #[test]
+    fn a_runtime_without_cef_is_not_a_runtime() {
+        let tmp = temp("empty");
+        fake_runtime(&tmp, false);
+        let result = Command::new("bash").arg("-c").arg(include_str!("codecs.sh")).arg("browsah-codecs").arg("status")
+            .env("XDG_DATA_HOME", &tmp).output().unwrap();
         assert!(!result.status.success());
-        assert!(String::from_utf8_lossy(&result.stderr).contains("this browsah installation differs"));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("not installed"), "{}", String::from_utf8_lossy(&result.stderr));
         fs::remove_dir_all(tmp).unwrap();
     }
 
     #[test]
     fn uninstall_keeps_a_runtime_used_by_a_running_process() {
-        let tmp = std::env::temp_dir().join(format!("browsah-codecs-test-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let tmp = temp("uninstall");
+        let generation = fake_runtime(&tmp, true);
         let base = tmp.join("browsah/codec-runtime");
-        let generation = base.join("cef-156.0.26.test");
-        fs::create_dir_all(&generation).unwrap();
-        fs::copy("/bin/bash", generation.join("browsah")).unwrap();
-        symlink("cef-156.0.26.test", base.join("current")).unwrap();
-        let mut running = Command::new(generation.join("browsah")).args(["-c", "read -r line"]).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        // A process that has the runtime's library mapped (the browser started with the runtime on its library path).
+        let lib = generation.join("libcef.so");
+        fs::write(&lib, vec![b'x'; 8192]).unwrap();
+        let mut running = Command::new("python3").args(["-c", "import mmap,sys\nf=open(sys.argv[1],'rb')\nm=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ)\nprint('mapped',flush=True)\nsys.stdin.readline()", lib.to_str().unwrap()])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(running.stdout.as_mut().unwrap()), &mut line).unwrap();
+        assert_eq!(line.trim(), "mapped");
         let uninstall = || Command::new("bash").arg("-c").arg(include_str!("codecs.sh"))
             .arg("browsah-codecs").arg("uninstall").env("XDG_DATA_HOME", &tmp).output().unwrap();
         let result = uninstall();

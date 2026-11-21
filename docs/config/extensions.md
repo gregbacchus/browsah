@@ -122,10 +122,9 @@ permission verification failed` in 1Password's log). browsah has one command for
 
 ### After `brew upgrade browsah`
 
-`browsah install refresh` does everything an upgrade leaves to do, run as yourself (it runs `sudo` for you): it updates the root-owned copy
-(the command below), then points a codec runtime at the new program (`browsah codecs refresh`: the runtime's Chromium files are kept, nothing is
-downloaded), for the system copy's runtime and for yours, whichever are installed. `--dry-run` prints the commands. The rest of this section
-is its first step.
+`browsah install refresh` does what an upgrade leaves to do, run as yourself (it runs `sudo` for you): today it updates the root-owned copy (the
+command below). A codec runtime needs nothing: it is only CEF, and the system copy's `codec-runtime` folder is kept when the copy is replaced.
+`--dry-run` prints the command. The rest of this section is that step.
 
 The system copy is a copy, and `brew upgrade browsah` does not touch it, so `/usr/local/bin/browsah` keeps running the older version until you
 update it. That step alone is (run as yourself, it runs `sudo` for you):

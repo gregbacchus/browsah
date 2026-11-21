@@ -187,9 +187,8 @@ browsah
 ```
 
 Close any existing window of the same profile first. Run `browsah codecs status` to check the
-installation, or `browsah codecs uninstall` to return to the bundled runtime. After an upgrade, run
-`browsah install refresh`: it brings the root-owned copy and the codec runtimes up to date in one go, with no download
-(until then browsah starts without the codec runtime and says so). See
+installation, or `browsah codecs uninstall` to return to the bundled runtime. The runtime is only CEF: the `browsah` launcher script puts it ahead of the bundled CEF on `LD_LIBRARY_PATH`, so an upgrade needs nothing
+done to it (and a build run directly from `target/release` does not use it). At start browsah compares the loaded CEF's API fingerprint with the one it was built for (about 30 microseconds); for a different API, browsah shows a dialog saying so and how to fix it (`browsah codecs install` to upgrade the runtime; if the download does not fit either, it says to run `browsah codecs uninstall`) and does not start. See
 [video codecs](docs/video-codecs.md) for a separate test profile, updates and
 the limits of this third-party runtime.
 
@@ -202,7 +201,7 @@ versioned install directory) are repaired the next time any profile is started f
 
 **1Password (and anything else that insists on a root-owned browser):** a Homebrew install is owned by you, so 1Password refuses it.
 `sudo "$(brew --prefix)/bin/browsah" system-install --1password` puts a root-owned copy in `/opt/browsah` and a start-up script in
-`/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah install refresh` updates it (and the codec runtimes; `browsah system-upgrade` is its first step); see [docs/config/extensions.md](docs/config/extensions.md#1password).
+`/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah install refresh` updates it (it runs `browsah system-upgrade`); see [docs/config/extensions.md](docs/config/extensions.md#1password).
 For H.264/AAC on that copy, run `sudo /usr/local/bin/browsah codecs install`, then launch
 `/usr/local/bin/browsah` as your normal user. See [system codecs](docs/video-codecs.md#system-copy-and-1password).
 

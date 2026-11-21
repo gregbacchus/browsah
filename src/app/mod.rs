@@ -7,6 +7,8 @@ mod extensions;
 mod favicon;
 mod ctxmenu;
 mod menu;
+mod mismatch;
+pub use mismatch::show_cef_mismatch;
 mod find;
 mod groups;
 mod fullscreen;

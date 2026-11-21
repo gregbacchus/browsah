@@ -29,7 +29,10 @@ class Browsah < Formula
       #!/bin/sh
       export BROWSAH_LAUNCHER="#{opt_bin}/browsah"
       export BROWSAH_LIBS="#{opt_libexec}"
-      export LD_LIBRARY_PATH="#{opt_libexec}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      # H.264/AAC: the CEF that `browsah codecs install` put in your data folder, ahead of the bundled one.
+      runtime="${XDG_DATA_HOME:-$HOME/.local/share}/browsah/codec-runtime/current"
+      [ -f "$runtime/libcef.so" ] || runtime=""
+      export LD_LIBRARY_PATH="${runtime:+$runtime:}#{opt_libexec}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
       exec "#{opt_libexec}/browsah" "$@"
     SH
     (bin/"browsah").chmod 0755

@@ -80,6 +80,66 @@ pub struct Runtime {
     _app: App,
 }
 
+/// The CEF API fingerprint (`cef_api_hash`, platform entry) this program is built for: the bundled CEF's, which the optional codec runtime
+/// must report too (a different CEF build with the same API is fine, a different API is not). A test checks it against the bundled library,
+/// so a CEF update that changes it fails there until this is updated. `codecs install` and `codecs status` check a runtime against it too.
+pub const EXPECTED_API_HASH: &str = "6dc09eb2834fe5b61d7d8c42bbb8d8c27a2bb1b6";
+
+/// What the loaded `libcef.so` says about itself, against what this program needs.
+#[derive(Debug, PartialEq)]
+pub enum Compat {
+    Ok,
+    /// The folder the library was loaded from and the fingerprint it reported (empty: it does not support this API at all).
+    Mismatch { dir: std::path::PathBuf, found: String },
+}
+
+/// Ask the loaded CEF for its API fingerprint (a table lookup in the library: microseconds) and compare. Call it before `init`.
+pub fn check_loaded_cef() -> Compat {
+    let raw = api_hash(sys::CEF_API_VERSION_LAST, 0);
+    // SAFETY: the library owns the returned string (or returns null when it does not support the version).
+    let found = if raw.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned() };
+    // `BROWSAH_FORCE_API_HASH` pretends this program needs another API (a test aid, to see the mismatch handling).
+    let expected = std::env::var("BROWSAH_FORCE_API_HASH").unwrap_or_else(|_| EXPECTED_API_HASH.to_owned());
+    if found == expected {
+        return Compat::Ok;
+    }
+    Compat::Mismatch { dir: loaded_library_dir(), found }
+}
+
+/// The folder `libcef.so` was loaded from.
+fn loaded_library_dir() -> std::path::PathBuf {
+    // SAFETY: dladdr only reads the address and fills `info`; the name it gives is valid while the library stays loaded.
+    unsafe {
+        let mut info: libc::Dl_info = std::mem::zeroed();
+        if libc::dladdr(sys::cef_api_hash as *const () as *const libc::c_void, &mut info) != 0 && !info.dli_fname.is_null() {
+            let name = std::ffi::CStr::from_ptr(info.dli_fname).to_string_lossy().into_owned();
+            return std::path::Path::new(&name).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        }
+    }
+    std::path::PathBuf::new()
+}
+
+/// What to tell the person when the loaded CEF does not fit: (title, instructions). A codec runtime (the launcher puts it ahead of the
+/// bundled CEF) is told to upgrade it with `codecs install`, which checks the download and says to uninstall when nothing fits; the bundled
+/// CEF itself not fitting means the installation is broken.
+pub fn mismatch_text(dir: &std::path::Path, found: &str) -> (String, String) {
+    let reports = if found.is_empty() { "no API this browsah can use".to_owned() } else { format!("API {found}") };
+    if dir.to_string_lossy().contains("codec-runtime") {
+        (
+            "The H.264/AAC codec runtime does not fit this browsah".to_owned(),
+            format!(
+                "The runtime in {} reports {reports}, but this browsah needs API {EXPECTED_API_HASH}. It was installed for an older browsah, so browsah cannot start with it.\n\nTo upgrade the runtime, run this in a terminal:\n    browsah codecs install\n\nIf that says no matching runtime is available, run:\n    browsah codecs uninstall\nto go back to the bundled CEF (no H.264/AAC video), then start browsah again.",
+                dir.display()
+            ),
+        )
+    } else {
+        (
+            "The CEF library does not fit this browsah".to_owned(),
+            format!("The CEF library in {} reports {reports}, but this browsah needs API {EXPECTED_API_HASH}. The installation is damaged or mixed: reinstall browsah.", dir.display()),
+        )
+    }
+}
+
 /// Run as a CEF subprocess if this is one, otherwise initialise CEF in the browser process.
 pub fn init(flags: Vec<String>, cache: Option<std::path::PathBuf>) -> Init {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
@@ -253,5 +313,31 @@ mod tests {
     fn another_platform_is_left_alone() {
         let f = with_default_flags(v(&["--ozone-platform=x11"]), true);
         assert_eq!(f, v(&["--ozone-platform=x11"]));
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn the_bundled_cef_reports_the_api_this_program_expects() {
+        let start = std::time::Instant::now();
+        let result = check_loaded_cef();
+        let took = start.elapsed();
+        assert_eq!(result, Compat::Ok, "CEF was updated: put its `cef_api_hash` in EXPECTED_API_HASH and in codecs.sh");
+        assert!(took < Duration::from_millis(100), "the start-up check took {took:?}");
+        eprintln!("compat check took {took:?}");
+    }
+
+    #[test]
+    fn a_runtime_that_does_not_fit_is_told_to_upgrade_then_uninstall() {
+        let (title, text) = mismatch_text(Path::new("/home/u/.local/share/browsah/codec-runtime/current"), "abc");
+        assert!(title.contains("codec runtime"));
+        assert!(text.contains("browsah codecs install") && text.contains("browsah codecs uninstall") && text.contains("abc") && text.contains(EXPECTED_API_HASH), "{text}");
+        assert!(text.find("codecs install") < text.find("codecs uninstall"), "upgrade first, uninstall if nothing fits");
+        let (_, bundled) = mismatch_text(Path::new("/opt/browsah"), "");
+        assert!(bundled.contains("reinstall browsah") && !bundled.contains("codecs"), "{bundled}");
     }
 }

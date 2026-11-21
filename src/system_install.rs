@@ -51,10 +51,10 @@ impl Plan {
     }
 }
 
-/// The launcher script: sets what the program needs to find `libcef.so`, and tells it its own stable paths (as Homebrew's does).
+/// The launcher script: sets what the program needs to find `libcef.so` (the codec runtime's, when one is installed), and tells it its own stable paths (as Homebrew's does).
 pub fn launcher_script(prefix: &Path, launcher: &Path) -> String {
     format!(
-        "#!/bin/sh\n{MARKER}\nexport BROWSAH_LAUNCHER=\"{launcher}\"\nexport BROWSAH_LIBS=\"{prefix}\"\nexport LD_LIBRARY_PATH=\"{prefix}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\nexec \"{prefix}/browsah\" \"$@\"\n",
+        "#!/bin/sh\n{MARKER}\nexport BROWSAH_LAUNCHER=\"{launcher}\"\nexport BROWSAH_LIBS=\"{prefix}\"\n# H.264/AAC: the CEF that `codecs install` put in {prefix}/codec-runtime, ahead of the bundled one.\nruntime=\"{prefix}/codec-runtime/current\"\n[ -f \"$runtime/libcef.so\" ] || runtime=\"\"\nexport LD_LIBRARY_PATH=\"${{runtime:+$runtime:}}{prefix}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\nexec \"{prefix}/browsah\" \"$@\"\n",
         launcher = launcher.display(),
         prefix = prefix.display()
     )
@@ -329,11 +329,11 @@ pub fn apply(p: &Plan) -> Result<Vec<String>, String> {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(permission_hint(&e, &p.prefix));
     }
-    // The codec runtime (`browsah codecs install`, system copy) lives in the install folder: it moves to the new copy, where
-    // `browsah codecs refresh` points it at the new program (`browsah install refresh` does both steps).
+    // The codec runtime (`browsah codecs install`, system copy) lives in the install folder: it is only CEF, so it moves to the
+    // new copy unchanged and the new program starts with it as before.
     let runtime = old.join("codec-runtime");
     if runtime.is_dir() && std::fs::rename(&runtime, p.prefix.join("codec-runtime")).is_ok() {
-        done.push("kept the codec runtime (run `browsah install refresh`, or `sudo browsah codecs refresh`, to point it at the new program)".to_owned());
+        done.push("kept the codec runtime".to_owned());
     }
     let _ = std::fs::remove_dir_all(&old);
     done.push(format!("copied the program to {}", p.prefix.display()));
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn system_upgrade_keeps_the_codec_runtime_for_codecs_refresh() {
+    fn system_upgrade_keeps_the_codec_runtime() {
         let (src, dst) = (temp("keep-src"), temp("keep-dst"));
         fake_source(&src);
         let (prefix, bin) = (dst.join("opt/browsah"), dst.join("bin"));
@@ -692,6 +692,30 @@ mod tests {
     fn system_install_launcher_script_names_the_stable_paths() {
         let s = launcher_script(Path::new("/opt/browsah"), Path::new("/usr/local/bin/browsah"));
         assert!(s.starts_with("#!/bin/sh\n"));
-        assert!(s.contains("BROWSAH_LAUNCHER=\"/usr/local/bin/browsah\"") && s.contains("BROWSAH_LIBS=\"/opt/browsah\"") && s.contains("LD_LIBRARY_PATH=\"/opt/browsah${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""));
+        assert!(s.contains("BROWSAH_LAUNCHER=\"/usr/local/bin/browsah\"") && s.contains("BROWSAH_LIBS=\"/opt/browsah\""), "{s}");
+    }
+
+    #[test]
+    fn the_launcher_puts_an_installed_codec_runtime_first_on_the_library_path() {
+        let dir = temp("launcher");
+        let prefix = dir.join("opt");
+        std::fs::create_dir_all(&prefix).unwrap();
+        // The "program" says what the loader would be told.
+        std::fs::write(prefix.join("browsah"), "#!/bin/sh\necho \"$LD_LIBRARY_PATH\"\n").unwrap();
+        std::fs::set_permissions(prefix.join("browsah"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launcher = dir.join("launcher");
+        std::fs::write(&launcher, launcher_script(&prefix, &launcher)).unwrap();
+        let run = || {
+            let out = std::process::Command::new("sh").arg(&launcher).env("LD_LIBRARY_PATH", "/elsewhere").output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        assert_eq!(run(), format!("{}:/elsewhere", prefix.display()), "no runtime: the bundled CEF");
+        // A runtime is only CEF: its folder comes first, nothing about the program is recorded or checked.
+        let runtime = prefix.join("codec-runtime/cef-156.0.26.x");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::os::unix::fs::symlink("cef-156.0.26.x", prefix.join("codec-runtime/current")).unwrap();
+        assert_eq!(run(), format!("{}:/elsewhere", prefix.display()), "a folder without libcef.so is not a runtime");
+        std::fs::write(runtime.join("libcef.so"), "x").unwrap();
+        assert_eq!(run(), format!("{}/codec-runtime/current:{}:/elsewhere", prefix.display(), prefix.display()));
     }
 }

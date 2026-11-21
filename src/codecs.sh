@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Embedded by the CLI and used to select the installed CEF before startup.
+# Embedded by the CLI: installs, checks and removes the optional codec-enabled CEF runtime. A runtime is only CEF (libcef.so and its
+# resources); the launcher script puts it ahead of the bundled CEF on LD_LIBRARY_PATH.
 set -euo pipefail
 
 case "${XDG_DATA_HOME:-}" in
@@ -15,7 +16,6 @@ else
 fi
 archive_name='cef_binary_156.0.26+g8ea0c73+chromium-156.0.8078.88_linux64_minimal.zip'
 digest='027473508ec25227972a8bc9182b15723f98cfa2e301746f8e2224c6a58517d5'
-api_hash='6dc09eb2834fe5b61d7d8c42bbb8d8c27a2bb1b6'
 url='https://github.com/tobagin/karere/releases/download/cef-156.0.26-proprietary-codecs-2/cef_binary_156.0.26%2Bg8ea0c73%2Bchromium-156.0.8078.88_linux64_minimal.zip'
 
 fail() { echo "codecs: $*" >&2; exit 1; }
@@ -34,15 +34,25 @@ lib.cef_version_info.restype = ctypes.c_int
 print('.'.join(str(lib.cef_version_info(i)) for i in (0, 1, 2, 4, 5, 6, 7)))
 PY
 }
+# The runtime's CEF must report the API fingerprint this browsah was built for (BROWSAH_CODEC_API, from the program). A different CEF
+# build of the same API is fine, a different API is not.
 check_api() {
-  local actual expected
-  expected="$(printf '%s\n%s' "$api_hash" "$2")"
-  actual="$(hash_api "$1")" || fail "cannot read the CEF API hash in $1"
-  [[ "$actual" == "$expected" ]] || fail "CEF in $1 has an untested API or version; cannot use this runtime"
+  local actual
+  actual="$(hash_api "$1" | head -n 1)" || fail "cannot read the CEF API fingerprint in $1"
+  [[ "$actual" == "${BROWSAH_CODEC_API:?missing the API fingerprint}" ]] || fail "$(incompatible "$1" "$actual")"
+}
+incompatible() {
+  cat <<TEXT
+the codec runtime's CEF does not fit this browsah. It reports the API ${2:-none}; this browsah needs ${BROWSAH_CODEC_API}.
+  ($1)
+No matching codec runtime is available for this browsah, so it cannot use one. To go back to the bundled CEF (no H.264/AAC video), run:
+  browsah codecs uninstall
+(An older runtime that is still installed is left as it is until you uninstall it.)
+TEXT
 }
 action="${1:-help}"
 [[ $# -eq 0 ]] || shift
-if [[ "$action" == install || "$action" == uninstall || "$action" == refresh ]]; then
+if [[ "$action" == install || "$action" == uninstall ]]; then
   if [[ -n "$system_prefix" ]]; then
     [[ $EUID -eq 0 ]] || fail "use sudo with the full path to the system launcher to $action system codecs"
     umask 022
@@ -54,10 +64,6 @@ case "$action" in
   install)
     [[ "$(uname -m)" == x86_64 ]] || fail 'this tested runtime currently supports x86_64 only'
     for tool in python3 sha256sum unzip; do command -v "$tool" >/dev/null || fail "install $tool first"; done
-    source_dir="${system_prefix:-${BROWSAH_CODEC_SOURCE:?missing browsah installation}}"
-    source_launcher="${BROWSAH_CODEC_LAUNCHER:?missing browsah launcher}"
-    [[ -f "$source_dir/browsah" && -f "$source_dir/libcef.so" ]] || fail "no browsah and libcef.so in $source_dir"
-    check_api "$source_dir" '156.0.28.156.0.8078.88'
     mkdir -p "$base"
     stage="$(mktemp -d "$base/.install.XXXXXXXX")"
     trap 'rm -rf "$stage"' EXIT
@@ -80,11 +86,8 @@ case "$action" in
     # Browsah does not use the Chromium setuid sandbox helper.
     rm -f -- "$stage/runtime/chrome-sandbox"
     cp -a "$unpacked/LICENSE.txt" "$unpacked/CREDITS.html" "$stage/runtime/"
-    cp "$source_dir/browsah" "$stage/runtime/browsah"
-    check_api "$stage/runtime" '156.0.26.156.0.8078.88'
-    printf '%s\n' "$source_dir" > "$stage/runtime/source-dir"
-    printf '%s\n' "$source_launcher" > "$stage/runtime/source-launcher"
-    sha256sum "$source_dir/browsah" | cut -d' ' -f1 > "$stage/runtime/source-sha256"
+    # After the download: does it fit this browsah? If not, nothing is installed and uninstall instructions are given.
+    check_api "$stage/runtime"
     if [[ -n "$system_prefix" ]]; then
       chmod -R a+rX,go-w,ug-s "$stage/runtime"
     fi
@@ -98,47 +101,16 @@ case "$action" in
     echo 'Installed. New browsah launches will use the codec-enabled runtime.'
     echo 'Close an existing window of the same profile first so it uses this runtime.'
     ;;
-  refresh)
-    # After an upgrade: keep the installed Chromium files and point the runtime at the new browsah program. No download.
-    [[ $# -eq 0 ]] || fail 'usage: browsah codecs refresh'
-    [[ "$(uname -m)" == x86_64 ]] || fail 'this tested runtime currently supports x86_64 only'
-    runtime="$(readlink -f "$base/current")" || fail 'not installed; run: browsah codecs install'
-    [[ -f "$runtime/libcef.so" && -f "$runtime/browsah" ]] || fail 'not installed; run: browsah codecs install'
-    source_dir="${system_prefix:-${BROWSAH_CODEC_SOURCE:?missing browsah installation}}"
-    source_launcher="${BROWSAH_CODEC_LAUNCHER:?missing browsah launcher}"
-    [[ -f "$source_dir/browsah" && -f "$source_dir/libcef.so" ]] || fail "no browsah and libcef.so in $source_dir"
-    check_api "$source_dir" '156.0.28.156.0.8078.88'
-    check_api "$runtime" '156.0.26.156.0.8078.88'
-    new_hash="$(sha256sum "$source_dir/browsah" | cut -d' ' -f1)"
-    saved_hash=''; [[ ! -f "$runtime/source-sha256" ]] || IFS= read -r saved_hash < "$runtime/source-sha256"
-    if [[ "$saved_hash" == "$new_hash" ]]; then
-      echo "Codec runtime is already current: $runtime"
-      exit 0
-    fi
-    stage="$(mktemp -d "$base/.refresh.XXXXXXXX")"
-    trap 'rm -rf "$stage"' EXIT
-    # Hard links: the Chromium files are shared with the old generation, only the files below are new (written after removing the link, never in place).
-    cp -al "$runtime" "$stage/runtime"
-    rm -f "$stage/runtime/browsah" "$stage/runtime/source-dir" "$stage/runtime/source-launcher" "$stage/runtime/source-sha256"
-    cp "$source_dir/browsah" "$stage/runtime/browsah"
-    printf '%s\n' "$source_dir" > "$stage/runtime/source-dir"
-    printf '%s\n' "$source_launcher" > "$stage/runtime/source-launcher"
-    printf '%s\n' "$new_hash" > "$stage/runtime/source-sha256"
-    generation="$(mktemp -d "$base/cef-156.0.26.XXXXXXXX")"
-    rmdir "$generation"
-    mv "$stage/runtime" "$generation"
-    ln -s "${generation##*/}" "$stage/current"
-    mv -Tf "$stage/current" "$base/current"
-    echo "Codec runtime refreshed: $generation"
-    echo 'Close an existing window of the same profile first so it uses this runtime.'
-    ;;
   uninstall)
     [[ $# -eq 0 ]] || fail 'usage: browsah codecs uninstall'
     # A running browser and its CEF subprocesses may still load files from their
     # generation. Do not remove those files until all codec-enabled processes exit.
-    for proc in /proc/[0-9]*/exe; do
-      exe="$(readlink "$proc" 2>/dev/null || true)"
+    for proc in /proc/[0-9]*; do
+      exe="$(readlink "$proc/exe" 2>/dev/null || true)"
       case "$exe" in "$base"/cef-156.0.26.*/browsah) fail 'close all codec-enabled browsah windows before uninstalling' ;; esac
+      if grep -qs -F "$base/cef-156.0.26." "$proc/maps" 2>/dev/null; then
+        fail 'close all codec-enabled browsah windows before uninstalling'
+      fi
     done
     if [[ -e "$base/current" && ! -L "$base/current" ]]; then
       fail "$base/current is not a symlink; refusing to remove it"
@@ -151,35 +123,17 @@ case "$action" in
     rmdir "$base" 2>/dev/null || true
     echo 'Uninstalled. New browsah launches will use the bundled CEF runtime.'
     ;;
-  status|run)
+  status)
     runtime="$(readlink -f "$base/current")" || fail 'not installed; run: browsah codecs install'
-    [[ -f "$runtime/browsah" && -f "$runtime/source-dir" && -f "$runtime/source-launcher" && -f "$runtime/source-sha256" ]] || fail 'not installed; run: browsah codecs install'
-    IFS= read -r source_dir < "$runtime/source-dir"
-    IFS= read -r source_launcher < "$runtime/source-launcher"
-    IFS= read -r saved_hash < "$runtime/source-sha256"
-    caller="${BROWSAH_CODEC_CALLER:-${system_prefix:-${BROWSAH_CODEC_SOURCE:-}}/browsah}"
-    [[ -f "$caller" && "$(sha256sum "$caller" | cut -d' ' -f1)" == "$saved_hash" ]] || fail 'this browsah installation differs from the codec runtime; run: browsah install refresh'
-    [[ -f "$source_dir/browsah" && -f "$source_dir/libcef.so" ]] || fail 'the original browsah installation is missing; reinstall the runtime'
-    current_hash="$(sha256sum "$source_dir/browsah" | cut -d' ' -f1)"
-    [[ "$saved_hash" == "$current_hash" ]] || fail 'browsah changed since installation; run: browsah install refresh'
-    [[ "$(sha256sum "$runtime/browsah" | cut -d' ' -f1)" == "$saved_hash" ]] || fail 'the installed browsah copy changed; reinstall the runtime'
-    # (The launcher has just checked the API with `status`: `run` does not pay for it twice.)
-    if [[ "$action" == status || "${BROWSAH_CODEC_CHECKED:-}" != 1 ]]; then
-      check_api "$source_dir" '156.0.28.156.0.8078.88'
-      check_api "$runtime" '156.0.26.156.0.8078.88'
-    fi
-    if [[ "$action" == status ]]; then
-      echo "Codec runtime installed: $runtime"
-      echo 'CEF 156.0.26, Chromium 156.0.8078.88; compatible API 15600.'
-      exit 0
-    fi
-    export BROWSAH_LAUNCHER="$source_launcher" BROWSAH_LIBS="$source_dir" BROWSAH_CODEC_ACTIVE=1
-    export LD_LIBRARY_PATH="$runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    exec "$runtime/browsah" "$@"
+    [[ -f "$runtime/libcef.so" ]] || fail 'not installed; run: browsah codecs install'
+    check_api "$runtime"
+    echo "Codec runtime installed: $runtime"
+    echo "CEF $(hash_api "$runtime" | tail -n 1); it fits this browsah (API $BROWSAH_CODEC_API)."
+    echo 'The launcher script puts it ahead of the bundled CEF on LD_LIBRARY_PATH.'
     ;;
   help|--help|-h)
-    echo 'Usage: browsah codecs install [--archive FILE] | refresh | status | uninstall'
+    echo 'Usage: browsah codecs install [--archive FILE] | status | uninstall'
     echo 'Downloads a separately installed H.264/AAC runtime for personal use (Linux x86_64).'
     ;;
-  *) fail 'usage: browsah codecs install [--archive FILE] | refresh | status | uninstall' ;;
+  *) fail 'usage: browsah codecs install [--archive FILE] | status | uninstall' ;;
 esac
