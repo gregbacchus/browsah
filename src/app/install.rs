@@ -54,9 +54,10 @@ impl Shell {
     pub fn offer_install_app(self: &Rc<Self>, tab: Rc<super::Tab>) {
         let shell = self.clone();
         glib::MainContext::default().spawn_local(async move {
-            let view = tab.view();
+            let view = tab.focused_view();
             let (title, address) = {
-                let s = tab.state.borrow();
+                let state = tab.focused_state();
+                let s = state.borrow();
                 (s.title.clone(), s.address.clone())
             };
             if !(address.starts_with("http://") || address.starts_with("https://")) {

@@ -41,6 +41,14 @@ window:
     thickness: 4        # logical pixels, 0 to 40
     radius: 11          # the page's corner radius inside the border (close to the window's corner radius minus the thickness keeps the border looking even round the corners)
 
+split:                   # a split tab (two panes side by side): how the pane without the focus looks; also per profile, workspace or app
+  inactive:
+    dim: 0.2               # 0 to 1: fade towards the window colour
+    saturation: 0.8        # 0 to 4: 1 unchanged, 0 greyscale
+    lightness: 1.0         # 0 to 4: brightness, 0.8 darker
+    hue_shift: 0           # -360 to 360 degrees
+    fade_ms: 150           # how long the change takes (0: at once)
+
 rendering:
   mode: accelerated        # accelerated (no copy) or readback (fallback, slower)
   frame_rate: 60           # maximum fps, 1 to 120; lower saves power on animated pages

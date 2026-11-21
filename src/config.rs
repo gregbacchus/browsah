@@ -77,6 +77,56 @@ pub struct Config {
     pub downloads: crate::downloads::DownloadsConfig,
     pub cookies: crate::cookies::CookiesConfig,
     pub print: PrintConfig,
+    /// Split tabs: how the pane that does not have the focus looks.
+    pub split: SplitConfig,
+}
+
+/// Split tabs (`split`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct SplitConfig {
+    pub inactive: InactivePaneConfig,
+}
+
+/// How the pane without the focus looks (`split.inactive`): faded towards the window colour and recoloured.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+#[cfg_attr(test, serde(deny_unknown_fields))] // tests catch typos in the examples
+pub struct InactivePaneConfig {
+    /// Fade towards the window colour: 0 none, 1 fully hidden.
+    pub dim: f32,
+    /// Colour saturation multiplier: 1 unchanged, 0 greyscale.
+    pub saturation: f32,
+    /// Brightness multiplier: 1 unchanged, 0.8 darker.
+    pub lightness: f32,
+    /// Hue rotation in degrees.
+    pub hue_shift: f32,
+    /// How long the change takes, in milliseconds (0: at once).
+    pub fade_ms: u32,
+}
+
+impl Default for InactivePaneConfig {
+    fn default() -> Self {
+        Self { dim: 0.2, saturation: 0.8, lightness: 1.0, hue_shift: 0.0, fade_ms: 150 }
+    }
+}
+
+impl InactivePaneConfig {
+    /// The style sheet for the panes of the window whose tab view has the class `class`.
+    pub fn css(&self, class: &str) -> String {
+        let c = self.clamped();
+        format!(
+            "tabview.{class} .browsah-pane {{ transition: opacity {ms}ms ease, filter {ms}ms ease; }}\n\
+             tabview.{class} .browsah-pane.inactive {{ opacity: {opacity:.3}; filter: saturate({sat}) brightness({light}) hue-rotate({hue}deg); }}",
+            ms = c.fade_ms, opacity = 1.0 - c.dim, sat = c.saturation, light = c.lightness, hue = c.hue_shift
+        )
+    }
+
+    fn clamped(&self) -> Self {
+        let f = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
+        Self { dim: f(self.dim, 0.0, 1.0), saturation: f(self.saturation, 0.0, 4.0), lightness: f(self.lightness, 0.0, 4.0), hue_shift: f(self.hue_shift, -360.0, 360.0), fade_ms: self.fade_ms.min(5000) }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -215,6 +265,7 @@ impl Default for Config {
             downloads: Default::default(),
             cookies: Default::default(),
             print: Default::default(),
+            split: Default::default(),
         }
     }
 }
@@ -751,6 +802,8 @@ mod tests {
         add("downloads", field_names::<crate::downloads::DownloadsConfig>());
         add("cookies", field_names::<crate::cookies::CookiesConfig>());
         add("print", field_names::<PrintConfig>());
+        add("split", field_names::<SplitConfig>());
+        add("split.inactive", field_names::<InactivePaneConfig>());
         add("sleeping_tabs", field_names::<SleepingTabsConfig>());
         add("recently_swept", field_names::<RecentlySweptConfig>());
         add("context_menu", field_names::<ContextMenuConfig>());
@@ -777,6 +830,15 @@ mod tests {
     }
 
     #[test]
+    fn the_inactive_pane_style_is_clamped_and_written_as_css() {
+        let c = InactivePaneConfig { dim: 2.0, saturation: -1.0, lightness: 9.0, hue_shift: f32::NAN, fade_ms: 99999 };
+        let css = c.css("w1");
+        assert!(css.contains("tabview.w1 .browsah-pane.inactive") && css.contains("opacity: 0.000") && css.contains("saturate(0)") && css.contains("brightness(4)") && css.contains("hue-rotate(-360deg)") && css.contains("5000ms"), "{css}");
+        let d = InactivePaneConfig::default().css("w1");
+        assert!(d.contains("opacity: 0.800") && d.contains("saturate(0.8)") && d.contains("150ms"), "{d}");
+    }
+
+    #[test]
     fn docs_cover_every_config_option() {
         let docs = docs_text();
         let missing: Vec<String> =
@@ -790,7 +852,7 @@ mod tests {
     #[test]
     fn docs_do_not_describe_options_that_do_not_exist() {
         let known: std::collections::HashSet<String> = all_option_paths().into_iter().collect();
-        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "tab_min_width", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "context_menu", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print"];
+        let roots = ["watch_config", "default_profile", "home_page", "new_tab_page", "workspace_picker", "tab_min_width", "sweep", "sleep_tabs_after", "sleeping_tabs", "recently_swept", "context_menu", "logging", "storage", "theme", "search_url", "window", "rendering", "chromium", "gpu", "extensions", "input", "history", "permissions", "downloads", "cookies", "print", "split"];
         let mut unknown = Vec::new();
         for line in docs_text().lines().filter(|l| l.starts_with("| `")) {
             let Some(path) = line[3..].split('`').next() else { continue };

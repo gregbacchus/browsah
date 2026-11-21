@@ -127,7 +127,7 @@ between windows; a workspace config layer with per-window live reload; colour (l
 controls (back, forward, reload, address bar editable/read-only/hidden, new-tab button, tab bar); locked
 workspaces (no new tabs; links and popups go to an ephemeral window); pinned tabs that cannot be closed,
 with optional titles in the tab bar and scope limits; tab restore with sleeping tabs behind blurred screenshots; per-workspace bookmarks and
-bookmarks menu (was a bar) with bookmark renaming; the profile database. **Permissions and downloads are built** (allow/deny/ask per kind and site, remembered answers, download folder
+bookmarks menu (was a bar) with bookmark renaming; split tabs (two pages side by side, not remembered across restarts); the profile database. **Permissions and downloads are built** (allow/deny/ask per kind and site, remembered answers, download folder
 and ask-where).
 **Tab sweeping is built** (rules per workspace, close or discard, protection for unsaved input and playing
 media).

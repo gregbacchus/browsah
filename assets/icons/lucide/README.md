@@ -13,5 +13,8 @@ Stop icon. `src/icons.rs` sets the fill colour along with the stroke colour.
 `list-star.svg` is the bookmarks menu button: Lucide's `list-video` (drawn from memory, so its lines may differ slightly from the published
 file) with the play triangle replaced by Lucide's `star`, scaled to 0.4 and filled (`fill="currentColor"`).
 
+`split-right.svg` is the split pane button: the `split-right-symbolic` icon of the Paua terminal (same author, MIT), a filled 16 px drawing put on the
+24 px grid with `scale(1.5)`. It is a filled shape, not a Lucide stroke.
+
 To add an icon: download it from `https://cdn.jsdelivr.net/npm/lucide-static@1.75.0/icons/<name>.svg` into this folder and list it in
 `src/icons.rs`.

@@ -82,6 +82,7 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `nav.new_tab_button` | bool | `true` | Show the "+" button next to the tabs. It is also hidden whenever the address bar is `readonly` or `hidden` (there is nothing to type a new tab's address in), and when `tabs.allow_new` is `false`. `Ctrl+T` still works where tabs are allowed. |
 | `nav.tab_bar` | bool | `true` | Show the tab bar. Hide it for a window with a single pinned tab. |
 | `nav.bookmarks` | bool | `true` | Bookmarks for this workspace: the star button and `Ctrl+D` bookmark (or un-bookmark) the current page, and a **bookmarks menu** button (a list with a small star) lists them. The button sits at the left of the tab bar (at the left of the header when `nav.tab_bar` is `false`); click a bookmark to open it here, middle-click or Ctrl+click for a new tab, right-click for *Open in new tab*, *Rename bookmark…* and *Remove bookmark*. The menu says so when there are none. Bookmarks belong to the workspace; ephemeral windows have none. Applies to windows opened after the change. Called `nav.bookmarks_bar` until the bar became a menu: the old name still works. |
+| `nav.split_button` | bool | `true` | Show the split button (and offer *Open in split pane* in the link, image and bookmark menus, and *Close this pane* in a split tab's page menu). It splits the selected tab into two panes side by side, each with its own page; see [Split panes](#split-panes). A web app has none. Applies to windows opened after the change. |
 | `tabs` | map | see below | Rules for the window's tabs. |
 | `tabs.allow_new` | bool | `true` | When `false`, tabs cannot be opened from the window (no `Ctrl+T`, no "+" button, links that would open a tab open in an ephemeral window instead); tabs can only be sent to the workspace. |
 | `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |
@@ -146,3 +147,20 @@ the next start; a tab dragged to another window leaves its group, and pinned tab
 have groups while they are open but remember nothing.
 
 A window for one site with its own icon and launcher entry is not a workspace but a web app: see [webapp.md](webapp.md).
+
+## Split panes
+
+A tab can be split into **two panes side by side** (two pages in one tab, never more, never stacked). Open a split with the split
+button in the header (the new pane starts on the page you are looking at, and the address bar is ready for a new address), or with
+**Open in split pane** in the menu of a link or an image, or in the menu of a bookmark. With a split already open, those put the
+page in the right pane. Switch off the button and these items with `nav.split_button: false`.
+
+- The tab bar, the tab and the address bar belong to the tab; the **panes are only the page area**. The address bar, back,
+  forward, reload, find, zoom, print and the bookmark star act on the pane you last clicked or typed in (it has a thin outline).
+- The pane without the focus is faded and slightly desaturated (`split.inactive`, [options](options.md#split)).
+- Drag the divider to resize. Each pane has rounded corners, and the window colour shows between them.
+- **Closing a pane:** the split button opens *Close left pane* and *Close right pane* while the tab is split, and the page menu of
+  a split tab has *Close this pane*. The pane that is left fills the tab. Closing the left pane makes the right page the tab's page
+  (its back and forward pages start over).
+- Not remembered across restarts (the tab comes back as its left page). The right page is not written to the history. A split tab
+  is never swept or put to sleep.

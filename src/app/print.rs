@@ -37,7 +37,7 @@ impl Shell {
         let Some(tab) = self.current() else { return };
         let print = self.settings.borrow().print.clone();
         self.pdf_jobs.borrow_mut().insert(path.to_string_lossy().into_owned(), job);
-        tab.view().print_to_pdf(path, print.paper.inches(), print.backgrounds);
+        tab.focused_view().print_to_pdf(path, print.paper.inches(), print.backgrounds);
     }
 
     /// How many PDFs are still being written (for the self-test).

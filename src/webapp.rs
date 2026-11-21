@@ -116,7 +116,7 @@ pub fn window_config(app: AppConfig) -> WorkspaceConfig {
         // The app's own choice of the four controls; the tab bar follows `multiple_tabs`, and there is no new-tab button or bookmarks.
         AppDisplay::Custom => {
             let n = app.nav.clone().unwrap_or_default();
-            NavConfig { back: n.back, forward: n.forward, reload: n.reload, address_bar: n.address_bar, new_tab_button: false, tab_bar: app.multiple_tabs, bookmarks: false }
+            NavConfig { back: n.back, forward: n.forward, reload: n.reload, address_bar: n.address_bar, new_tab_button: false, tab_bar: app.multiple_tabs, bookmarks: false, split_button: false }
         }
         display => NavConfig {
             address_bar: match display {
@@ -127,6 +127,7 @@ pub fn window_config(app: AppConfig) -> WorkspaceConfig {
             new_tab_button: false, // an app's tabs come from its links (Ctrl+click, "open in new tab"), not from a button
             tab_bar: display == AppDisplay::Browser || app.multiple_tabs,
             bookmarks: false,
+            split_button: false, // an app shows one page
             ..NavConfig::default()
         },
     };

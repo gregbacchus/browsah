@@ -68,12 +68,12 @@ impl Shell {
         let text = self.find.entry.text().to_string();
         let Some(tab) = self.current() else { return };
         if text.is_empty() {
-            tab.view().stop_find();
+            tab.focused_view().stop_find();
             self.find.label.set_label("");
             return;
         }
         self.find.needs_first.set(!next);
-        tab.view().find(&text, forward, false, next);
+        tab.focused_view().find(&text, forward, false, next);
     }
 
     /// Step to the next or previous match (opens the bar if it is closed).
@@ -94,10 +94,12 @@ impl Shell {
         self.window.remove_css_class("has-footer");
         self.find.label.set_label("");
         for t in self.tabs.borrow().iter() {
-            t.view().stop_find();
+            for v in t.views() {
+                v.stop_find();
+            }
         }
         if let Some(t) = self.current() {
-            t.view().widget.grab_focus();
+            t.focused_view().widget.grab_focus();
         }
     }
 

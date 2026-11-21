@@ -24,6 +24,7 @@ mod picker;
 mod swept;
 mod pinned_tabs;
 mod prompts;
+mod split;
 mod sweep;
 mod nav;
 mod navmenu;
@@ -105,6 +106,10 @@ pub struct Tab {
     dirty_why: RefCell<String>,
     playing: std::cell::Cell<bool>,
     input_seen: std::cell::Cell<u64>,
+    /// The right pane when the tab is split (`app/split.rs`).
+    split: RefCell<Option<Rc<split::Pane>>>,
+    /// The pane the address bar and page commands act on while the tab is split.
+    focus: Cell<split::Side>,
 }
 
 static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -298,11 +303,15 @@ pub struct Shell {
     /// Bookmarks (workspace windows only): the star button, and the menu button listing them (at the start of the tab bar, or of the
     /// header when there is no tab bar).
     bookmarks_button: gtk::MenuButton,
+    /// Splits the selected tab into two panes (or, in a split tab, closes one: `app/split.rs`).
+    split_button: gtk::Button,
     star: gtk::Button,
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
     /// The tab strip's minimum tab width (`tab_min_width`): a provider for the display, a class on this window's tab bar.
     tab_width_css: RefCell<Option<gtk::CssProvider>>,
+    /// How this window's unfocused split pane looks (`split.inactive`).
+    split_css: RefCell<Option<gtk::CssProvider>>,
     /// The colour the window is tinted with (its workspace's, else its profile's), and the name it is styled under.
     color: RefCell<Option<(String, crate::profile::ColorPair)>>,
     /// Where this window's tabs are remembered (workspace windows only).
@@ -539,8 +548,11 @@ impl Shell {
         let Some(page) = page else { return };
         let blocked = self.tab_for_page(page).map(|t| t.view().blocked_cookie_sites().len()).unwrap_or(0);
         let cookies = gio::Menu::new();
-        let label = if blocked == 0 { "No cookies blocked on this page".to_owned() } else { format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" }) };
-        cookies.append_item(&menu::item(&label, if blocked == 0 { "win.none" } else { "win.copy-cookie-rules" }, Some("copy")));
+        // Only offered when the rules blocked something on this page (the filter sees nothing with the default of allowing all).
+        if blocked > 0 {
+            let label = format!("Copy allow rules for {blocked} blocked cookie site{}", if blocked == 1 { "" } else { "s" });
+            cookies.append_item(&menu::item(&label, "win.copy-cookie-rules", Some("copy")));
+        }
         cookies.append_item(&menu::item("Copy address", "win.copy-address", Some("link")));
         let in_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
         if !in_app {
@@ -609,7 +621,8 @@ impl Shell {
     /// The address and title to bookmark for the selected tab (not blank pages).
     fn bookmarkable(&self) -> Option<(String, String)> {
         let tab = self.current()?;
-        let st = tab.state.borrow();
+        let state = tab.focused_state();
+        let st = state.borrow();
         if st.address.is_empty() || st.address == "about:blank" {
             return None;
         }
@@ -728,7 +741,7 @@ impl Shell {
         if new_tab && self.allow_new_tabs {
             self.open_tab(url, true);
         } else if let Some(t) = self.current() {
-            t.view().navigate(url);
+            t.focused_view().navigate(url);
         }
     }
 
@@ -744,12 +757,16 @@ impl Shell {
         #[derive(Clone, Copy)]
         enum Command {
             Open,
+            Split,
             Rename,
             Remove,
         }
         let mut entries = Vec::new();
         if self.allow_new_tabs {
             entries.push(("Open in new tab", "external-link", Command::Open));
+        }
+        if self.nav.split_button {
+            entries.push(("Open in split pane", "split-right", Command::Split));
         }
         entries.push(("Rename bookmark…", "pen-line", Command::Rename));
         entries.push(("Remove bookmark", "trash-2", Command::Remove));
@@ -767,6 +784,7 @@ impl Shell {
                         Command::Open => {
                             s.open_tab(&url, true);
                         }
+                        Command::Split => s.open_in_split(&url),
                         Command::Rename => s.rename_bookmark_dialog(&url),
                         Command::Remove => {
                             if let (Some(ws), Some(store)) = (s.bookmark_workspace(), store()) {
@@ -1127,7 +1145,7 @@ impl Shell {
 
     /// Copy the selected tab's address to the clipboard (for windows with no address bar to copy it from).
     pub fn copy_address(&self) {
-        let address = self.current().map(|t| t.state.borrow().address.clone()).unwrap_or_default();
+        let address = self.current().map(|t| t.focused_state().borrow().address.clone()).unwrap_or_default();
         if address.is_empty() || address == "about:blank" {
             self.toast("No address to copy");
             return;
@@ -1150,8 +1168,11 @@ impl Shell {
         self.refresh_swept();
         self.refresh_color_css(); // the frame options can change while running
         self.refresh_tab_width();
+        self.refresh_split_css();
         for t in self.tabs.borrow().iter() {
-            self.apply_view_settings(&t.view());
+            for v in t.views() {
+                self.apply_view_settings(&v);
+            }
             self.refresh_tab_icon(t);
         }
         for m in self.modals.borrow().iter() {
@@ -1164,7 +1185,9 @@ impl Shell {
         if self.frame_rate.get() != cfg.rendering.frame_rate {
             self.frame_rate.set(cfg.rendering.frame_rate);
             for t in self.tabs.borrow().iter() {
-                t.view().set_frame_rate(cfg.rendering.frame_rate);
+                for v in t.views() {
+                    v.set_frame_rate(cfg.rendering.frame_rate);
+                }
             }
         }
     }
@@ -1172,7 +1195,9 @@ impl Shell {
     /// The desktop switched between light and dark: pages of a window whose theme is `system` follow.
     pub(crate) fn refresh_scheme(&self) {
         for t in self.tabs.borrow().iter() {
-            self.apply_view_settings(&t.view());
+            for v in t.views() {
+                self.apply_view_settings(&v);
+            }
         }
         for m in self.modals.borrow().iter() {
             self.apply_view_settings(&m.view);
@@ -1219,7 +1244,7 @@ impl Shell {
             if std::env::var_os("BROWSAH_DEBUG").is_some() {
                 eprintln!("browsah: address bar {text:?} -> {url:?}");
             }
-            t.view().navigate(&url);
+            t.focused_view().navigate(&url);
         }
     }
 
@@ -1232,7 +1257,8 @@ impl Shell {
     /// Show the selected tab's state in the shared chrome (address bar, buttons, window title).
     fn refresh(&self) {
         let Some(tab) = self.current() else { return };
-        let s = tab.state.borrow();
+        let (state, left) = (tab.focused_state(), tab.focused_side() == split::Side::Left);
+        let s = state.borrow();
         if !self.editing.get() {
             self.set_entry_text(address_text(&s.address));
         }
@@ -1243,16 +1269,23 @@ impl Shell {
         }));
         drop(s);
         self.update_star();
-        let s = tab.state.borrow();
-        self.back_action.set_enabled((s.can_back || !tab.hist_back.borrow().is_empty()) && self.nav.back);
-        self.forward_action.set_enabled((s.can_forward || !tab.hist_fwd.borrow().is_empty()) && self.nav.forward);
+        let s = state.borrow();
+        // The saved lists belong to the tab's own (left) page.
+        self.back_action.set_enabled((s.can_back || left && !tab.hist_back.borrow().is_empty()) && self.nav.back);
+        self.forward_action.set_enabled((s.can_forward || left && !tab.hist_fwd.borrow().is_empty()) && self.nav.forward);
         self.reload.set_visible(!s.loading && self.nav.reload);
         self.stop.set_visible(s.loading && self.nav.reload);
+        drop(s);
+        self.refresh_split_button();
     }
 
     /// Back for the selected tab: the browser's own list while it has an earlier page, else the saved list (a restored tab's earlier pages).
     pub fn history_back(self: &Rc<Self>) {
         let Some(tab) = self.current() else { return };
+        if tab.focused_side() == split::Side::Right {
+            tab.focused_view().go_back(); // the right pane has the browser's own list only
+            return;
+        }
         if tab.state.borrow().can_back {
             tab.view().go_back();
             return;
@@ -1280,6 +1313,10 @@ impl Shell {
     /// Forward for the selected tab: the browser's own list, else the saved list.
     pub fn history_forward(self: &Rc<Self>) {
         let Some(tab) = self.current() else { return };
+        if tab.focused_side() == split::Side::Right {
+            tab.focused_view().go_forward();
+            return;
+        }
         if tab.state.borrow().can_forward {
             tab.view().go_forward();
             return;
@@ -1365,7 +1402,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0), split: RefCell::new(None), focus: Cell::new(split::Side::Left) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -1382,6 +1419,9 @@ impl Shell {
     fn fall_back(self: &Rc<Self>, tab: &Rc<Tab>) {
         crate::log_warn!("no accelerated frame within {FIRST_FRAME_WATCHDOG:?}; falling back to readback rendering");
         self.mode.set(Mode::Paint);
+        if tab.is_split() {
+            self.close_pane_of(tab, split::Side::Right); // the view is replaced in the holder: it must stand alone there
+        }
         let url = {
             let s = tab.state.borrow();
             if !s.address.is_empty() {
@@ -1490,9 +1530,11 @@ impl Shell {
             tab.page.set_tooltip("");
             self.refresh_tab_icon(&tab);
             self.mark_tab(&tab);
-            tab.view().set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
-            tab.view().set_popup_policy(self.popup_policy);
-            self.apply_view_settings(&tab.view());
+            for v in tab.views() {
+                v.set_workspace(self.workspace.as_ref().map(|w| w.id.clone()));
+                v.set_popup_policy(self.popup_policy);
+                self.apply_view_settings(&v);
+            }
             self.tabs.borrow_mut().push(tab);
             if self.tab_view.selected_page().as_ref() == Some(page) {
                 self.on_selected();
@@ -1548,6 +1590,9 @@ impl Shell {
             let reason = self.pending_close_reason.borrow_mut().take().or(deferred).unwrap_or_else(|| "user".to_owned());
             crate::log_info!("tab closed: {} (workspace {:?}, reason {reason}, {} left)", tab.state.borrow().address, self.workspace_id(), self.tabs.borrow().len());
             self.record_closed(&tab, &reason, None);
+            if let Some(p) = tab.split_pane() {
+                p.view.retire(); // the right page has nothing to ask: it goes with the tab
+            }
             tab.view().close();
         }
         self.prune_groups();
@@ -1568,7 +1613,9 @@ impl Shell {
     pub fn close_all(&self) {
         self.all_closing.set(true);
         for t in self.tabs.borrow().iter() {
-            t.view().close();
+            for v in t.views() {
+                v.close();
+            }
         }
     }
 
@@ -1927,6 +1974,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     header.pack_end(&star);
     let extensions_ui = extensions::Ui::new();
     header.pack_end(&extensions_ui.bar);
+    let split_button = icon_button(crate::icons::SPLIT_RIGHT, "Split the page into two panes", "win.split");
+    split_button.set_visible(nav.split_button);
+    header.pack_end(&split_button);
     let bookmarks_button = gtk::MenuButton::builder().tooltip_text("Bookmarks").visible(bookmarks_on).build();
     crate::icons::bind(&bookmarks_button, crate::icons::LIST_STAR);
 
@@ -2064,9 +2114,11 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         menu_page: RefCell::new(None),
         title_popover: RefCell::new(None),
         bookmarks_button: bookmarks_button.clone(),
+        split_button: split_button.clone(),
         star: star.clone(),
         color_css: RefCell::new(None),
         tab_width_css: RefCell::new(None),
+        split_css: RefCell::new(None),
         color: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
         save_pending: Cell::new(false),
@@ -2085,7 +2137,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let weak = weak.clone();
         move || {
             if let Some(t) = weak.upgrade().and_then(|s| s.current()) {
-                f(&t.view());
+                f(&t.focused_view());
             }
         }
     };
@@ -2238,8 +2290,45 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move || {
             if let Some(s) = weak.upgrade() {
                 if let Some(t) = s.current() {
-                    t.view().toggle_dev_tools();
+                    t.focused_view().toggle_dev_tools();
                 }
+            }
+        }
+    });
+    // The split button: a split in a tab that is not split, the two "close pane" choices in one that is.
+    add_action(&window, "split", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                if s.current().is_some_and(|t| t.is_split()) {
+                    s.show_split_menu();
+                } else {
+                    s.split_current();
+                }
+            }
+        }
+    });
+    add_action(&window, "close-left-pane", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.close_split_pane(split::Side::Left);
+            }
+        }
+    });
+    add_action(&window, "close-right-pane", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.close_split_pane(split::Side::Right);
+            }
+        }
+    });
+    add_action(&window, "close-pane", {
+        let weak = weak.clone();
+        move || {
+            if let Some(s) = weak.upgrade() {
+                s.close_focused_pane();
             }
         }
     });
@@ -2717,6 +2806,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
 
     shell.install_color(workspace_color.as_ref());
     shell.refresh_tab_width();
+    shell.refresh_split_css();
     shell.connect_suggestion_clicks();
     {
         let window = shell.window.downgrade();
@@ -3287,6 +3377,11 @@ const MENU_ITEM_CSS: &str = "
         font-weight: normal;
     }
     popover.browsah-navigation-history button label { color: var(--popover-fg-color); }
+    /* A split tab: two rounded cards with the window colour showing between them (docs/research/split-panes.md). */
+    paned.browsah-split { background-color: @window_bg_color; }
+    paned.browsah-split > separator { min-width: 6px; min-height: 6px; background: transparent; border: none; box-shadow: none; }
+    .browsah-pane { border-radius: 10px; }
+    .browsah-pane.focused { box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.6); }
 ";
 
 /// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
@@ -3315,10 +3410,13 @@ fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> S
     let t = frame.thickness.clamp(0, 40);
     if frame.enabled && t > 0 {
         let r = frame.radius.clamp(0, 40);
+        let pane = if r > 0 { r } else { split::PANE_RADIUS }; // the panes of a split tab take the frame's corners
         css.push_str(&format!(
             "\nwindow.{class}:not(.fullscreen) .browsah-frame {{ background-color: {bg}; padding: 0 {t}px {t}px {t}px; }}\n\
              window.{class}:not(.fullscreen).has-footer .browsah-frame {{ padding-bottom: 0; }}\n\
-             window.{class}:not(.fullscreen) .browsah-frame > tabview {{ border-radius: {r}px; }}"
+             window.{class}:not(.fullscreen) .browsah-frame > tabview {{ border-radius: {r}px; }}\n\
+             window.{class}:not(.fullscreen) paned.browsah-split {{ background-color: {bg}; }}\n\
+             window.{class}:not(.fullscreen) .browsah-pane {{ border-radius: {pane}px; }}"
         ));
     }
     css

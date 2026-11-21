@@ -205,6 +205,7 @@ impl Shell {
             let protected = selected.as_ref().is_some_and(|s| Rc::ptr_eq(s, &tab))
                 || tab.dirty.get()
                 || tab.playing.get()
+                || tab.is_split() // two pages live in it: not swept, not put to sleep
                 || tab.state.borrow().loading
                 || unknown.contains(&tab.uid) && !tab.view().is_dormant();
             let url = tab.state.borrow().address.clone();
@@ -216,6 +217,8 @@ impl Shell {
                         if *tab.dirty_why.borrow() == "asks" { "the page asks before it is closed" } else { "unsaved typing in a form" }
                     } else if tab.playing.get() {
                         "playing media"
+                    } else if tab.is_split() {
+                        "split into two panes"
                     } else if tab.state.borrow().loading {
                         "still loading"
                     } else {
@@ -320,6 +323,10 @@ impl Shell {
     /// closed, and a sleeping view takes its place until it is shown again.
     pub(super) fn discard_tab(self: &Rc<Self>, tab: &Rc<Tab>) {
         use super::view::BrowserView;
+        if tab.is_split() {
+            crate::log_info!("tab not put to sleep: it is split into two panes");
+            return;
+        }
         let mut url = tab.state.borrow().address.clone();
         if url.is_empty() {
             url = tab.first_url.borrow().clone(); // the page had not reported an address yet

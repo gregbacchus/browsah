@@ -38,6 +38,7 @@ as `<name>.bak`; comments you wrote in the old file are not carried over). The s
 | `window` | [Options](options.md#window) |
 | `theme`, `storage`, `new_tab_page`, `workspace_picker`, `tab_min_width` | [Options](options.md#startup-and-search) |
 | `watch_config`, `default_profile` | [Options](options.md#behaviour) |
+| `split` | [Options](options.md#split), [Split panes](workspace.md#split-panes) |
 | `rendering` | [Options](options.md#rendering) |
 | `chromium` | [Options](options.md#chromium) |
 | `input` | [Options](options.md#input) |

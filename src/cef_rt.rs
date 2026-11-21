@@ -120,6 +120,11 @@ pub fn browser_created() {
     LIVE_BROWSERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// How many counted browsers exist right now (the self-test checks that a closed pane's browser goes).
+pub fn live_browsers() -> usize {
+    LIVE_BROWSERS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// A browser has closed (any thread).
 pub fn browser_closed() {
     if LIVE_BROWSERS.load(std::sync::atomic::Ordering::SeqCst) > 0 {

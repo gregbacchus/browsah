@@ -95,11 +95,13 @@ pub struct NavConfig {
     /// Bookmarks: the star button, `Ctrl+D`, and the bookmarks menu. (Called `bookmarks_bar` before the bar became a menu.)
     #[serde(alias = "bookmarks_bar")]
     pub bookmarks: bool,
+    /// The split button: two panes side by side in a tab.
+    pub split_button: bool,
 }
 
 impl Default for NavConfig {
     fn default() -> Self {
-        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true, bookmarks: true }
+        Self { back: true, forward: true, reload: true, address_bar: AddressBar::Editable, new_tab_button: true, tab_bar: true, bookmarks: true, split_button: true }
     }
 }
 

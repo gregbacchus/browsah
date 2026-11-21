@@ -40,9 +40,9 @@ context_menu:
 
 Item ids for `hide`:
 
-- Page: `back`, `forward`, `reload`, `stop`, `hard-reload`, `bookmark`, `find`, `save-pdf`, `print`, `copy-address`, `install-app`, `send-tab`, `open-frame`, `copy-frame-address`, `view-source`, `inspect`
-- Links: `open-routed`, `open-tab`, `open-window`, `open-workspace`, `open-profile`, `open-popup`, `copy-link`, `copy-clean-link`, `copy-link-text`, `save-link`, `bookmark-link`
-- Images and media: `open-image` (also the media "open in new tab"), `save-image` (also media "save as"), `copy-image`, `copy-image-address` (also media "copy address"), `search-image`, `media-play`, `media-mute`, `media-loop`, `media-controls`
+- Page: `back`, `forward`, `reload`, `stop`, `hard-reload`, `bookmark`, `find`, `save-pdf`, `print`, `copy-address`, `install-app`, `send-tab`, `close-pane` (a split tab), `open-frame`, `copy-frame-address`, `view-source`, `inspect`
+- Links: `open-routed`, `open-tab`, `open-split`, `open-window`, `open-workspace`, `open-profile`, `open-popup`, `copy-link`, `copy-clean-link`, `copy-link-text`, `save-link`, `bookmark-link`
+- Images and media: `open-image` (also the media "open in new tab"), `open-image-split`, `save-image` (also media "save as"), `copy-image`, `copy-image-address` (also media "copy address"), `search-image`, `media-play`, `media-mute`, `media-loop`, `media-controls`
 - Text and fields: `copy`, `search-web`, `open-selection`, `copy-text-link`, `select-all`, `undo`, `redo`, `cut`, `paste`, `delete`, `spelling`, `add-word`
 
 ## Notes

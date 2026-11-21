@@ -15,6 +15,7 @@ nav:                        # which controls the window shows
   forward: false
   new_tab_button: false
   bookmarks: true           # star button, Ctrl+D, and the bookmarks menu (left of the tab bar) of this workspace's bookmarks
+  split_button: true        # the split button and "Open in split pane" (two pages side by side in one tab)
 tabs:
   allow_new: false          # tabs only arrive by being sent here
   popups: modal             # sized popups (sign-in windows) open as a modal: tab (default), modal or block

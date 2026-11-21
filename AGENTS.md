@@ -157,6 +157,7 @@ take minutes.
 | `src/store.rs` | The profile's SQLite database: remembered tabs and bookmarks (GTK thread only) |
 | `src/router.rs` | URL routing: rules (`routing:` in config, profile and workspace files), the pure `Router`, the process-wide installed router (read on CEF's thread), `browsah route test` |
 | `src/selector.rs` | The profile selector: `browsah select [URL]` (a small chooser window, no CEF), `browsah selector install|uninstall|status` (the `be.geee.browsah.desktop` entry) |
+| `src/app/split.rs` | Split tabs: the right pane (`Pane`), `Side`, layout in a `gtk::Paned` of rounded cards, focus, closing a pane, the right view's events (`handle_split`), the split button's menu |
 | `src/ctxmenu.rs` | The page's right-click menu as a model: `plan(context, targets, options)` gives the entries for a click on a link, image, media, selection, field or the page; helpers for clean links and text-fragment links (pure, tested; the window side is `app/ctxmenu.rs`, which fills in bookmarks, workspaces and the router's answer, draws the popover with icons and runs the actions) |
 | `src/icons.rs` | Lucide icons (`assets/icons/lucide/`, ISC): drawn from a 24 px grid with a 1.5 stroke (shown at the usual 16 px), installed as per-style ordinary icons and kept right when the style changes (`icons::bind`); use these for any new icon (docs/research/icons-lucide.md) |
 | `src/fullconfig.rs` | The "all options" copy of a config file (`browsah config full`, the menu): `examples/*.yaml` are the templates, so their comments are the explanations; set values are kept, the rest commented out (pure, tested; window: `app/fullconfig.rs`) |
@@ -348,6 +349,11 @@ take minutes.
   is pure and tested; the answer's `manifest` object has resolved URLs, `data` the raw text with icon purposes),
   asks the user to confirm the name, downloads the icon with `download_image` and writes the same files as
   `browsah app add`. The self-test profile never writes launcher entries (`webapp::install` returns early for it).
+- **Split tabs** (`src/app/split.rs`; docs/research/split-panes.md): a tab may hold two views side by side. `Tab::view`/`Tab::state` are the left pane (the tab's identity);
+  the right pane is `Tab::split_pane()` with a state of its own. **Anything that acts on "the page" for the person must use `Tab::focused_view()`/`focused_state()`**, and anything that
+  loops over a tab's browsers (settings, frame rate, close) `Tab::views()`. The right view's events arrive through `Shell::handle_split`, never `handle`, which would write the left
+  pane's state, close the tab on `Closed` and hide the left view on a crash. Closing the left pane *promotes* the right view (`close_pane_of`: handler, state and view move to the tab);
+  a dying view is always `retire()`d first. Split tabs are not swept or put to sleep and are not restored. Never open a third pane: `open_split_in` replaces the right page.
 - **Chrome extensions** (`src/extensions.rs`, `src/crx.rs`, `src/app/extensions.rs`; docs/config/extensions.md, docs/research/chrome-extensions.md): CEF 156
   has no extension API, so `main` builds one `--load-extension=a,b` switch (merged with a user's own: Chromium keeps only the last) from the profile's
   `extensions/<id>/<version>/` folders and `extensions.paths`; this runs in the browser process only (child processes exit earlier in `main`). An unpacked

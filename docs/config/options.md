@@ -50,6 +50,28 @@ window:
   height: 800
 ```
 
+## `split`
+
+How a [split tab](workspace.md#split-panes) shows the pane that does not have the focus. Also valid in `profile.yaml`, a workspace's
+`workspace.yaml` and an app's `app.yaml` (a window's own keys win). **Live:** applies to open windows when the file is reloaded.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `split.inactive` | section | see below | The unfocused pane's look: `dim`, `saturation`, `lightness`, `hue_shift`, `fade_ms`. The focused pane is always shown as it is. A tab that is not split is never changed. |
+| `split.inactive.dim` | number 0 to 1 | `0.2` | Fade towards the window colour (the page becomes translucent over it): 0 none, 1 fully hidden. |
+| `split.inactive.saturation` | number 0 to 4 | `0.8` | Colour saturation multiplier: 1 unchanged, 0 greyscale, 2 double. |
+| `split.inactive.lightness` | number 0 to 4 | `1.0` | Brightness multiplier: 1 unchanged, 0.8 darker. |
+| `split.inactive.hue_shift` | number -360 to 360 (degrees) | `0` | Hue rotation. |
+| `split.inactive.fade_ms` | integer (ms) | `150` | How long the change takes when the focus moves; 0 is instant. Clamped to 5000. |
+
+Values outside the ranges are clamped. The change is a display effect on the pane (a GTK filter), so it costs nothing in the page.
+
+```yaml
+split:
+  inactive: { dim: 0.2, saturation: 0.8, lightness: 1.0, hue_shift: 0, fade_ms: 150 }
+  # inactive: { dim: 0.0, saturation: 0.0 }   # greyscale only
+```
+
 ## `rendering`
 
 How pages are drawn. See [the research notes](../research/summary.md) for the reasoning and the
@@ -165,7 +187,7 @@ downloads:
 
 Which sites' cookies are used. A denied site's cookies are neither sent with its requests nor saved from its responses (so it cannot sign you in or track you through cookies). Applies to newly loaded pages after a reload of the configuration.
 
-**Finding what to allow:** with `default: deny` (or deny rules), right-click a tab and choose *Copy allow rules for N blocked cookie sites*: it copies a `cookies:` block allowing the sites whose cookies were blocked since that page started loading. Paste it into `config.yaml`, `profile.yaml` or a workspace's `workspace.yaml` (merge it into an existing `cookies:` section). Use it when a site stops working, then keep only the sites you want. Other site data (local storage, IndexedDB) is not filtered; keep it apart with a workspace's `storage` option instead. Can differ per workspace.
+**Finding what to allow:** with `default: deny` (or deny rules), right-click a tab and choose *Copy allow rules for N blocked cookie sites* (the item appears only when the rules blocked a site on that page; with the default of allowing everything the cookie filter is not installed and nothing is reported): it copies a `cookies:` block allowing the sites whose cookies were blocked since that page started loading. Paste it into `config.yaml`, `profile.yaml` or a workspace's `workspace.yaml` (merge it into an existing `cookies:` section). Use it when a site stops working, then keep only the sites you want. Other site data (local storage, IndexedDB) is not filtered; keep it apart with a workspace's `storage` option instead. Can differ per workspace.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

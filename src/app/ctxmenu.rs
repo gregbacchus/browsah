@@ -61,14 +61,21 @@ impl Shell {
     pub fn show_page_menu(self: &Rc<Self>, view: &Rc<BrowserView>, req: Arc<MenuRequest>, in_modal: bool) {
         let mut ctx: Context = req.ctx.clone();
         let targets = self.menu_targets();
-        let tab = self.current().filter(|t| Rc::ptr_eq(&t.view(), view));
+        let tab = self.current().filter(|t| t.views().iter().any(|v| Rc::ptr_eq(v, view)));
         ctx.in_modal = in_modal || tab.is_none();
         ctx.in_app = self.workspace.as_ref().is_some_and(|w| w.is_app());
+        ctx.can_split = self.nav.split_button && !ctx.in_modal;
         if let Some(tab) = &tab {
-            let s = tab.state.borrow();
+            // The pane the click was in: a split tab's right page has its own state and only the browser's own history.
+            let (state, left) = match tab.split_pane() {
+                Some(p) if Rc::ptr_eq(&p.view, view) => (p.state.clone(), false),
+                _ => (tab.state.clone(), true),
+            };
+            ctx.split = tab.is_split();
+            let s = state.borrow();
             ctx.loading = s.loading;
-            ctx.can_back = s.can_back || !tab.hist_back.borrow().is_empty();
-            ctx.can_forward = s.can_forward || !tab.hist_fwd.borrow().is_empty();
+            ctx.can_back = s.can_back || left && !tab.hist_back.borrow().is_empty();
+            ctx.can_forward = s.can_forward || left && !tab.hist_fwd.borrow().is_empty();
             ctx.can_send_tab = !self.page_is_pinned(&tab.page);
             if let (Some(ws), Some(st), Some((url, _))) = (self.bookmark_workspace(), store(), self.bookmarkable()) {
                 ctx.can_bookmark = true;
@@ -257,6 +264,7 @@ impl Shell {
                     }
                 }
                 How::Popup => self.open_modal(&url),
+                How::Split => self.open_in_split(&url),
                 How::Route(route) => {
                     super::perform_route(&route, &url, Some(self));
                 }
@@ -293,6 +301,7 @@ impl Shell {
                 PageCmd::Find => win("win.find"),
                 PageCmd::SavePdf => win("win.save-pdf"),
                 PageCmd::Print => win("win.print"),
+                PageCmd::ClosePane => win("win.close-pane"),
                 PageCmd::InstallApp => win("win.install-app"),
                 PageCmd::Inspect => view.inspect_at(req.point.0, req.point.1),
                 PageCmd::SelectAll => req.run(cef::sys::cef_menu_id_t::MENU_ID_SELECT_ALL as i32),

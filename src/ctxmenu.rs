@@ -13,6 +13,8 @@ pub enum How {
     Window,
     /// A modal over this window.
     Popup,
+    /// The right pane of this tab (a split opens, or the right page moves on).
+    Split,
     /// What the router's `open:` action says: a workspace, a web app, another profile.
     Route(crate::router::Action),
 }
@@ -29,6 +31,8 @@ pub enum PageCmd {
     SavePdf,
     Print,
     InstallApp,
+    /// Close the pane the click was in (a split tab).
+    ClosePane,
     Inspect,
     SelectAll,
     CopySelection,
@@ -149,6 +153,10 @@ pub struct Context {
     /// A web app's window: tabs are not sent anywhere.
     pub in_app: bool,
     pub can_send_tab: bool,
+    /// The window can split a tab into two panes (not a web app's, not a modal's page).
+    pub can_split: bool,
+    /// The click was in a tab that is split.
+    pub split: bool,
 }
 
 /// A workspace, web app or profile a link can be sent to.
@@ -322,6 +330,9 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
         }
         let (label, select) = if opts.links_in_background { ("Open in new tab", false) } else { ("Open in new tab", true) };
         g.push(Entry::Item(item("open-tab", label, "external-link", Action::Open { url: url.clone(), how: How::Tab { select } })));
+        if ctx.can_split {
+            g.push(Entry::Item(item("open-split", "Open in split pane", "split-right", Action::Open { url: url.clone(), how: How::Split })));
+        }
         g.push(Entry::Item(item("open-window", "Open in new window", "app-window", Action::Open { url: url.clone(), how: How::Window })));
         if !ctx.in_app {
             let mut items: Vec<Item> = targets
@@ -361,6 +372,9 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
             Media::Image => {
                 if !src.is_empty() {
                     g.push(Entry::Item(item("open-image", "Open image in new tab", "image", Action::Open { url: src.clone(), how: How::Tab { select: !opts.links_in_background } })));
+                    if ctx.can_split {
+                        g.push(Entry::Item(item("open-image-split", "Open image in split pane", "split-right", Action::Open { url: src.clone(), how: How::Split })));
+                    }
                     if is_web(&src) {
                         g.push(Entry::Item(item("save-image", "Save image as\u{2026}", "download", Action::SaveAs(src.clone()))));
                     }
@@ -389,6 +403,9 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
                     let what = if ctx.media == Media::Video { "video" } else { "audio" };
                     g.push(Entry::Separator);
                     g.push(Entry::Item(item("open-image", &format!("Open {what} in new tab"), "external-link", Action::Open { url: src.clone(), how: How::Tab { select: !opts.links_in_background } })));
+                    if ctx.can_split {
+                        g.push(Entry::Item(item("open-image-split", &format!("Open {what} in split pane"), "split-right", Action::Open { url: src.clone(), how: How::Split })));
+                    }
                     if st.can_save {
                         g.push(Entry::Item(item("save-image", &format!("Save {what} as\u{2026}"), "download", Action::SaveAs(src.clone()))));
                     }
@@ -457,6 +474,9 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
         }
         g.push(Entry::Item(item("copy-address", "Copy page address", "link", Action::Copy(ctx.page_url.clone()))));
         groups.push(g);
+        if ctx.split && !ctx.in_modal {
+            groups.push(vec![Entry::Item(item("close-pane", "Close this pane", "x", Action::Page(PageCmd::ClosePane)))]);
+        }
         if !ctx.in_modal {
             let mut g = Vec::new();
             if !ctx.in_app && is_web(&ctx.page_url) {
@@ -519,7 +539,7 @@ pub fn plan(ctx: &Context, targets: &Targets, opts: &Options) -> Vec<Entry> {
 pub const ITEM_IDS: &[&str] = &[
     "back", "forward", "reload", "stop", "hard-reload", "bookmark", "find", "save-pdf", "print", "copy-address", "install-app", "send-tab", "open-frame", "copy-frame-address", "view-source", "inspect",
     "open-routed", "open-tab", "open-window", "open-workspace", "open-profile", "open-popup", "copy-link", "copy-clean-link", "copy-link-text", "save-link", "bookmark-link",
-    "open-image", "save-image", "copy-image", "copy-image-address", "search-image", "media-play", "media-mute", "media-loop", "media-controls",
+    "open-image", "open-image-split", "open-split", "close-pane", "save-image", "copy-image", "copy-image-address", "search-image", "media-play", "media-mute", "media-loop", "media-controls",
     "copy", "search-web", "open-selection", "copy-text-link", "select-all", "undo", "redo", "cut", "paste", "delete", "spelling", "add-word",
 ];
 
@@ -713,8 +733,39 @@ mod tests {
     }
 
     #[test]
+    fn links_and_images_open_in_a_split_pane_when_the_window_can_split() {
+        let mut ctx = page();
+        ctx.link_url = "https://x.example/".into();
+        ctx.media = Media::Image;
+        ctx.source_url = "https://i.example/a.png".into();
+        let got = ids(&plan(&ctx, &Targets::default(), &Options::default()));
+        assert!(!got.contains(&"open-split") && !got.contains(&"open-image-split"), "no split without can_split: {got:?}");
+        ctx.can_split = true;
+        let entries = plan(&ctx, &Targets::default(), &Options::default());
+        let got = ids(&entries);
+        assert!(got.contains(&"open-split") && got.contains(&"open-image-split"), "{got:?}");
+        let link = entries.iter().find_map(|e| match e {
+            Entry::Item(i) if i.id == "open-split" => Some(i.clone()),
+            _ => None,
+        });
+        assert_eq!(link.map(|i| i.action), Some(Action::Open { url: "https://x.example/".into(), how: How::Split }));
+    }
+
+    #[test]
+    fn a_split_tabs_page_menu_can_close_its_pane() {
+        let mut ctx = page();
+        assert!(!ids(&plan(&ctx, &Targets::default(), &Options::default())).contains(&"close-pane"));
+        ctx.split = true;
+        assert!(ids(&plan(&ctx, &Targets::default(), &Options::default())).contains(&"close-pane"));
+        ctx.in_modal = true;
+        assert!(!ids(&plan(&ctx, &Targets::default(), &Options::default())).contains(&"close-pane"), "a modal has no panes");
+    }
+
+    #[test]
     fn every_item_id_in_a_plan_is_listed() {
         let mut ctx = page();
+        ctx.can_split = true;
+        ctx.split = true;
         ctx.link_url = "https://x.example/".into();
         ctx.media = Media::Image;
         ctx.source_url = "https://i.example/a.png".into();

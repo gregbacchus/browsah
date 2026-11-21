@@ -1,7 +1,7 @@
 //! Page zoom: `Ctrl +`, `Ctrl -`, `Ctrl 0` and `Ctrl` with the wheel. The zoom is remembered per site (host) in the
 //! profile database and put back whenever a page of that site loads.
 
-use super::{store, Shell, Tab};
+use super::{store, view::BrowserView, Shell, Tab};
 use std::rc::Rc;
 
 /// The zoom factors a step moves between (as in other browsers).
@@ -35,10 +35,10 @@ impl Shell {
     /// Zoom the selected tab one step (`0`: back to 100 %), remember it for the site and say what it is now.
     pub fn zoom_step(self: &Rc<Self>, dir: i32) {
         let Some(tab) = self.current() else { return };
-        let view = tab.view();
+        let view = tab.focused_view();
         let next = next_factor(view.user_zoom(), dir);
         view.set_user_zoom(next);
-        let address = tab.state.borrow().address.clone();
+        let address = tab.focused_state().borrow().address.clone();
         if let (Some(host), Some(st)) = (zoom_host(&address), store()) {
             let _ = st.set_site_zoom(&host, next);
         }
@@ -48,8 +48,12 @@ impl Shell {
     /// A page of a site loaded or the address changed: use the zoom the person set for that site.
     pub(super) fn restore_site_zoom(&self, tab: &Rc<Tab>) {
         let address = tab.state.borrow().address.clone();
-        let factor = zoom_host(&address).and_then(|h| store().and_then(|s| s.site_zoom(&h))).unwrap_or(1.0);
-        let view = tab.view();
+        self.restore_site_zoom_of(&tab.view(), &address);
+    }
+
+    /// The same for one view (either pane of a split tab).
+    pub(super) fn restore_site_zoom_of(&self, view: &Rc<BrowserView>, address: &str) {
+        let factor = zoom_host(address).and_then(|h| store().and_then(|s| s.site_zoom(&h))).unwrap_or(1.0);
         if (view.user_zoom() - factor).abs() > 0.001 {
             view.set_user_zoom(factor);
         }

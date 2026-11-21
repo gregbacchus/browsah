@@ -150,7 +150,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "split", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -474,6 +474,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("newtab") {
         run_new_tab_button(shell, r).await;
+    }
+    if wants("split") {
+        run_split(shell, r).await;
     }
     if wants("sleep") {
         run_sleep(shell, r).await;
@@ -5390,4 +5393,96 @@ home_page: 'http://localhost:{port}/white.html'
         w.window.close();
         glib::timeout_future(Duration::from_millis(300)).await;
     }
+}
+
+/// Split tabs: two pages side by side in one tab, the address bar and the buttons following the focused pane, either pane closing.
+/// Synthetic input and the app's own calls (no real pointer), so a click in a pane is its focus call, not a real press.
+async fn run_split(shell: &Rc<Shell>, r: &mut Report) {
+    use super::split::Side;
+    let tab = shell.open_tab(&page("a.html"), true);
+    let ok = wait_until(15_000, || { let s = tab.state.borrow(); s.ready && !s.loading && s.title.contains("Page A") }).await;
+    r.check("a tab to split loads", ok, || format!("{:?}", tab.state.borrow().title));
+    r.check("an ephemeral window has the split button, and the tab is not split", shell.split_button.is_visible() && !tab.is_split() && tab.focused_side() == Side::Left, || format!("button {}", shell.split_button.is_visible()));
+    r.check("the split button has the Lucide split icon", shell.split_button.icon_name().is_some_and(|n| n.starts_with("browsah-split-right")), || format!("{:?}", shell.split_button.icon_name()));
+
+    // Open in split: a right pane with its own page; the address bar follows it.
+    shell.open_in_split(&page("b.html"));
+    let right = || tab.split_pane();
+    let ok = wait_until(15_000, || right().is_some_and(|p| { let s = p.state.borrow(); s.ready && !s.loading && s.title.contains("Page B") })).await;
+    r.check("opening in a split adds a right pane that loads its own page", ok, || format!("{:?}", right().map(|p| p.state.borrow().title.clone())));
+    r.check("the right pane has the focus and the address bar shows its page", tab.focused_side() == Side::Right && shell.entry.text().ends_with("/b.html"), || format!("{:?} {}", tab.focused_side(), shell.entry.text()));
+    r.check("the tab keeps its own page, address and title", tab.state.borrow().address.ends_with("/a.html") && tab.state.borrow().title.contains("Page A") && tab.page.title().contains("Page A"), || format!("{:?} {:?}", tab.state.borrow().address, tab.page.title()));
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let (lw, rw, whole) = (tab.view().widget.width(), right().map_or(0, |p| p.view.widget.width()), shell.tab_view.width());
+    r.check("the panes sit side by side and fill the tab with a gap between them", lw > 100 && rw > 100 && lw + rw < whole && lw + rw > whole - 40 && (lw - rw).abs() < 40, || format!("left {lw}, right {rw}, tab {whole}"));
+    let unfocused = |side: Side| match side { Side::Left => tab.view().widget.parent(), Side::Right => right().map(|p| p.view.widget.parent().expect("card")) };
+    r.check("the focused pane is not marked inactive, the other one is", unfocused(Side::Right).is_some_and(|c| !c.has_css_class("inactive") && c.has_css_class("focused")) && unfocused(Side::Left).is_some_and(|c| c.has_css_class("inactive")), || "classes wrong".into());
+    r.check("the split button is marked while the tab is split", shell.split_button.has_css_class("active"), || "not marked".into());
+    shot(&shell.window, "split");
+
+    // Focus: the address bar and the back button follow the pane.
+    shell.focus_pane(&tab, Side::Left);
+    r.check("focusing the left pane shows its address", shell.entry.text().ends_with("/a.html") && tab.focused_side() == Side::Left, || shell.entry.text().to_string());
+    shell.go(&page("child.html"));
+    let ok = wait_until(15_000, || tab.state.borrow().address.ends_with("/child.html")).await;
+    r.check("typing an address navigates the focused (left) pane only", ok && right().is_some_and(|p| p.state.borrow().address.ends_with("/b.html")), || format!("{:?} {:?}", tab.state.borrow().address, right().map(|p| p.state.borrow().address.clone())));
+    shell.focus_pane(&tab, Side::Right);
+    shell.go(&page("a.html"));
+    let ok = wait_until(15_000, || right().is_some_and(|p| p.state.borrow().address.ends_with("/a.html") && !p.state.borrow().loading)).await;
+    r.check("typing an address navigates the focused (right) pane only", ok && tab.state.borrow().address.ends_with("/child.html"), || format!("{:?} {:?}", tab.state.borrow().address, right().map(|p| p.state.borrow().address.clone())));
+    let _ = WidgetExt::activate_action(&shell.window, "win.back", None);
+    let ok = wait_until(15_000, || right().is_some_and(|p| p.state.borrow().address.ends_with("/b.html"))).await;
+    r.check("back goes back in the focused pane", ok && tab.state.borrow().address.ends_with("/child.html"), || format!("{:?}", right().map(|p| p.state.borrow().address.clone())));
+
+    // Open in split while split: the right page moves on (never a third pane).
+    shell.open_in_split(&page("child.html"));
+    let ok = wait_until(15_000, || right().is_some_and(|p| p.state.borrow().address.ends_with("/child.html"))).await;
+    r.check("opening in a split again replaces the right page (two panes at most)", ok && tab.is_split() && tab.focused_side() == Side::Right, || format!("{:?}", right().map(|p| p.state.borrow().address.clone())));
+
+    // The split button's menu closes either pane.
+    let _ = WidgetExt::activate_action(&shell.window, "win.split", None);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let menu = shell.split_button.last_child().and_downcast::<gtk::Popover>();
+    r.check("the split button of a split tab opens a menu", menu.is_some(), || "no popover".into());
+    if let Some(menu) = &menu {
+        check_menu_rows(menu, r, "the split menu", &["Close left pane", "Close right pane"]);
+        check_no_bold(r, "the split menu", menu);
+        shot(menu, "split-menu");
+        menu.popdown();
+    }
+    glib::timeout_future(Duration::from_millis(400)).await;
+
+    // Close the left pane: the right page becomes the tab's.
+    let old_left = tab.view();
+    let wanted = right().map(|p| p.state.borrow().address.clone()).unwrap_or_default();
+    let browsers = crate::cef_rt::live_browsers();
+    shell.close_split_pane(Side::Left);
+    r.check("closing the left pane ends the split", !tab.is_split() && tab.focused_side() == Side::Left, || format!("split {}", tab.is_split()));
+    r.check("the right page is now the tab's page", tab.state.borrow().address == wanted && !Rc::ptr_eq(&tab.view(), &old_left), || format!("{:?} want {wanted:?}", tab.state.borrow().address));
+    let ok = wait_until(10_000, || crate::cef_rt::live_browsers() == browsers - 1).await;
+    r.check("the closed pane's browser closes", ok, || format!("{} browsers, were {browsers}", crate::cef_rt::live_browsers()));
+    r.check("the address bar and the tab title show the surviving page", shell.entry.text() == wanted && !tab.page.title().is_empty(), || format!("{} {:?}", shell.entry.text(), tab.page.title()));
+    let before = tab.state.borrow().load_cycles;
+    tab.view().navigate(&page("b.html"));
+    let ok = wait_until(15_000, || { let s = tab.state.borrow(); !s.loading && s.load_cycles > before && s.title.contains("Page B") }).await;
+    r.check("the surviving view is the tab's own: its events update the tab", ok && shell.entry.text().ends_with("/b.html"), || format!("{:?} {}", tab.state.borrow().title, shell.entry.text()));
+
+    // Close the right pane: the left stays.
+    shell.open_in_split(&page("a.html"));
+    let ok = wait_until(15_000, || right().is_some_and(|p| p.state.borrow().ready)).await;
+    r.check("a second split opens", ok && tab.is_split(), || "no split".into());
+    let kept = tab.view();
+    let browsers = crate::cef_rt::live_browsers();
+    shell.close_split_pane(Side::Right);
+    r.check("closing the right pane leaves the tab's page", !tab.is_split() && Rc::ptr_eq(&tab.view(), &kept) && tab.state.borrow().title.contains("Page B"), || format!("split {}", tab.is_split()));
+    let ok = wait_until(10_000, || crate::cef_rt::live_browsers() == browsers - 1).await;
+    r.check("the closed pane's browser closes", ok, || format!("{} browsers, were {browsers}", crate::cef_rt::live_browsers()));
+
+    // A split tab closes with both browsers.
+    shell.open_in_split(&page("a.html"));
+    wait_until(15_000, || right().is_some_and(|p| p.state.borrow().ready)).await;
+    let browsers = crate::cef_rt::live_browsers();
+    shell.tab_view.close_page(&tab.page);
+    let ok = wait_until(10_000, || crate::cef_rt::live_browsers() == browsers - 2).await;
+    r.check("closing a split tab closes both browsers", ok, || format!("{} browsers, were {browsers}", crate::cef_rt::live_browsers()));
 }
