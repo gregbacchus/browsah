@@ -187,7 +187,9 @@ browsah
 ```
 
 Close any existing window of the same profile first. Run `browsah codecs status` to check the
-installation, or `browsah codecs uninstall` to return to the bundled runtime. See
+installation, or `browsah codecs uninstall` to return to the bundled runtime. After an upgrade, run
+`browsah install refresh`: it brings the root-owned copy and the codec runtimes up to date in one go, with no download
+(until then browsah starts without the codec runtime and says so). See
 [video codecs](docs/video-codecs.md) for a separate test profile, updates and
 the limits of this third-party runtime.
 
@@ -200,7 +202,7 @@ versioned install directory) are repaired the next time any profile is started f
 
 **1Password (and anything else that insists on a root-owned browser):** a Homebrew install is owned by you, so 1Password refuses it.
 `sudo "$(brew --prefix)/bin/browsah" system-install --1password` puts a root-owned copy in `/opt/browsah` and a start-up script in
-`/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah system-upgrade` updates it; see [docs/config/extensions.md](docs/config/extensions.md#1password).
+`/usr/local/bin`, after printing what it will change and asking; after a `brew upgrade`, `browsah install refresh` updates it (and the codec runtimes; `browsah system-upgrade` is its first step); see [docs/config/extensions.md](docs/config/extensions.md#1password).
 For H.264/AAC on that copy, run `sudo /usr/local/bin/browsah codecs install`, then launch
 `/usr/local/bin/browsah` as your normal user. See [system codecs](docs/video-codecs.md#system-copy-and-1password).
 

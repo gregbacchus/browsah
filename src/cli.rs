@@ -30,7 +30,8 @@ commands (all take --profile ID where a profile matters, before or after the com
   app add [<id>] --url URL [--name N] [--scope P,...] [--display standalone|minimal|browser] [--color ...] [--icon FILE]
   app update <id> [--apply]                      preview or apply web manifest changes
   system-install [--1password] [--dry-run] [--yes] | system-uninstall      (run with sudo) a root-owned copy in /opt/browsah, for 1Password
-  codecs install | status | uninstall                          optional personal H.264/AAC CEF runtime
+  codecs install | refresh | status | uninstall                optional personal H.264/AAC CEF runtime (refresh: after an upgrade, no download)
+  install refresh [--dry-run] [--yes] [--force] [--from=DIR]    after an upgrade: update the root-owned copy and the codec runtimes in one go
   system-upgrade [--dry-run] [--yes] [--force] [--from=DIR]                update that copy from the one it came from (it runs sudo itself)
   extension add <id | Chrome Web Store address> | list | update [id] | remove <id> --yes     Chrome extensions
   app list | install <id> | route <id> [--write | --remove] | remove <id> --yes

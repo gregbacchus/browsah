@@ -25,6 +25,7 @@ mod navhistory;
 mod permissions;
 mod picker;
 mod profile;
+mod refresh;
 mod router;
 mod selector;
 mod store;
@@ -80,7 +81,7 @@ fn main() {
     // before starting GTK or CEF so its matching library and resources are used together.
     // System installation must continue to copy the bundled build, not the user override.
     if std::env::var_os("BROWSAH_CODEC_ACTIVE").is_none()
-        && !matches!(args.first().map(String::as_str), Some("system-install" | "system-upgrade" | "system-uninstall"))
+        && !matches!(args.first().map(String::as_str), Some("system-install" | "system-upgrade" | "system-uninstall" | "install"))
         && system_source.map(|prefix| prefix.join("codec-runtime"))
             .unwrap_or_else(|| gtk::glib::user_data_dir().join("browsah/codec-runtime"))
             .join("current").is_symlink()
@@ -90,13 +91,20 @@ fn main() {
             eprintln!("codecs: cannot find browsah executable");
             std::process::exit(1);
         };
-        let e = std::process::Command::new("bash")
-            .arg("-c").arg(include_str!("codecs.sh")).arg("browsah-codecs")
-            .arg("run").args(&args).env("BROWSAH_CODEC_CALLER", source)
-            .env("BROWSAH_CODEC_SYSTEM", system_source.unwrap_or(std::path::Path::new("")))
-            .exec();
-        eprintln!("codecs: cannot start the selected runtime: {e}");
-        std::process::exit(1);
+        let script = |action: &str| {
+            let mut c = std::process::Command::new("bash");
+            c.arg("-c").arg(include_str!("codecs.sh")).arg("browsah-codecs").arg(action);
+            c.env("BROWSAH_CODEC_CALLER", source).env("BROWSAH_CODEC_SYSTEM", system_source.unwrap_or(std::path::Path::new("")));
+            c
+        };
+        // A runtime that no longer matches this program (after an upgrade) must not stop the browser from starting: carry on with the
+        // bundled CEF (no H.264/AAC) and say how to bring the runtime up to date.
+        if script("status").stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success()) {
+            let e = script("run").args(&args).env("BROWSAH_CODEC_CHECKED", "1").exec();
+            eprintln!("codecs: cannot start the selected runtime: {e}");
+            std::process::exit(1);
+        }
+        eprintln!("browsah: starting without the codec runtime (no H.264/AAC video). After an upgrade, run `browsah install refresh` to bring it up to date.");
     }
 
     // `browsah profile ...` manages profiles on disk and needs neither CEF nor a window.
@@ -135,6 +143,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("route") {
         std::process::exit(router::cli(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("install") {
+        std::process::exit(refresh::cli(&args[1..]));
     }
     if matches!(args.first().map(String::as_str), Some("system-install" | "system-uninstall" | "system-upgrade")) {
         std::process::exit(system_install::cli(&args[0], &args[1..]));

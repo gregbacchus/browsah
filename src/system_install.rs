@@ -329,6 +329,12 @@ pub fn apply(p: &Plan) -> Result<Vec<String>, String> {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(permission_hint(&e, &p.prefix));
     }
+    // The codec runtime (`browsah codecs install`, system copy) lives in the install folder: it moves to the new copy, where
+    // `browsah codecs refresh` points it at the new program (`browsah install refresh` does both steps).
+    let runtime = old.join("codec-runtime");
+    if runtime.is_dir() && std::fs::rename(&runtime, p.prefix.join("codec-runtime")).is_ok() {
+        done.push("kept the codec runtime (run `browsah install refresh`, or `sudo browsah codecs refresh`, to point it at the new program)".to_owned());
+    }
     let _ = std::fs::remove_dir_all(&old);
     done.push(format!("copied the program to {}", p.prefix.display()));
 
@@ -570,6 +576,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&list).unwrap().matches("browsah").count(), 1);
         let leftovers: Vec<_> = std::fs::read_dir(prefix.parent().unwrap()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn system_upgrade_keeps_the_codec_runtime_for_codecs_refresh() {
+        let (src, dst) = (temp("keep-src"), temp("keep-dst"));
+        fake_source(&src);
+        let (prefix, bin) = (dst.join("opt/browsah"), dst.join("bin"));
+        apply(&plan(&src, &prefix, &bin, None).unwrap()).unwrap();
+        std::fs::create_dir_all(prefix.join("codec-runtime/cef-156.0.26.x")).unwrap();
+        std::fs::write(prefix.join("codec-runtime/cef-156.0.26.x/libcef.so"), "codec cef").unwrap();
+        std::fs::write(prefix.join("stale-file"), "x").unwrap();
+        let done = apply(&plan(&src, &prefix, &bin, None).unwrap()).unwrap();
+        assert!(done.iter().any(|d| d.contains("kept the codec runtime")), "{done:?}");
+        assert_eq!(std::fs::read_to_string(prefix.join("codec-runtime/cef-156.0.26.x/libcef.so")).unwrap(), "codec cef");
+        assert!(!prefix.join("stale-file").exists(), "everything else is replaced");
     }
 
     #[test]
