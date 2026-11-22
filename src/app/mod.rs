@@ -2479,14 +2479,14 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         });
         bar.add_controller(keys);
     }
-    // With no address bar the header shows the page title: right-clicking it opens the tab menu (copy the address, print, ...) as a
-    // native GTK popover menu (docs/research/tab-menu-grab.md).
+    // With no address bar the header shows the page title: clicking it (or right-clicking) opens the tab menu (copy the address, print, ...)
+    // as a native GTK popover menu (docs/research/tab-menu-grab.md). A left click acts on release, so dragging the title still moves the window.
     if nav.address_bar == crate::workspace::AddressBar::Hidden {
         let click = gtk::GestureClick::new();
-        click.set_button(3);
-        click.connect_pressed({
+        click.set_button(0);
+        let open_menu = {
             let (weak, header) = (weak.clone(), header.clone());
-            move |_, _, x, y| {
+            move |x: f64, y: f64| {
                 // Only the title area: not the buttons, nor the tabs shown in the header.
                 let mut widget = header.pick(x, y, gtk::PickFlags::DEFAULT);
                 while let Some(w) = widget {
@@ -2501,6 +2501,20 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 if let Some(s) = weak.upgrade() {
                     s.show_title_menu(&header, x as i32, y as i32);
                 }
+            }
+        };
+        let open = std::rc::Rc::new(open_menu);
+        click.connect_pressed({
+            let open = open.clone();
+            move |g, _, x, y| {
+                if g.current_button() == 3 {
+                    open(x, y);
+                }
+            }
+        });
+        click.connect_released(move |g, _, x, y| {
+            if g.current_button() == 1 {
+                open(x, y);
             }
         });
         header.add_controller(click);
