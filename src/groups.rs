@@ -1,6 +1,6 @@
-//! Tab groups: the model and its pure helpers. A group has a name and a colour; its tabs sit next to each other
-//! in the tab bar and carry the group's colour as a dot. A group can be collapsed to a single tab that stands for
-//! it. The window side (menus, collapsing, the tab bar) is `app/groups.rs`.
+//! Tab groups: the model and its pure helpers. A group has a name and a colour and takes the room of one tab in the
+//! tab bar: the tab that is showing, painted in the group's colour, with a drop-down listing the group's other tabs.
+//! The window side (the drop-down, menus, the tab bar) is `app/groups.rs`.
 
 /// One group of a window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,7 +10,6 @@ pub struct Group {
     pub name: String,
     /// `#rrggbb`.
     pub color: String,
-    pub collapsed: bool,
 }
 
 /// The colours offered, as `(name, hex)`.
@@ -35,29 +34,16 @@ pub fn next_id(groups: &[Group]) -> u32 {
     groups.iter().map(|g| g.id).max().unwrap_or(0) + 1
 }
 
+/// A colour as a CSS class suffix (letters and digits only, so nothing a config file holds can become markup).
+pub fn color_class(color: &str) -> String {
+    let hex: String = color.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    format!("browsah-group-{hex}")
+}
+
 /// A small coloured dot as an SVG, for a tab's icon.
 pub fn dot_svg(color: &str) -> String {
     let c: String = color.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '#').collect();
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" fill=\"#202020\"/><circle cx=\"8\" cy=\"8\" r=\"5\" fill=\"{c}\" stroke=\"#ffffff\" stroke-width=\"1\"/></svg>")
-}
-
-/// Where a tab joining `group` should sit: right after the group's last tab. `order` is the group id of every
-/// page in the tab bar, left to right (0: none); `pinned` pages come first and are not moved into. Returns the
-/// position the page should have *after* it has been taken out of `from`.
-pub fn join_position(order: &[u32], group: u32, from: usize, pinned: usize) -> usize {
-    // The order without the tab that is moving.
-    let rest: Vec<u32> = order.iter().enumerate().filter(|(i, _)| *i != from).map(|(_, g)| *g).collect();
-    let at = match rest.iter().rposition(|g| *g == group) {
-        Some(last) => last + 1,
-        None => from, // the group has no other tab: stay where it is
-    };
-    at.max(pinned)
-}
-
-/// The tab bar title of a collapsed group: its name and how many tabs it holds.
-pub fn collapsed_title(name: &str, tabs: usize) -> String {
-    let name = if name.trim().is_empty() { "Group" } else { name.trim() };
-    format!("\u{25b8} {name} ({tabs})")
 }
 
 #[cfg(test)]
@@ -65,7 +51,7 @@ mod tests {
     use super::*;
 
     fn g(id: u32, color: &str) -> Group {
-        Group { id, name: format!("g{id}"), color: color.to_owned(), collapsed: false }
+        Group { id, name: format!("g{id}"), color: color.to_owned() }
     }
 
     #[test]
@@ -79,25 +65,16 @@ mod tests {
     }
 
     #[test]
-    fn a_joining_tab_goes_after_the_groups_last_tab() {
-        // pages: [pinned 0, a(1), b(0), c(1), d(0)]; move d (index 4) into group 1: after c, which is index 3 -> 4.
-        assert_eq!(join_position(&[0, 1, 0, 1, 0], 1, 4, 1), 4);
-        // move b (index 2) into group 1: without b the order is [0,1,1,0]; last of group 1 is index 2, so position 3.
-        assert_eq!(join_position(&[0, 1, 0, 1, 0], 1, 2, 1), 3);
-        // a tab already in the group and last stays where it is.
-        assert_eq!(join_position(&[0, 1, 1], 1, 2, 1), 2);
-        // an empty group: it stays put, but never inside the pinned pages.
-        assert_eq!(join_position(&[0, 0, 0], 7, 2, 1), 2);
-        assert_eq!(join_position(&[0, 0, 0], 7, 0, 1), 1);
+    fn colour_classes_hold_only_hex_digits() {
+        assert_eq!(color_class("#E01B24"), "browsah-group-E01B24");
+        assert_eq!(color_class("#fff\" x{}"), "browsah-group-fffx".replace('x', ""));
     }
 
     #[test]
-    fn dot_and_title() {
+    fn the_dot_is_safe() {
         let dot = dot_svg("#3584e4");
         assert!(dot.contains("fill=\"#3584e4\""));
         assert!(dot.contains("fill=\"#202020\"") && dot.contains("stroke=\"#ffffff\""));
         assert!(!dot_svg("#fff\" onload=\"x").contains("onload="), "no markup gets through");
-        assert_eq!(collapsed_title("News", 3), "\u{25b8} News (3)");
-        assert_eq!(collapsed_title("  ", 1), "\u{25b8} Group (1)");
     }
 }

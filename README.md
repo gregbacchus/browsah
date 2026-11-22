@@ -109,8 +109,8 @@ The workspace picker: a button at the start of the header lists the profile's wo
 Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
 profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.
 
-Tab groups: right-click a tab, *Add to new group…*; groups have a name and a colour, can be collapsed to one tab
-and are remembered with a workspace's tabs. See [docs/config/workspace.md](docs/config/workspace.md).
+Tab groups: right-click a tab, *Add to new group…*; a group takes the room of one coloured tab with a drop-down
+listing its tabs, has a name and a colour, and is remembered with a workspace's tabs. See [docs/config/workspace.md](docs/config/workspace.md).
 
 Cookies and storage: `cookies:` rules (any layer) allow or deny cookies per site, and a workspace with
 `storage: isolated` keeps all its cookies and site data apart from the rest of the profile. See

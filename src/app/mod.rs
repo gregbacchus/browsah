@@ -96,7 +96,7 @@ pub struct Tab {
     /// The page's icon, and the site it belongs to.
     pub favicon: RefCell<Option<gtk::gdk::Texture>>,
     pub favicon_origin: RefCell<String>,
-    /// In a collapsed group: out of the tab bar, but alive.
+    /// In a group but not the one showing: out of the tab bar, but alive.
     pub parked: std::cell::Cell<bool>,
     /// The address last written to the history (a reload is not a new visit).
     last_recorded: RefCell<String>,
@@ -270,13 +270,12 @@ pub struct Shell {
     js_pending: RefCell<Option<Arc<view::JsDialogQuestion>>>,
     /// The find-in-page bar.
     find: find::Bar,
-    /// Tab groups, the tab-bar page standing for each collapsed one, and the tabs inside those.
+    /// Tab groups, and the tabs of each that are not showing in the tab bar.
     groups: RefCell<Vec<crate::groups::Group>>,
-    placeholders: RefCell<Vec<(u32, adw::TabPage)>>,
     parked: RefCell<Vec<(u32, Rc<Tab>)>>,
-    /// True while tabs are being detached or attached by collapsing or expanding a group.
+    /// True while a group's tabs are being parked or brought into the bar.
     collapsing: Cell<bool>,
-    /// Where a collapsed group's pages wait (never shown).
+    /// Where a group's tabs wait while they are not showing (never shown).
     parking: adw::TabView,
     /// PDFs being written: what to do when each is done.
     pdf_jobs: RefCell<std::collections::HashMap<String, print::PdfJob>>,
@@ -1016,11 +1015,12 @@ impl Shell {
         let mut out = Vec::new();
         for i in 0..self.tab_view.n_pages() {
             let page = self.tab_view.nth_page(i);
-            if let Some(gid) = self.placeholder_group(&page) {
-                // A collapsed group: its tabs are saved where its placeholder is.
-                out.extend(self.parked.borrow().iter().filter(|(g, _)| *g == gid).filter_map(|(_, t)| record(t, false)));
-            } else if let Some(tab) = tabs.iter().find(|t| t.page == page) {
+            if let Some(tab) = tabs.iter().find(|t| t.page == page) {
                 out.extend(record(tab, selected.as_ref() == Some(&page)));
+                // A group's tabs that are not showing are saved after the one that is.
+                if tab.group.get() != 0 {
+                    out.extend(self.parked.borrow().iter().filter(|(_, t)| t.group.get() == tab.group.get()).filter_map(|(_, t)| record(t, false)));
+                }
             }
         }
         out
@@ -1089,7 +1089,7 @@ impl Shell {
             self.tab_view.set_selected_page(&t.page);
             self.on_selected(); // wakes it if it was only remembered
         }
-        self.restore_collapsed(&groups);
+        self.fold_restored_groups();
     }
 
     /// A tab for a remembered page: no browser until it is shown.
@@ -1464,19 +1464,6 @@ impl Shell {
 
     /// The selected tab changed: show its state and give its page the keyboard focus.
     fn on_selected(&self) {
-        if let Some(gid) = self.selected_placeholder() {
-            // A collapsed group's stand-in was chosen: open the group (after this signal has finished).
-            if !self.collapsing.get() {
-                let window = self.window.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
-                        s.expand_group(gid);
-                    }
-                });
-            }
-            let _ = gid;
-            return;
-        }
         self.editing.set(false);
         self.refresh();
         let current = self.current();
@@ -1511,8 +1498,9 @@ impl Shell {
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
         };
         if let Some(tab) = tab {
-            tab.group.set(0); // groups belong to a window
+            let gid = tab.group.replace(0); // groups belong to a window
             IN_FLIGHT.with(|f| f.borrow_mut().push(tab));
+            self.ensure_front(gid, None);
             self.prune_groups();
             // A window whose last tab was sent elsewhere has nothing left to show.
             if self.tabs.borrow().is_empty() {
@@ -1585,6 +1573,9 @@ impl Shell {
 
     /// Close the tab whose page this is. Closing the last tab closes the window.
     fn close_tab(&self, page: &adw::TabPage) {
+        // A group never loses its place in the bar: its next tab takes over where this one was.
+        let was_selected = self.tab_view.selected_page().as_ref() == Some(page);
+        let (gid, at) = (self.tab_for_page(page).map(|t| t.group.get()).unwrap_or(0), self.tab_view.page_position(page));
         let tab = {
             let mut tabs = self.tabs.borrow_mut();
             tabs.iter().position(|t| &t.page == page).map(|i| tabs.remove(i))
@@ -1601,6 +1592,10 @@ impl Shell {
                 p.view.retire(); // the right page has nothing to ask: it goes with the tab
             }
             tab.view().close();
+        }
+        let next = self.ensure_front(gid, Some(at + 1));
+        if let (true, Some(next)) = (was_selected, next) {
+            self.tab_view.set_selected_page(&next.page);
         }
         self.prune_groups();
         self.schedule_save();
@@ -2104,7 +2099,6 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         js_pending: RefCell::new(None),
         find: find_bar,
         groups: RefCell::new(Vec::new()),
-        placeholders: RefCell::new(Vec::new()),
         parked: RefCell::new(Vec::new()),
         collapsing: Cell::new(false),
         parking: adw::TabView::new(),
@@ -2237,13 +2231,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                 }
             }),
             ("group-rename", |s, _, g| s.rename_group_dialog(g)),
-            ("group-toggle", |s, _, g| {
-                if s.group(g).is_some_and(|x| x.collapsed) {
-                    s.expand_group(g);
-                } else {
-                    s.collapse_group(g);
-                }
-            }),
+            ("group-new-tab", |s, _, g| s.open_tab_in_group(g)),
             ("group-ungroup", |s, _, g| s.ungroup(g)),
             ("group-close", |s, _, g| s.close_group(g)),
         ];
@@ -2273,6 +2261,21 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             });
             window.add_action(&action);
         }
+    }
+    for name in ["group-tab-show", "group-tab-copy", "group-tab-remove", "group-tab-close"] {
+        let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+        let weak = weak.clone();
+        action.connect_activate(move |a, param| {
+            let (Some(s), Some(uid)) = (weak.upgrade(), param.and_then(|p| p.str().map(str::to_owned))) else { return };
+            let Some(tab) = s.tab_by_uid(&uid) else { return };
+            match a.name().as_str() {
+                "group-tab-show" => s.show_group_tab(&tab),
+                "group-tab-copy" => gtk::prelude::WidgetExt::display(&s.window).clipboard().set_text(&tab.state.borrow().address),
+                "group-tab-remove" => s.remove_from_group(&tab),
+                _ => s.close_group_tab(&tab),
+            }
+        });
+        window.add_action(&action);
     }
     add_action(&window, "save-pdf", {
         let weak = weak.clone();
@@ -2449,6 +2452,31 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
         bar.add_controller(click);
+        // A click anywhere on a group's tab (not on a button in it, and not a drag) opens the group's list of tabs.
+        let open_group = gtk::GestureClick::new();
+        open_group.set_button(1);
+        open_group.set_propagation_phase(gtk::PropagationPhase::Capture);
+        open_group.connect_released({
+            let (weak, bar) = (weak.clone(), bar.clone());
+            move |_, _, x, y| {
+                let mut widget = bar.pick(x, y, gtk::PickFlags::DEFAULT);
+                while let Some(w) = widget {
+                    if w.is::<gtk::Button>() {
+                        return;
+                    }
+                    if w.type_().name() == "AdwTab" {
+                        let (Some(page), Some(s)) = (w.property::<Option<adw::TabPage>>("page"), weak.upgrade()) else { return };
+                        if s.is_group_front(&page) {
+                            s.tab_view.set_selected_page(&page);
+                            s.show_group_dropdown(&page);
+                        }
+                        return;
+                    }
+                    widget = w.parent();
+                }
+            }
+        });
+        bar.add_controller(open_group);
         let hold = gtk::GestureLongPress::new();
         hold.set_touch_only(true);
         hold.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -2633,6 +2661,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             if let Some(s) = weak.upgrade() {
                 s.attach_page(page);
                 s.schedule_pin_order(page, position);
+                s.schedule_group_chrome();
             }
         }
     });
@@ -2641,7 +2670,12 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move |_, page| {
             // The pen or the speaker on a tab was clicked: say what it means.
             if let Some(s) = weak.upgrade() {
-                s.toast(page.indicator_tooltip().as_str());
+                if s.is_group_front(page) && s.tab_for_page(page).is_some_and(|t| !t.dirty.get() && !t.playing.get()) {
+                    s.tab_view.set_selected_page(page);
+                    s.show_group_dropdown(page); // the group's arrow
+                } else {
+                    s.toast(page.indicator_tooltip().as_str());
+                }
             }
         }
     });
@@ -2650,6 +2684,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         move |_, page, position| {
             if let Some(s) = weak.upgrade() {
                 s.schedule_pin_order(page, position);
+                s.schedule_group_chrome();
             }
         }
     });
@@ -2657,14 +2692,6 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let weak = weak.clone();
         move |tv, page| {
             let shell = weak.upgrade();
-            // A collapsed group's stand-in: closing it opens the group (nothing is lost).
-            if let Some(s) = &shell {
-                if let Some(gid) = s.placeholder_group(page) {
-                    tv.close_page_finish(page, false);
-                    s.expand_group(gid);
-                    return glib::Propagation::Stop;
-                }
-            }
             // Pinned tabs (a workspace's always-present tabs) are not closable.
             if page.is_pinned() || shell.as_ref().is_some_and(|s| s.page_is_pinned(page)) {
                 tv.close_page_finish(page, false);

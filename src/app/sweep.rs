@@ -300,6 +300,11 @@ impl Shell {
             tab.page.set_indicator_icon(Some(&lucide(&crate::icons::VOLUME_2)));
             tab.page.set_indicator_tooltip("Playing: this tab will not be swept");
             tab.page.set_indicator_activatable(true);
+        } else if tab.group.get() != 0 {
+            // A group's tab in the bar: the arrow that says it opens a list (a click anywhere on the tab does too).
+            tab.page.set_indicator_icon(Some(&lucide(&crate::icons::CHEVRON_DOWN)));
+            tab.page.set_indicator_tooltip("Tabs in this group");
+            tab.page.set_indicator_activatable(true);
         } else {
             tab.page.set_indicator_icon(None::<&gio::Icon>);
             tab.page.set_indicator_tooltip("");

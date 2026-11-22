@@ -3711,8 +3711,8 @@ async fn run_print(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_file(&path);
 }
 
-/// Tab groups: making one, putting tabs in it (they move next to each other), collapsing to one tab and opening again,
-/// taking tabs out, closing a group, and remembering groups (collapsed or not) with the workspace's tabs.
+/// Tab groups: making one, putting tabs in it (they move next to each other), a group taking one tab's room with a drop-down
+/// for the rest, taking tabs out, closing a group, and remembering groups with the workspace's tabs.
 async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     use gtk::prelude::ActionGroupExt;
     let app = shell.window.application().expect("application");
@@ -3730,67 +3730,84 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     let Some(ws) = find() else { return };
     let t1 = ws.current().expect("tab");
     let t2 = ws.open_tab(&format!("http://localhost:{port}/b.html?2"), false);
-    let t3 = ws.open_tab(&format!("http://localhost:{port}/b.html?3"), false);
+    let _t3 = ws.open_tab(&format!("http://localhost:{port}/b.html?3"), false);
     let t4 = ws.open_tab(&format!("http://localhost:{port}/b.html?4"), false);
     glib::timeout_future(Duration::from_millis(800)).await;
-    let pos = |t: &Rc<super::Tab>| ws.tab_view.page_position(&t.page);
 
+    let in_bar = |t: &Rc<super::Tab>| !t.parked.get() && ws.tab_view.page_position(&t.page) >= 0 && ws.tab_view.nth_page(ws.tab_view.page_position(&t.page)) == t.page;
+    let pages_before = ws.tab_view.n_pages();
     let gid = ws.create_group("News", None);
     ws.assign_group(&t2, gid);
     ws.assign_group(&t4, gid);
-    r.check("tabs put in a group sit next to each other", (pos(&t2) - pos(&t4)).abs() == 1 && pos(&t3) > pos(&t4).max(pos(&t2)), || format!("{} {} {} {}", pos(&t1), pos(&t2), pos(&t3), pos(&t4)));
-    r.check("a grouped tab shows the group's colour as its icon and its name as tooltip", t2.page.icon().is_some() && t2.page.tooltip().is_some_and(|t| t.contains("News")) && t1.page.icon().is_none(), || format!("{:?}", t2.page.tooltip()));
+    r.check("a group takes the room of one tab: the tab that joined shows, the other waits in the list", ws.tab_view.n_pages() == pages_before - 1 && in_bar(&t4) && t2.parked.get() && ws.group_tabs(gid).len() == 2, || format!("{} pages (was {pages_before})", ws.tab_view.n_pages()));
+    r.check("the group's tab shows its colour as its icon, its name as tooltip and a drop-down arrow", t4.page.icon().is_some() && t4.page.tooltip().is_some_and(|t| t.contains("News")) && t4.page.indicator_icon().is_some() && t1.page.icon().is_none() && t1.page.indicator_icon().is_none(), || format!("{:?}", t4.page.tooltip()));
     ws.rename_group(gid, "Daily news");
     ws.set_group_color(gid, "#e01b24");
-    r.check("renaming and recolouring a group updates its tabs", t4.page.tooltip().is_some_and(|t| t.contains("Daily news")) && ws.group(gid).is_some_and(|g| g.color == "#e01b24"), || format!("{:?}", t4.page.tooltip()));
+    r.check("renaming and recolouring a group updates its tabs", t2.page.tooltip().is_some_and(|t| t.contains("Daily news")) && ws.group(gid).is_some_and(|g| g.color == "#e01b24"), || format!("{:?}", t2.page.tooltip()));
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let painted = super::tab_of_page(&ws.tab_bar, &t4.page).is_some_and(|w| w.css_classes().iter().any(|c| c == "browsah-group-e01b24"));
+    r.check("the group's tab in the bar is painted in the group's colour", painted, || format!("{:?}", super::tab_of_page(&ws.tab_bar, &t4.page).map(|w| w.css_classes())));
+    shot(&ws.window, "groups-bar");
 
-    glib::timeout_future(Duration::from_millis(600)).await;
-    shot(&ws.window, "groups-expanded");
-    let pages_before = ws.tab_view.n_pages();
-    ws.tab_view.set_selected_page(&t3.page);
-    ws.collapse_group(gid);
-    r.check("collapsing replaces the group's tabs by one stand-in tab", ws.tab_view.n_pages() == pages_before - 1 && ws.group(gid).is_some_and(|g| g.collapsed) && t2.parked.get() && t4.parked.get(), || format!("{} pages (was {pages_before})", ws.tab_view.n_pages()));
-    let title = (0..ws.tab_view.n_pages()).map(|i| ws.tab_view.nth_page(i).title().to_string()).find(|t| t.contains("Daily news")).unwrap_or_default();
-    r.check("the stand-in says which group it is and how many tabs it holds", title.contains("(2)"), || title.clone());
-    r.check("the shown tab is a real one, not the stand-in", ws.selected_placeholder().is_none() && ws.current().is_some(), || String::new());
-    glib::timeout_future(Duration::from_millis(600)).await;
-    shot(&ws.window, "groups-collapsed");
+    // The drop-down lists the group's tabs; choosing one swaps it into the bar.
+    ws.show_group_dropdown(&t4.page);
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let popover = ws.title_popover.borrow().clone();
+    r.check("clicking the group's tab opens a list of its tabs", popover.as_ref().is_some_and(|p| p.is_visible()), || String::new());
+    if let Some(p) = &popover {
+        check_menu_rows(p, r, "the group drop-down", &["New tab in group", "Rename group\u{2026}"]);
+        check_no_bold(r, "the group drop-down", p);
+    }
+    if let Some(p) = &popover {
+        shot(p, "groups-dropdown");
+        p.popdown();
+    }
+    glib::timeout_future(Duration::from_millis(300)).await;
+    ws.show_group_tab(&t2);
+    r.check("choosing a tab from the list puts it in the group's place and the shown one into the list", in_bar(&t2) && t4.parked.get() && ws.tab_view.selected_page().as_ref() == Some(&t2.page) && ws.tab_view.n_pages() == pages_before - 1, || format!("{} pages", ws.tab_view.n_pages()));
+    r.check("the new tab in the bar is painted too", super::tab_of_page(&ws.tab_bar, &t2.page).is_some_and(|w| w.css_classes().iter().any(|c| c == "browsah-group-e01b24")), || String::new());
+
+    // Remembered: the shown tab, then the listed ones, and the group.
     let saved = ws.tab_records();
     ws.save_now();
     let groups = super::store().map(|s| s.load_groups("gr1")).unwrap_or_default();
-    r.check("a collapsed group's tabs are still remembered, with the group", saved.len() == 4 && saved.iter().filter(|t| t.group == gid).count() == 2 && groups.len() == 1 && groups[0].collapsed && groups[0].name == "Daily news", || format!("{} records, {groups:?}", saved.len()));
-    ws.expand_group(gid);
-    r.check("expanding puts the tabs back, together, and removes the stand-in", ws.tab_view.n_pages() == pages_before && !t2.parked.get() && (pos(&t2) - pos(&t4)).abs() == 1 && ws.selected_placeholder().is_none(), || format!("{} pages", ws.tab_view.n_pages()));
-
-    // Collapsed when the window closes: it comes back collapsed, with its tabs asleep behind it.
-    ws.collapse_group(gid);
+    r.check("a group's listed tabs are remembered with the group", saved.len() == 4 && saved.iter().filter(|t| t.group == gid).count() == 2 && groups.len() == 1 && groups[0].name == "Daily news", || format!("{} records, {groups:?}", saved.len()));
     ws.window.close();
     let _ = wait_until(5_000, || find().is_none()).await;
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"gr1".to_variant()));
     let _ = wait_until(15_000, || find().is_some_and(|s| s.tab_count() >= 4)).await;
     let Some(ws) = find() else { return };
-    let stand_in = (0..ws.tab_view.n_pages()).any(|i| ws.tab_view.nth_page(i).title().contains("Daily news"));
-    r.check("a collapsed group comes back collapsed after a restart", stand_in && ws.group(gid).is_some_and(|g| g.collapsed && g.color == "#e01b24") && ws.tab_count() == 4, || format!("{} tabs, {:?}", ws.tab_count(), ws.groups()));
-    ws.expand_group(gid);
     let members = ws.group_tabs(gid);
-    r.check("its tabs are the group's again after expanding", members.len() == 2 && members.iter().all(|t| t.page.icon().is_some()), || format!("{}", members.len()));
+    let shown = members.iter().filter(|t| !t.parked.get()).count();
+    r.check("a group comes back as one tab in the bar and the rest in its list", members.len() == 2 && shown == 1 && ws.tab_view.n_pages() == pages_before - 1 && ws.tab_count() == 4 && ws.group(gid).is_some_and(|g| g.color == "#e01b24"), || format!("{} members, {shown} shown, {} pages, {:?}", members.len(), ws.tab_view.n_pages(), ws.groups()));
+
+    // Closing the tab in the bar brings the next one forward.
+    let front = ws.front_of(gid).expect("front");
+    ws.tab_view.close_page(&front.page);
+    let ok = wait_until(5_000, || ws.tab_count() == 3).await;
+    let left = ws.group_tabs(gid);
+    r.check("closing a group's tab in the bar brings its next tab forward", ok && left.len() == 1 && !left[0].parked.get() && ws.tab_view.n_pages() == pages_before - 1, || format!("{} left, {} pages", left.len(), ws.tab_view.n_pages()));
 
     // Taking tabs out; an empty group disappears.
-    let (a, b) = (members[0].clone(), members[1].clone());
+    let a = left[0].clone();
     ws.remove_from_group(&a);
-    r.check("a tab taken out of a group is plain again", a.group.get() == 0 && a.page.icon().is_none() && ws.group(gid).is_some(), || String::new());
-    ws.remove_from_group(&b);
-    r.check("a group with no tabs left is forgotten", ws.group(gid).is_none(), || format!("{:?}", ws.groups()));
+    r.check("a tab taken out of a group is plain again, and a group with no tabs left is forgotten", a.group.get() == 0 && a.page.icon().is_none() && a.page.indicator_icon().is_none() && ws.group(gid).is_none(), || format!("{:?}", ws.groups()));
 
-    // Closing a group closes its tabs.
+    // Ungrouping and closing a group.
     let g2 = ws.create_group("Temp", None);
     let tabs = ws.tabs();
     ws.assign_group(&tabs[1], g2);
     ws.assign_group(&tabs[2], g2);
+    let pages = ws.tab_view.n_pages();
+    ws.ungroup(g2);
+    r.check("ungrouping puts every tab back in the bar", ws.tab_view.n_pages() == pages + 1 && ws.group(g2).is_none() && tabs.iter().all(|t| !t.parked.get() && t.group.get() == 0), || format!("{} pages (was {pages})", ws.tab_view.n_pages()));
+    let g3 = ws.create_group("Temp", None);
+    ws.assign_group(&tabs[1], g3);
+    ws.assign_group(&tabs[2], g3);
     let before = ws.tab_count();
-    ws.close_group(g2);
+    ws.close_group(g3);
     let ok = wait_until(5_000, || ws.tab_count() == before - 2).await;
-    r.check("closing a group closes its tabs", ok && ws.group(g2).is_none(), || format!("{} tabs (was {before})", ws.tab_count()));
+    r.check("closing a group closes its tabs, listed ones too", ok && ws.group(g3).is_none(), || format!("{} tabs (was {before})", ws.tab_count()));
 
     for w in super::windows() {
         if !Rc::ptr_eq(&w, shell) {

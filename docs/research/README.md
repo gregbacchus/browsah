@@ -50,6 +50,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [Slow start](2026-11-21-slow-start.md) | 2026-11-21 | Why did a start sometimes crawl and show Not Responding? | One slow tab tripped the 3 s first-frame watchdog and switched the whole process to readback (about 7x CPU); inferred from the journal, not reproduced. Fixed, plus a main-loop stall log. |
 | [Task manager](2026-11-21-task-manager.md) | 2026-11-21 | How to show which tabs burn CPU or memory? | Page counters (`Performance.getMetrics`) per tab, `/proc` per process; zygote-forked processes are told apart by thread names. |
 | [install refresh](2026-11-21-install-refresh.md) | 2026-11-21 | Must `codecs install` be rerun after every upgrade? Why does CEF depend on the browsah hash? | It did, needlessly: the runtime kept a copy of the program. It is now only CEF and the launcher script puts it on LD_LIBRARY_PATH, so an upgrade needs nothing. `browsah install refresh` is the one upgrade command. |
+| [Tab group drop-down](2026-11-22-tab-group-dropdown.md) | 2026-11-22 | How can a group take the room of one tab? | The shown tab stands for the group (coloured via a css class on libadwaita's tab widget, arrow in the indicator slot), the rest are parked and listed in a popover. |
 
 ## Conventions
 

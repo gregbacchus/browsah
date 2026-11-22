@@ -132,19 +132,24 @@ tabs:
 
 ## Tab groups
 
-Tabs can be grouped: right-click a tab and choose *Add to new group…* (it asks for a name) or *Add to group*. A group
-has a name and a colour (change them with *Rename group…* and *Group colour*); its tabs sit next to each other and show
-the colour as a dot in front of the title, with the group's name as their tooltip. *Remove from group* takes a tab out
-(a group with no tabs left disappears), *Ungroup* takes them all out, and *Close group* closes its tabs.
+Tabs can be grouped to take up less of the tab bar: right-click a tab and choose *Add to new group…* (it asks for a name) or
+*Add to group*. **A group takes the room of one tab.** The tab that is showing stands for the group: it is painted in the
+group's colour, has the colour as a dot in front of the title and a drop-down arrow at the start of the tab. Click anywhere
+on it (or on the arrow) to open the group's list: its name, every tab in it (the one in the bar is ticked; choose another
+to swap it into the bar), *New tab in group* and *Rename group…*. The tabs that are not showing are kept alive but out of
+sight (they do not count in the bar, are not swept and make no frames).
+
+Context menus: a right click on the group's tab gives the tab menu with *Rename group…*, *Group colour*, *New tab in
+group*, *Remove from group*, *Ungroup* and *Close group*; a right click on a row of the list gives *Show*, *Copy address*,
+*Remove from group* and *Close tab* for that tab, and on the list's heading the group's menu. A tab that joins a group
+takes its place in the bar when it is the tab in use (the tab that was there goes into the list). Closing the tab in the
+bar brings the group's next tab forward; a group with no tabs left disappears. *Ungroup* puts every tab back in the bar.
 
 A link a page opens in a new tab (`target=_blank`, `window.open`) from a grouped tab joins that group.
 
-*Collapse group* folds the group into a single tab, `▸ Name (3)`, in the group's place; the tabs are kept alive but
-out of sight (they do not count in the bar, are not swept and make no frames). Select the stand-in tab (or close it, or
-choose *Expand group*) to bring them back. A window must keep at least one other tab to show, so the only tabs of a window
-cannot be collapsed. Groups are remembered with the workspace's tabs (collapsed or not, by name and colour) and come back at
-the next start; a tab dragged to another window leaves its group, and pinned tabs cannot be grouped. Ephemeral windows
-have groups while they are open but remember nothing.
+Groups are remembered with the workspace's tabs (name, colour and every tab, the one showing first) and come back at the
+next start with the selected tab (else the first) showing; a tab dragged to another window leaves its group, and pinned
+tabs cannot be grouped. Ephemeral windows have groups while they are open but remember nothing.
 
 A window for one site with its own icon and launcher entry is not a workspace but a web app: see [webapp.md](webapp.md).
 
