@@ -411,13 +411,19 @@ impl Shell {
     }
 
     /// Show `popover` under `parent`, replacing any earlier tab popover (one popover per click, docs/research/tab-menu-grab.md).
-    fn adopt_popover(self: &Rc<Self>, popover: &gtk::Popover, parent: &impl IsA<gtk::Widget>) {
+    ///
+    /// The popover hangs on the tab *bar*, pointing at `anchor` (a tab): under the tab widget it would inherit the workspace
+    /// colour's text colour (`workspace_css` sets one for `tabbar tab`), which is unreadable on the popover's own surface.
+    fn adopt_popover(self: &Rc<Self>, popover: &gtk::Popover, anchor: &gtk::Widget) {
         let old = self.title_popover.borrow_mut().take();
         if let Some(old) = old {
             old.popdown();
         }
         popover.set_halign(gtk::Align::Start);
-        popover.set_parent(parent);
+        popover.set_parent(&self.tab_bar);
+        if let Some(b) = anchor.compute_bounds(&self.tab_bar) {
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(b.x() as i32, b.y() as i32, b.width() as i32, b.height() as i32)));
+        }
         popover.connect_closed({
             let weak = Rc::downgrade(self);
             move |p| {
@@ -443,7 +449,6 @@ impl Shell {
         let Some(group) = self.group(front.group.get()) else { return };
         let Some(anchor) = tab_of_page(&self.tab_bar, page) else { return };
         let popover = gtk::Popover::builder().has_arrow(false).autohide(true).build();
-        popover.add_css_class("menu");
         let list = gtk::Box::builder().orientation(gtk::Orientation::Vertical).width_request(260).build();
         let heading = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(10).margin_start(12).margin_end(12).margin_top(6).margin_bottom(6).build();
         let dot = gtk::Image::from_gicon(&dot_icon(&group.color));
@@ -459,7 +464,8 @@ impl Shell {
                 if let Some(s) = weak.upgrade() {
                     let (anchor, page) = (anchor.clone(), page.clone());
                     popover.popdown();
-                    s.show_tab_menu(&anchor, 8, anchor.height() - 2, Some(&page));
+                    let x = anchor.compute_bounds(&s.tab_bar).map(|b| b.x() as i32 + 8).unwrap_or(8);
+                    s.show_tab_menu(&s.tab_bar, x, anchor.height() - 2, Some(&page));
                 }
             }
         });
@@ -524,7 +530,7 @@ impl Shell {
     }
 
     /// The menu of one tab of a group's list.
-    fn show_group_tab_menu(self: &Rc<Self>, anchor: &gtk::Widget, member: &Rc<Tab>) {
+    pub(super) fn show_group_tab_menu(self: &Rc<Self>, anchor: &gtk::Widget, member: &Rc<Tab>) {
         let model = gio::Menu::new();
         let uid = member.uid.to_string().to_variant();
         model.append_item(&menu::targeted("Show", "win.group-tab-show", &uid, None));

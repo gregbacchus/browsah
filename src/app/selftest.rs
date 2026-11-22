@@ -3723,7 +3723,7 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("workspace dir");
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("gr1"));
-    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\n")).expect("ws");
+    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\ncolor: '#f4e3b5'\n")).expect("ws");
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "gr1"));
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"gr1".to_variant()));
     let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
@@ -3760,9 +3760,24 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     }
     if let Some(p) = &popover {
         shot(p, "groups-dropdown");
+        let label_color = find_button(p.upcast_ref(), "New tab in group").and_then(|b| b.child()).and_then(|c| c.first_child()).and_then(|c| c.next_sibling()).map(|l| l.color());
+        let popup_color = p.color();
+        r.check("the drop-down's text is the popover's colour, not the tab bar's", label_color.is_some_and(|c| c == popup_color), || format!("{label_color:?} vs {popup_color:?}"));
         p.popdown();
     }
     glib::timeout_future(Duration::from_millis(300)).await;
+    // The menu of a row of the list is readable too (it hangs on the bar like the list, not on the tab).
+    if let Some(anchor) = super::tab_of_page(&ws.tab_bar, &t4.page) {
+        ws.show_group_tab_menu(&anchor, &t2);
+        glib::timeout_future(Duration::from_millis(400)).await;
+        let menu = ws.title_popover.borrow().clone();
+        r.check("a list row's menu opens and its text is the popover's colour", menu.as_ref().is_some_and(|p| p.is_visible() && find_button(p.upcast_ref(), "Close tab").and_then(|b| b.child()).and_then(|c| c.first_child()).and_then(|c| c.next_sibling()).is_some_and(|l| l.color() == p.color())), || String::new());
+        if let Some(p) = &menu {
+            shot(p, "groups-row-menu");
+            p.popdown();
+        }
+        glib::timeout_future(Duration::from_millis(300)).await;
+    }
     ws.show_group_tab(&t2);
     r.check("choosing a tab from the list puts it in the group's place and the shown one into the list", in_bar(&t2) && t4.parked.get() && ws.tab_view.selected_page().as_ref() == Some(&t2.page) && ws.tab_view.n_pages() == pages_before - 1, || format!("{} pages", ws.tab_view.n_pages()));
     r.check("the new tab in the bar is painted too", super::tab_of_page(&ws.tab_bar, &t2.page).is_some_and(|w| w.css_classes().iter().any(|c| c == "browsah-group-e01b24")), || String::new());
