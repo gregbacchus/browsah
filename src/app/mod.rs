@@ -697,12 +697,14 @@ impl Shell {
             let url = b.url.clone();
             button.connect_clicked({
                 let (window, url, popover) = (window.clone(), url.clone(), popover.downgrade());
-                move |_| {
+                move |b| {
+                    // Ctrl (or Cmd) held: a new tab. A button's own click claims the sequence, so the modifier is read from the keyboard.
+                    let new_tab = b.display().default_seat().and_then(|s| s.keyboard()).is_some_and(|k| k.modifier_state().intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::META_MASK));
                     if let Some(p) = popover.upgrade() {
                         p.popdown();
                     }
                     if let Some(s) = window.upgrade().and_then(|w| shell_of(&w)) {
-                        s.open_bookmark(&url, false);
+                        s.open_bookmark(&url, new_tab);
                     }
                 }
             });
