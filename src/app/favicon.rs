@@ -3,8 +3,7 @@
 //! a page has loaded. A grouped tab shows its group's colour as a dot on the icon.
 
 use super::{now_secs, store, Shell, Tab};
-use crate::groups::dot_svg;
-use gtk::{gdk, gio, glib, graphene, gsk, prelude::*};
+use gtk::{gdk, gio, glib, graphene, prelude::*};
 use std::rc::Rc;
 
 /// `scheme://host[:port]` of a web address, lower case (`None` for anything that is not http or https).
@@ -48,25 +47,6 @@ pub fn small_image(url: &str) -> Option<gtk::Image> {
     image.set_pixel_size(16);
     image.set_valign(gtk::Align::Center);
     Some(image)
-}
-
-/// `base` with a dot of `color` in its corner (a white ring around it keeps it visible on any icon).
-pub fn with_dot(window: &adw::ApplicationWindow, base: &gdk::Texture, color: &str) -> Option<gdk::Texture> {
-    let color = gdk::RGBA::parse(color).ok()?;
-    let white = gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
-    let size = 32.0;
-    let snapshot = gtk::Snapshot::new();
-    let all = graphene::Rect::new(0.0, 0.0, size, size);
-    snapshot.append_texture(base, &all);
-    for (rect, rgba) in [(graphene::Rect::new(16.0, 16.0, 16.0, 16.0), white), (graphene::Rect::new(19.0, 19.0, 10.0, 10.0), color)] {
-        let r = gsk::RoundedRect::from_rect(rect, rect.width() / 2.0);
-        snapshot.push_rounded_clip(&r);
-        snapshot.append_color(&rgba, &rect);
-        snapshot.pop();
-    }
-    let node = snapshot.to_node()?;
-    let renderer = window.native()?.renderer()?;
-    Some(renderer.render_texture(&node, Some(&all)))
 }
 
 /// `base` without colour.
@@ -139,13 +119,11 @@ impl Shell {
         if tab.view().is_dormant() && self.settings.borrow().sleeping_tabs.grayscale_icon {
             favicon = favicon.map(|f| grayscale(&self.window, &f).unwrap_or(f));
         }
-        let group = self.group(tab.group.get());
-        let icon: Option<gio::Icon> = match (group, favicon) {
-            (Some(g), Some(f)) => with_dot(&self.window, &f, &g.color).map(|t| t.upcast()).or_else(|| Some(f.upcast())),
-            (Some(g), None) => Some(gio::BytesIcon::new(&glib::Bytes::from_owned(dot_svg(&g.color).into_bytes())).upcast()),
-            (None, Some(f)) => Some(f.upcast()),
-            (None, None) if tab.page.is_pinned() => Some(gio::ThemedIcon::new("web-browser-symbolic").upcast()),
-            (None, None) => None,
+        // A grouped tab is told apart by its colour in the bar, not by its icon.
+        let icon: Option<gio::Icon> = match favicon {
+            Some(f) => Some(f.upcast()),
+            None if tab.page.is_pinned() => Some(gio::ThemedIcon::new("web-browser-symbolic").upcast()),
+            None => None,
         };
         tab.page.set_icon(icon.as_ref());
         self.refresh_sleep_look(tab);

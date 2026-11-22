@@ -106,7 +106,7 @@ opens its popup (`extensions.hide` / `extensions.show` choose which buttons a wo
 
 The workspace picker: a button at the start of the header lists the profile's workspaces with a badge in each one's colour, ordered by last use or by name. Select **No workspace** to switch to a plain browser window or open one. `workspace_picker: false` hides the picker, and it is always hidden in web apps.
 
-Favicons: a page's icon is shown on its tab (a grouped tab has its group's dot on it) and, remembered per site in the
+Favicons: a page's icon is shown on its tab and, remembered per site in the
 profile, on restored tabs, in address-bar suggestions, bookmarks and the history window.
 
 Tab groups: right-click a tab, *Add to new group…*; a group takes the room of one coloured tab with a drop-down

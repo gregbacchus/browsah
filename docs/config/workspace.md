@@ -134,7 +134,7 @@ tabs:
 
 Tabs can be grouped to take up less of the tab bar: right-click a tab and choose *Add to new group…* (it asks for a name) or
 *Add to group*. **A group takes the room of one tab.** The tab that is showing stands for the group: it is painted in the
-group's colour, has the colour as a dot in front of the title and a drop-down arrow at the start of the tab. Click anywhere
+group's colour, has a drop-down arrow at the start of the tab. Click anywhere
 on it (or on the arrow) to open the group's list: its name, every tab in it (the one in the bar is ticked; choose another
 to swap it into the bar), *New tab in group* and *Rename group…*. The tabs that are not showing are kept alive but out of
 sight (they do not count in the bar, are not swept and make no frames).

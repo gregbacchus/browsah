@@ -71,7 +71,7 @@ select it and its page loads.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `sleeping_tabs.opacity` | number, 0.2 to 1 | `0.6` | How opaque a sleeping tab is. `1` leaves it undimmed; values outside the range are clamped. |
-| `sleeping_tabs.grayscale_icon` | bool | `true` | Show a sleeping tab's icon without colour (a group's colour dot stays coloured). |
+| `sleeping_tabs.grayscale_icon` | bool | `true` | Show a sleeping tab's icon without colour. |
 
 ```yaml
 sleeping_tabs:

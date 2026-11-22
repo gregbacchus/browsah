@@ -3740,7 +3740,7 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     ws.assign_group(&t2, gid);
     ws.assign_group(&t4, gid);
     r.check("a group takes the room of one tab: the tab that joined shows, the other waits in the list", ws.tab_view.n_pages() == pages_before - 1 && in_bar(&t4) && t2.parked.get() && ws.group_tabs(gid).len() == 2, || format!("{} pages (was {pages_before})", ws.tab_view.n_pages()));
-    r.check("the group's tab shows its colour as its icon, its name as tooltip and a drop-down arrow", t4.page.icon().is_some() && t4.page.tooltip().is_some_and(|t| t.contains("News")) && t4.page.indicator_icon().is_some() && t1.page.icon().is_none() && t1.page.indicator_icon().is_none(), || format!("{:?}", t4.page.tooltip()));
+    r.check("the group's tab shows its name as tooltip and a drop-down arrow", t4.page.tooltip().is_some_and(|t| t.contains("News")) && t4.page.indicator_icon().is_some() && t1.page.indicator_icon().is_none(), || format!("{:?}", t4.page.tooltip()));
     ws.rename_group(gid, "Daily news");
     ws.set_group_color(gid, "#e01b24");
     r.check("renaming and recolouring a group updates its tabs", t2.page.tooltip().is_some_and(|t| t.contains("Daily news")) && ws.group(gid).is_some_and(|g| g.color == "#e01b24"), || format!("{:?}", t2.page.tooltip()));
@@ -3806,7 +3806,7 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     // Taking tabs out; an empty group disappears.
     let a = left[0].clone();
     ws.remove_from_group(&a);
-    r.check("a tab taken out of a group is plain again, and a group with no tabs left is forgotten", a.group.get() == 0 && a.page.icon().is_none() && a.page.indicator_icon().is_none() && ws.group(gid).is_none(), || format!("{:?}", ws.groups()));
+    r.check("a tab taken out of a group is plain again, and a group with no tabs left is forgotten", a.group.get() == 0 && a.page.indicator_icon().is_none() && ws.group(gid).is_none(), || format!("{:?}", ws.groups()));
 
     // Ungrouping and closing a group.
     let g2 = ws.create_group("Temp", None);
@@ -4768,7 +4768,7 @@ async fn run_favicon(shell: &Rc<Shell>, r: &mut Report) {
     let (w, h) = t.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
     r.check("an SVG icon is shown (rendered, in its colour)", ok && w > 0 && t.as_ref().is_some_and(|t| near(texture_pixel(t, w / 2, h / 2), (51, 102, 153))), || format!("{w}x{h} {:?}", t.as_ref().map(|t| texture_pixel(t, w / 2, h / 2))));
 
-    // A grouped tab: the icon with the group's dot in its corner.
+    // A grouped tab: the plain icon (the group's colour paints the tab itself).
     let g = shell.create_group("Fav", Some("#e01b24"));
     shell.assign_group(&tab, g);
     let t2 = shell.open_tab(&format!("http://localhost:{port}/fav.html"), false);
@@ -4776,11 +4776,9 @@ async fn run_favicon(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(800)).await;
     shot(&shell.window, "favicon-tabs");
     shell.tab_view.close_page(&t2.page);
-    let composite = tab.page.icon().and_then(|i| i.downcast::<gtk::gdk::Texture>().ok());
-    let (cw, ch) = composite.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
-    let dot = composite.as_ref().map(|t| texture_pixel(t, cw * 24 / 32, ch * 24 / 32));
-    let corner = composite.as_ref().map(|t| texture_pixel(t, 2, 2));
-    r.check("a grouped tab shows its favicon with the group's dot on it", composite.is_some() && dot.is_some_and(|d| near(d, (224, 27, 36))) && corner.is_some_and(|c| near(c, (51, 102, 153))), || format!("{cw}x{ch} dot {dot:?} corner {corner:?}"));
+    let grouped = tab.page.icon().and_then(|i| i.downcast::<gtk::gdk::Texture>().ok());
+    let (gw, gh) = grouped.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
+    r.check("a grouped tab keeps its plain favicon (the group shows as the tab's colour)", grouped.as_ref().is_some_and(|t| near(texture_pixel(t, gw * 24 / 32, gh * 24 / 32), (51, 102, 153))), || format!("{gw}x{gh}"));
     shell.remove_from_group(&tab);
     let plain = tab.page.icon().and_then(|i| i.downcast::<gtk::gdk::Texture>().ok());
     let (pw, ph) = plain.as_ref().map(|t| (t.width(), t.height())).unwrap_or((0, 0));
