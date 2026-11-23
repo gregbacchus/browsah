@@ -88,7 +88,7 @@ fn shot(widget: &impl IsA<gtk::Widget>, name: &str) {
     println!("shot {name}: {}", if ok { "saved" } else { "failed" });
 }
 
-/// The title menu (right-click on a web app's title) opens as an autohiding native popover and leaves nothing behind when closed: it
+/// A web app's tab menu opens as an autohiding native popover and leaves nothing behind when closed: it
 /// is unparented, the header's buttons are sensitive and take clicks. A headless compositor cannot show a real popup grab or a real
 /// click outside, so only autohide, parenting and clean-up are checked (docs/research/tab-menu-grab.md).
 async fn check_title_menu_lifecycle(w: &Rc<Shell>, r: &mut Report, id: &str) {
@@ -98,17 +98,17 @@ async fn check_title_menu_lifecycle(w: &Rc<Shell>, r: &mut Report, id: &str) {
         move |_| clicks.set(clicks.get() + 1)
     });
     for how in ["popdown", "replaced"] {
-        w.show_title_menu(&w.header, 30, 10);
+        w.show_tab_menu(&w.tab_bar, 30, 10, None);
         let Some(first) = w.title_popover.borrow().clone() else {
             r.check(&format!("the title menu opens ({id}, {how})"), false, || "no popover".into());
             continue;
         };
-        r.check(&format!("the title menu autohides and sits on the header ({id}, {how})"), first.is_autohide() && first.parent().as_ref() == Some(w.header.upcast_ref()), || format!("autohide {} parent {:?}", first.is_autohide(), first.parent()));
+        r.check(&format!("the title menu autohides and sits on the header ({id}, {how})"), first.is_autohide() && first.parent().as_ref() == Some(w.tab_bar.upcast_ref()), || format!("autohide {} parent {:?}", first.is_autohide(), first.parent()));
         glib::timeout_future(Duration::from_millis(300)).await;
         if how == "popdown" {
             first.popdown();
         } else {
-            w.show_title_menu(&w.header, 60, 10);
+            w.show_tab_menu(&w.tab_bar, 60, 10, None);
             let second = w.title_popover.borrow().clone(); // not held while closing: the closed handler borrows it
             if let Some(second) = second {
                 second.popdown();
@@ -3099,6 +3099,27 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa1"));
     let _ = std::fs::remove_dir_all(&dir);
 
+    // `window_menu: false` leaves the menu button out.
+    {
+        let dir = profile.apps_dir().join("wa5");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("app dir");
+        std::fs::write(dir.join("app.yaml"), format!("name: No menu\nurl: 'http://localhost:{port}/scope.html'\nwindow_menu: false\n")).expect("app");
+        ActionGroupExt::activate_action(&app, "open-workspace", Some(&"wa5".to_variant()));
+        let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "wa5"));
+        let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Scope test" && !t.state.borrow().loading))).await;
+        match find() {
+            Some(w) => {
+                r.check("window_menu: false leaves the app's menu button out", w.menu_button.parent().is_none(), || "has a menu button".into());
+                w.window.close();
+            }
+            None => r.check("an app with window_menu: false opens", false, || "no window".into()),
+        }
+        let _ = wait_until(5_000, || find().is_none()).await;
+        let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("wa5"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     run_app_tabs_in_header(shell, r).await;
 
     // `display: custom`: the app's own back, forward, reload and address bar; the tab bar follows multiple_tabs.
@@ -3119,6 +3140,25 @@ async fn run_webapp(shell: &Rc<Shell>, r: &mut Report) {
         r.check(&format!("display: custom shows a read-only address ({id})"), gtk::prelude::WidgetExt::parent(&w.entry).is_some() && !w.entry.is_editable(), || format!("editable {}", w.entry.is_editable()));
         r.check(&format!("the tab bar follows multiple_tabs ({id}: tabs {tabs})"), bar.as_ref().is_some_and(|b| b.is_visible() == tabs), || format!("{:?}", bar.map(|b| b.is_visible())));
         r.check(&format!("and there is no picker or bookmark star in an app ({id})"), !w.picker.button.is_visible() && !w.star.is_visible(), || format!("picker {} star {}", w.picker.button.is_visible(), w.star.is_visible()));
+        // The window menu: on by default, with the page tools and the app's configuration only; no tab groups in an app.
+        let items = {
+            let model = super::app_menu();
+            (0..model.n_items()).filter_map(|i| model.item_link(i, "section")).flat_map(|sec| (0..sec.n_items()).filter_map(move |i| sec.item_attribute_value(i, "action", None).and_then(|v| v.get::<String>()))).collect::<Vec<_>>()
+        };
+        r.check(&format!("an app window has a menu button with the page tools and the app's config ({id})"), w.menu_button.is_visible() && w.menu_button.parent().is_some() && items == ["win.copy-address", "win.find", "win.save-pdf", "win.print", "win.config-workspace"], || format!("visible {} {items:?}", w.menu_button.is_visible()));
+        w.setup_tab_menu(w.tab_view.selected_page().as_ref());
+        let grouping = (0..w.tab_menu.n_items()).filter_map(|i| w.tab_menu.item_link(i, "section")).flat_map(|sec| (0..sec.n_items()).filter_map(move |i| sec.item_attribute_value(i, "action", None).and_then(|v| v.get::<String>()))).any(|a| a.starts_with("win.group"));
+        r.check(&format!("an app's tab menu has no tab groups ({id})"), !grouping, || "group entries".into());
+        w.setup_tab_menu(None);
+        if !tabs {
+            w.menu_button.popup();
+            glib::timeout_future(Duration::from_millis(500)).await;
+            if let Some(p) = w.menu_button.popover() {
+                check_menu_rows(&p, r, "the web app menu", &["Copy page address", "Find in page", "Save as PDF\u{2026}", "Print\u{2026}", "Web app configuration (all options)\u{2026}"]);
+                shot(&p, "webapp-menu");
+            }
+            w.menu_button.popdown();
+        }
         if tabs {
             w.setup_tab_menu(w.tab_view.selected_page().as_ref());
             let actions = (0..w.tab_menu.n_items())

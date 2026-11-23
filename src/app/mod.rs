@@ -541,11 +541,6 @@ impl Shell {
         popover.popup();
     }
 
-    /// The tab menu for the selected tab, from a click on a web app's title.
-    pub(super) fn show_title_menu(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>, x: i32, y: i32) {
-        self.show_tab_menu(parent, x, y, None);
-    }
-
     fn setup_tab_menu(&self, page: Option<&adw::TabPage>) {
         *self.menu_page.borrow_mut() = page.cloned();
         self.tab_menu.remove_all();
@@ -1962,19 +1957,22 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     let bookmarks_on = workspace.is_some() && nav.bookmarks;
     let star = icon_button(crate::icons::STAR_PLUS, "Bookmark this page (Ctrl+D)", "win.bookmark-page");
     star.set_visible(bookmarks_on);
-    // The main menu (not in a web app's window, which shows only its page).
+    // The main menu; a web app's window has a short one (`window_menu`, on by default) with the page tools and the app's configuration.
     let menu_button = gtk::MenuButton::builder().tooltip_text("Menu").build();
     crate::icons::bind(&menu_button, crate::icons::MENU);
     // Built afresh each time it opens (the workspaces change); drawn by us for the icons (`menu::popover`).
+    let app_window = workspace.as_ref().and_then(|w| w.config.app.as_ref());
+    let is_app = app_window.is_some();
     menu_button.set_create_popup_func({
         let window = window.downgrade();
         move |button| {
             if let Some(window) = window.upgrade() {
-                button.set_popover(Some(&menu::popover(&main_menu(), &window, 250)));
+                let model = if is_app { app_menu() } else { main_menu() };
+                button.set_popover(Some(&menu::popover(&model, &window, 250)));
             }
         }
     });
-    if !workspace.as_ref().is_some_and(|w| w.is_app()) {
+    if app_window.is_none_or(|a| a.window_menu) {
         header.pack_end(&menu_button);
     }
     let downloads_ui = downloads::Ui::new();
@@ -2506,46 +2504,6 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
             }
         });
         bar.add_controller(keys);
-    }
-    // With no address bar the header shows the page title: clicking it (or right-clicking) opens the tab menu (copy the address, print, ...)
-    // as a native GTK popover menu (docs/research/tab-menu-grab.md). A left click acts on release, so dragging the title still moves the window.
-    if nav.address_bar == crate::workspace::AddressBar::Hidden {
-        let click = gtk::GestureClick::new();
-        click.set_button(0);
-        let open_menu = {
-            let (weak, header) = (weak.clone(), header.clone());
-            move |x: f64, y: f64| {
-                // Only the title area: not the buttons, nor the tabs shown in the header.
-                let mut widget = header.pick(x, y, gtk::PickFlags::DEFAULT);
-                while let Some(w) = widget {
-                    if w == header.clone().upcast::<gtk::Widget>() {
-                        break;
-                    }
-                    if w.is::<gtk::Button>() || w.is::<gtk::MenuButton>() || w.is::<adw::TabBar>() {
-                        return;
-                    }
-                    widget = w.parent();
-                }
-                if let Some(s) = weak.upgrade() {
-                    s.show_title_menu(&header, x as i32, y as i32);
-                }
-            }
-        };
-        let open = std::rc::Rc::new(open_menu);
-        click.connect_pressed({
-            let open = open.clone();
-            move |g, _, x, y| {
-                if g.current_button() == 3 {
-                    open(x, y);
-                }
-            }
-        });
-        click.connect_released(move |g, _, x, y| {
-            if g.current_button() == 1 {
-                open(x, y);
-            }
-        });
-        header.add_controller(click);
     }
     add_action(&window, "sweep-now", {
         let weak = weak.clone();
@@ -3616,6 +3574,21 @@ fn tab_of_page(bar: &adw::TabBar, page: &adw::TabPage) -> Option<gtk::Widget> {
 }
 
 /// The main menu: a window with no workspace, the profile's workspaces, and the page tools.
+/// A web app window's menu: the page tools and the app's own configuration.
+fn app_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let page = gio::Menu::new();
+    page.append_item(&menu::item("Copy page address", "win.copy-address", Some("link")));
+    page.append_item(&menu::item("Find in page", "win.find", Some("search")));
+    page.append_item(&menu::item("Save as PDF\u{2026}", "win.save-pdf", Some("file-down")));
+    page.append_item(&menu::item("Print\u{2026}", "win.print", Some("printer")));
+    menu.append_section(None, &page);
+    let config = gio::Menu::new();
+    config.append_item(&menu::item("Web app configuration (all options)\u{2026}", "win.config-workspace", Some("sliders-horizontal")));
+    menu.append_section(None, &config);
+    menu
+}
+
 fn main_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let windows = gio::Menu::new();

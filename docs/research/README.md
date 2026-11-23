@@ -51,6 +51,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 | [Task manager](2026-11-21-task-manager.md) | 2026-11-21 | How to show which tabs burn CPU or memory? | Page counters (`Performance.getMetrics`) per tab, `/proc` per process; zygote-forked processes are told apart by thread names. |
 | [install refresh](2026-11-21-install-refresh.md) | 2026-11-21 | Must `codecs install` be rerun after every upgrade? Why does CEF depend on the browsah hash? | It did, needlessly: the runtime kept a copy of the program. It is now only CEF and the launcher script puts it on LD_LIBRARY_PATH, so an upgrade needs nothing. `browsah install refresh` is the one upgrade command. |
 | [Tab group drop-down](2026-11-22-tab-group-dropdown.md) | 2026-11-22 | How can a group take the room of one tab? | The shown tab stands for the group (coloured via a css class on libadwaita's tab widget, arrow in the indicator slot), the rest are parked and listed in a popover. |
+| [fsync stalls](2026-11-23-fsync-stalls.md) | 2026-11-23 | Why does GNOME say Not Responding many times a day? | The GTK thread waited 5-12 s in `fsync` for SQLite commits on a busy disk; the store now uses `synchronous=NORMAL` (WAL). Not yet confirmed on the affected machine. |
 
 ## Conventions
 

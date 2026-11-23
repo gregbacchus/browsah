@@ -130,6 +130,11 @@ impl Store {
     fn init(conn: Connection) -> rusqlite::Result<Store> {
         conn.busy_timeout(std::time::Duration::from_secs(2))?;
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        // The store is used on the GTK thread, and SQLite's default (FULL) waits for the disk to confirm every commit. On a busy
+        // disk that wait took seconds (the main loop in `D` state in `fsync`, docs/research/2026-11-23-fsync-stalls.md) and the
+        // desktop said "Not Responding". NORMAL in WAL mode syncs only when the log is folded into the database: a crash of the program
+        // loses nothing, a power cut can lose the last few changes (a tab list or history entry), never corrupt the file.
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
@@ -580,6 +585,18 @@ mod tests {
         s.set_pref("workspace_order", "alphabetical").unwrap();
         s.set_pref("workspace_order", "last_used").unwrap();
         assert_eq!(s.pref("workspace_order").as_deref(), Some("last_used"));
+    }
+
+    #[test]
+    fn the_store_does_not_wait_for_the_disk_on_every_commit() {
+        let dir = std::env::temp_dir().join(format!("browsah-store-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("data.sqlite")).unwrap();
+        let sync: i64 = store.conn.pragma_query_value(None, "synchronous", |r| r.get(0)).unwrap();
+        let mode: String = store.conn.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((sync, mode.as_str()), (1, "wal"), "synchronous NORMAL (1) with the write-ahead log");
     }
 
     #[test]

@@ -145,6 +145,7 @@ Every key below is in `app.yaml` at the top level (there is no `app:` section). 
 | `manifest_id` | text | none | The installed web manifest’s identity. `browsah app update` uses it to verify the fetched manifest. Keep this value when editing other settings. |
 | `multiple_windows` | bool | `true` | May the app have more than one window. The launcher entry (written by `browsah app add` / `app install`) has a *New Window* action only when this is true. See above. |
 | `multiple_tabs` | bool | `false` | May a window have more than one tab. The tab bar shows (there is no new-tab button, and no Ctrl+T: an app's tabs come from its links). A link opened with Ctrl+click, middle click or *Open link in new tab* then opens as a tab; without `multiple_tabs` it opens as an overlay (a modal) over the app. The app's start tab is an ordinary tab: it shows its title and can be closed, and closing the last tab closes the window. With the address hidden (`standalone`, or `custom` with `address_bar: hidden`) the tabs are not a row of their own but fill the header bar's first row, and only while there is more than one tab (with a single tab the header shows the title as usual). Applies to windows opened after the change. |
+| `window_menu` | bool | `true` | The menu button at the end of the header bar: *Copy page address*, *Find in page*, *Save as PDF…*, *Print…* and *Web app configuration (all options)…* (every option of this file in a window, as the main menu's workspace config does for a workspace). Set to `false` to leave the button out (`Ctrl+F`, `Ctrl+P` and `Ctrl+Alt+C` still work). An app has no tab groups, so the tab menu has none either. Applies to windows opened after the change. |
 | `modals` | section | see below | How modals look; the same as a workspace's. |
 | `modals.style` | `overlay` or `window` | `overlay` | `overlay`: a modal covers the app's page; `window`: a separate window that stays above the app's. |
 
@@ -155,6 +156,7 @@ scope: ["mail.example.com", "accounts.example.com/signin/*"]
 display: standalone      # or custom, with a nav: section (see below)
 multiple_windows: true
 multiple_tabs: false
+window_menu: true        # the menu button with the page tools; false leaves it out
 storage: isolated        # any option a workspace may set, here the one described above
 ```
 

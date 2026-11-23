@@ -85,10 +85,14 @@ pub struct AppConfig {
     /// How modals (popups and links opened to be viewed and closed) are shown.
     #[serde(default)]
     pub modals: ModalsConfig,
+    /// Whether the window has a menu button with a few page tools (copy the address, find, save as PDF, print, the app's
+    /// configuration).
+    #[serde(default = "yes")]
+    pub window_menu: bool,
 }
 
 /// The keys of `app.yaml` that are not configuration overrides.
-pub const APP_IDENTITY_KEYS: &[&str] = &["name", "color", "url", "scope", "display", "nav", "icon", "manifest_id", "multiple_windows", "multiple_tabs", "modals"];
+pub const APP_IDENTITY_KEYS: &[&str] = &["name", "color", "url", "scope", "display", "nav", "icon", "manifest_id", "multiple_windows", "multiple_tabs", "modals", "window_menu"];
 
 /// Read the app's own settings; overrides are read by the config layers.
 pub fn parse_app(text: &str) -> Result<AppConfig, String> {

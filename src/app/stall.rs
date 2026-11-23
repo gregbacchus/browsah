@@ -52,5 +52,14 @@ fn describe(dir: &std::path::Path) -> String {
     let syscall = std::fs::read_to_string(dir.join("syscall")).unwrap_or_default();
     let wchan = std::fs::read_to_string(dir.join("wchan")).unwrap_or_default();
     let call = syscall.split_whitespace().next().unwrap_or("?");
-    format!("state {state} ({}), system call {call}, waiting in {}", match state { "R" => "running", "S" => "sleeping", "D" => "disk wait", _ => "other" }, wchan.trim())
+    format!("state {state} ({}), system call {call}, waiting in {}; {}", match state { "R" => "running", "S" => "sleeping", "D" => "disk wait", _ => "other" }, wchan.trim(), pressure())
+}
+
+/// The machine's stall pressure (percent of the last 10 s in which some task waited for the CPU, memory or the disk). A freeze of the
+/// whole process with the main thread asleep in `poll` is the machine, not our code: this says whether it was short of one of them.
+fn pressure() -> String {
+    let one = |what: &str| {
+        std::fs::read_to_string(format!("/proc/pressure/{what}")).ok().and_then(|t| t.lines().find(|l| l.starts_with("some")).and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix("avg10=")).map(str::to_owned))).unwrap_or_else(|| "?".into())
+    };
+    format!("pressure (some, 10 s): cpu {}%, memory {}%, io {}%", one("cpu"), one("memory"), one("io"))
 }

@@ -17,9 +17,9 @@ This is a reading of the code and libadwaita's documented behaviour, not somethi
 
 The user's original request was about the bookmark item menu, so the restyle was unnecessary. The tab menu was reverted to the
 native GMenu popover AdwTabView owns (a34133d reverted; `tab_view.set_menu_model(tab_menu)`, `setup-menu` only fills the model).
-The web app's title right-click (header with no address bar) is kept: it opens the same `tab_menu` as a native
-`gtk::PopoverMenu` (`Shell::show_title_menu`): autohide on, parented to the header, unparented from an idle callback after `closed`,
-replacing any earlier one.
+The web app's title click and right-click (header with no address bar) opened the same `tab_menu` (`Shell::show_title_menu`); it was removed on
+2026-11-23: a left click on the title is odd and blocked double-click to maximise the window, and a right click is the desktop's own window menu.
+A web app now has a short menu button instead (`window_menu`, docs/config/webapp.md). The lifecycle checks below still run, on the tab menu.
 
 ## Measured (headless weston, `BROWSAH_SELFTEST_ONLY=webapp`, 46 of 46 checks)
 

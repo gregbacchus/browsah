@@ -84,6 +84,11 @@ impl Shell {
         self.tab_for_page(page).is_some_and(|t| t.group.get() != 0 && !t.parked.get())
     }
 
+    /// A web app has no tab groups (its window shows one page, or a few tabs that come from links).
+    fn in_app(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|w| w.is_app())
+    }
+
     /// Make a group (no tabs yet) and return its id.
     pub fn create_group(&self, name: &str, color: Option<&str>) -> u32 {
         let mut groups = self.groups.borrow_mut();
@@ -189,7 +194,7 @@ impl Shell {
     /// Put a tab in a group. It takes the group's place in the bar when it is the tab being used (the group's other tab goes
     /// into the list); otherwise it goes straight into the list.
     pub fn assign_group(self: &Rc<Self>, tab: &Rc<Tab>, id: u32) {
-        if self.group(id).is_none() || tab.is_pinned() || tab.parked.get() || tab.group.get() == id {
+        if self.in_app() || self.group(id).is_none() || tab.is_pinned() || tab.parked.get() || tab.group.get() == id {
             return;
         }
         let old = tab.group.replace(id);
@@ -373,6 +378,9 @@ impl Shell {
     /// The tab-menu entries for groups, for the page the menu is on.
     pub(super) fn group_menu(&self, page: &adw::TabPage) -> gio::Menu {
         let menu = gio::Menu::new();
+        if self.in_app() {
+            return menu;
+        }
         let gid = self.tab_for_page(page).map(|t| t.group.get()).filter(|g| *g != 0);
         if gid.is_some() {
             let own = gio::Menu::new();
