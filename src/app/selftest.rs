@@ -635,10 +635,42 @@ fn bold_labels(root: &gtk::Widget) -> Vec<String> {
     out
 }
 
-/// A popup has no bold text.
+/// A popup has no bold text, and, when it is a popover, every label in it can be read against the popover's own surface (WCAG 4.5:1).
+/// Every popup test calls this, so a new popup is covered without anyone remembering to ask: the window colour (`workspace_css`) is
+/// meant for the header and tab bar only, and a popover hangs below them in the widget tree, so a loose selector there paints its text
+/// in the window's foreground (dark on a dark popover, which has happened more than once).
 fn check_no_bold(r: &mut Report, what: &str, root: &impl IsA<gtk::Widget>) {
     let bold = bold_labels(root.upcast_ref());
     r.check(&format!("{what} has no bold text"), bold.is_empty(), || format!("{bold:?}"));
+    if let Some(popover) = root.upcast_ref::<gtk::Widget>().downcast_ref::<gtk::Popover>() {
+        let bad = unreadable_labels(popover);
+        r.check(&format!("{what} is readable (text against the popover surface, 4.5:1)"), bad.is_empty(), || format!("{bad:?}"));
+    }
+}
+
+/// Labels below `popover` whose colour has less than 4.5:1 contrast with the popover's surface (`popover_bg_color`).
+#[allow(deprecated)]
+fn unreadable_labels(popover: &gtk::Popover) -> Vec<String> {
+    let hex = |c: gtk::gdk::RGBA| format!("#{:02x}{:02x}{:02x}", (c.red() * 255.0).round() as u8, (c.green() * 255.0).round() as u8, (c.blue() * 255.0).round() as u8);
+    let Some(surface) = popover.style_context().lookup_color("popover_bg_color") else { return vec!["no popover_bg_color".into()] };
+    let surface = hex(surface);
+    let mut bad = Vec::new();
+    let mut stack = vec![popover.clone().upcast::<gtk::Widget>()];
+    while let Some(w) = stack.pop() {
+        if let Some(label) = w.downcast_ref::<gtk::Label>().filter(|l| !l.text().is_empty() && l.is_mapped()) {
+            let c = hex(label.color());
+            let ratio = crate::icons::contrast_ratio(&c, &surface);
+            if ratio < 4.5 {
+                bad.push(format!("{:?} {c} on {surface} = {ratio:.1}:1", label.text()));
+            }
+        }
+        let mut child = w.first_child();
+        while let Some(c) = child {
+            stack.push(c.clone());
+            child = c.next_sibling();
+        }
+    }
+    bad
 }
 
 /// The label anywhere below `root` whose text is `text`.
@@ -5491,7 +5523,7 @@ async fn run_contrast(shell: &Rc<Shell>, r: &mut Report) {
     let profile = crate::profile::Profile::resolve(crate::profile::TEST_ID).expect("selftest profile");
     let db = profile.dir.join("data.sqlite");
     let port = start_test_server();
-    for (name, color) in [("purple", "#b000ff"), ("yellow", "#ffe600"), ("navy", "#0a1a40")] {
+    for (name, color) in [("purple", "#b000ff"), ("yellow", "#ffe600"), ("navy", "#0a1a40"), ("cream", "#f4e3b5")] {
         let id = format!("ct-{name}");
         let dir = profile.workspaces_dir().join(&id);
         let _ = std::fs::remove_dir_all(&dir);
@@ -5516,6 +5548,22 @@ home_page: 'http://localhost:{port}/white.html'
         let ratio = |a: (u8, u8, u8), b: (u8, u8, u8)| crate::icons::contrast_ratio(&format!("#{:02x}{:02x}{:02x}", a.0, a.1, a.2), &format!("#{:02x}{:02x}{:02x}", b.0, b.1, b.2));
         let c = if px.len() == 2 { ratio(px[0], px[1]) } else { 0.0 };
         r.check(&format!("{name}: the address bar differs from the header by at least 1.5:1"), c >= 1.5, || format!("{c:.2}:1 ({px:?})"));
+        // Popups are not the window's colour: the main menu and the tab menu stay readable on every tint.
+        w.menu_button.popup();
+        glib::timeout_future(Duration::from_millis(500)).await;
+        if let Some(p) = w.menu_button.popover() {
+            check_no_bold(r, &format!("{name}: the main menu"), &p);
+            shot(&p, &format!("contrast-{name}-menu"));
+        }
+        w.menu_button.popdown();
+        glib::timeout_future(Duration::from_millis(200)).await;
+        if let Some(page) = w.tab_view.selected_page() {
+            w.show_tab_menu(&w.tab_bar, 40, 20, Some(&page));
+            glib::timeout_future(Duration::from_millis(400)).await;
+            if let Some(m) = w.title_popover.borrow().clone() {
+                check_no_bold(r, &format!("{name}: the tab menu"), &m);
+            }
+        }
         w.window.close();
         glib::timeout_future(Duration::from_millis(300)).await;
     }

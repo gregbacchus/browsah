@@ -3418,6 +3418,9 @@ const MENU_ITEM_CSS: &str = "
 
 /// The style sheet that gives a window its colour: libadwaita's header colours, set for just this window, and, if the frame is
 /// on, the colour around the page (not in fullscreen, where the bars are hidden and the page fills the screen).
+/// **Every rule here is for the header and tab bar only.** A popover is parented to the button or tab that opened it, so a selector such as
+/// `headerbar button` also matches the rows inside it: the last rules reset everything in a popover to the popover's own colours, and
+/// `check_no_bold` (selftest) fails any popup whose text cannot be read against its surface.
 fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> String {
     let dark = crate::icons::dark_background(bg);
     let fg = crate::icons::foreground(dark);
@@ -3436,7 +3439,10 @@ fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> S
          window.{class} headerbar entry, window.{class} headerbar entry:focus-within {{ background-color: {fbg}; color: {ffg}; }}\n\
          window.{class} headerbar entry text, window.{class} headerbar entry image {{ color: {ffg}; }}\n\
          window.{class} tabbar tab:selected, window.{class} tabbar tab:selected:hover {{ background-color: {tbg}; }}\n\
-         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected label, window.{class} tabbar tab:selected button {{ color: {tfg}; }}",
+         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected label, window.{class} tabbar tab:selected button {{ color: {tfg}; }}\n\
+         window.{class} popover.background button, window.{class} popover.background button label, window.{class} popover.background label {{ color: @popover_fg_color; }}\n\
+         window.{class} popover.background entry, window.{class} popover.background entry:focus-within {{ background-color: alpha(@popover_fg_color, 0.1); color: @popover_fg_color; }}\n\
+         window.{class} popover.background entry text, window.{class} popover.background entry image {{ color: @popover_fg_color; }}",
         fbg = field.bg, ffg = field.fg, tbg = tab.bg, tfg = tab.fg
     );
     let t = frame.thickness.clamp(0, 40);

@@ -111,6 +111,19 @@ bookmarks icon on a cream tint, which looked like a missing button), so follow a
    and open `frame-maximized.png`: every icon must be clearly visible on the cream tint and `contrast-*.png` on the others. Passing checks do not show a
    pale icon, a picture does. Notes: docs/research/navigation-icon-contrast.md, docs/research/chrome-contrast.md.
 
+## Rule: popups are never the window colour (read before touching `workspace_css` or adding any popup)
+
+A popover is parented to the button or tab that opened it, so it sits *below the header bar in the widget tree* and every chrome selector
+in `workspace_css` (`headerbar button`, `headerbar entry`, `tabbar tab`...) also matches its rows. That painted the main menu's text in the
+window's foreground (dark on a dark popover on a cream or yellow window) more than once. The guards, which you must keep working:
+
+1. `workspace_css` ends with a reset of everything inside `popover.background` to `@popover_fg_color`. A new chrome rule that sets `color` or a
+   background on `button`, `label` or `entry` must not be able to reach a popover: check the reset still covers it, never fix a single popup
+   with its own colour rule.
+2. `check_no_bold` in `selftest.rs` (called for every popup) also fails when any label in a popover has less than 4.5:1 contrast with
+   `popover_bg_color`. A new popup gets this by calling it. The `contrast` section opens the main menu and the tab menu on purple, yellow,
+   navy and cream windows: run `scripts/test selftest contrast` after any change to chrome colours, and look at `contrast-*-menu.png`.
+
 ## Rule: record findings in docs/research/
 
 Research, measurements and design decisions go in `docs/research/` (one dated note per question,
