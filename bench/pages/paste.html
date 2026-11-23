@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>paste:-</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; background: #f4f4f4; }
+  #box { position: absolute; left: 20px; top: 20px; width: 400px; height: 120px; box-sizing: border-box; }
+</style>
+<textarea id="box" placeholder="paste here"></textarea>
+<script>
+  // What a chat box sees when the person pastes: the files (a screenshot) and the text, reported in the title for the self-test.
+  const box = document.getElementById('box');
+  box.addEventListener('paste', e => {
+    const d = e.clipboardData;
+    const files = d ? Array.from(d.files) : [];
+    const text = d ? d.getData('text/plain') : '';
+    document.title = 'paste:files=' + files.length + ' type=' + (files[0] ? files[0].type : '-') + ' size=' + (files[0] ? files[0].size : 0) + ' text=' + text.length;
+    if (files.length) e.preventDefault();
+  });
+  box.focus();
+</script>

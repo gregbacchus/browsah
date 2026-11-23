@@ -3310,8 +3310,9 @@ impl BrowserView {
                 false // still sent to the page (cut removes the selection)
             }
             gdk::Key::v | gdk::Key::V => {
-                if !clipboard.formats().contains_type(glib::GString::static_type()) {
-                    return false; // not text: let the page handle it
+                let formats = clipboard.formats();
+                if !formats.contains_type(glib::GString::static_type()) && !formats.contains_type(gdk::Texture::static_type()) {
+                    return false; // neither text nor a picture: let the page handle it
                 }
                 self.paste_from_clipboard();
                 true
@@ -3391,13 +3392,46 @@ impl BrowserView {
         popover.popup();
     }
 
+    /// Paste what the system clipboard holds: text goes in as typed text; a picture (a screenshot, which is only a picture) goes to the
+    /// page as the files of a `paste` event, because Chromium cannot read the Wayland clipboard itself (`paste_image`).
     pub(super) fn paste_from_clipboard(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self.widget.display().clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
+        let clipboard = self.widget.display().clipboard();
+        let formats = clipboard.formats();
+        if !formats.contains_type(glib::GString::static_type()) && formats.contains_type(gdk::Texture::static_type()) {
+            clipboard.read_texture_async(None::<&gtk::gio::Cancellable>, move |res| {
+                if let (Ok(Some(texture)), Some(v)) = (res, weak.upgrade()) {
+                    v.paste_image(&texture);
+                }
+            });
+            return;
+        }
+        clipboard.read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
             if let (Ok(Some(text)), Some(v)) = (res, weak.upgrade()) {
                 v.insert_text(text.as_str());
             }
         });
+    }
+
+    /// Hand a picture to the page the way a paste would: a `paste` event with the picture as a PNG file in its `clipboardData`, sent to the
+    /// element that has the focus (inside same-origin frames too). Chat boxes (Claude, Teams, Slack...) read `clipboardData.files`. A picture
+    /// over 20 MB is not sent.
+    fn paste_image(&self, texture: &gdk::Texture) {
+        let png = texture.save_to_png_bytes();
+        if png.len() > 20_000_000 {
+            crate::log_info!("paste: a {} byte picture is too big to hand to the page", png.len());
+            return;
+        }
+        let script = format!(
+            "(() => {{ const b = atob('{}'); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); \
+             const dt = new DataTransfer(); dt.items.add(new File([u], 'image.png', {{ type: 'image/png', lastModified: Date.now() }})); \
+             let t = document.activeElement || document.body; \
+             try {{ while (t && t.contentDocument && t.contentDocument.activeElement && t.contentDocument.activeElement !== t.contentDocument.body) t = t.contentDocument.activeElement; }} catch (e) {{}} \
+             const doc = t.ownerDocument || document; const win = doc.defaultView || window; \
+             t.dispatchEvent(new win.ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true, composed: true }})); return 'pasted'; }})()",
+            glib::base64_encode(&png)
+        );
+        self.cdp_eval_as(&script, true);
     }
 
     /// Insert text into the focused field (paste, composed text).

@@ -502,6 +502,23 @@ mod tests {
     }
 
     #[test]
+    fn a_google_search_idle_for_days_is_closed_by_a_stale_searches_rule_not_put_to_sleep() {
+        // A real configuration: `*.google.com` (a subdomain), a short half life, a close action, and `sleep_tabs_after` as well.
+        let yaml = "enabled: true\ninterval: 5m\nrules:\n  - name: Stale searches\n    match: { url: [\"*.google.com\", \"duckduckgo.com\"] }\n    idle_for: 1d\n    score_below: 0.5\n    half_life: 15m\n    action: close\n  - name: Rarely used opened links\n    match:\n      url:\n        - directed.fibery.io\n        - gitlab.com/directed-group/*\n    idle_for: 1d\n    score_below: 0.5\n    half_life: 6h\n    action: close\n";
+        let cfg: SweepConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = Sweeper::from_config(&cfg, Some("5m")).unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        assert_eq!(s.rules.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Stale searches", "Rarely used opened links", SLEEP_RULE]);
+        let url = "https://www.google.com/search?sca_esv=e6431f&udm=2&q=workspaces+icon&sa=X&biw=2042&bih=1080&dpr=1.25";
+        let now = 1_000_000;
+        let idle_3d7h = Usage::from_text(&format!("{}:1", now - (3 * 86_400 + 7 * 3600)));
+        assert_eq!(s.decide(url, &idle_3d7h, now, now, false).map(|r| (r.name.as_str(), r.action)), Some(("Stale searches", Action::Close)));
+        // Used within the day: not closed by the rule, but the sleep rule (5 minutes) still puts it to sleep.
+        let recent = Usage::from_text(&format!("{}:1", now - 3600));
+        assert_eq!(s.decide(url, &recent, now, now, false).map(|r| r.name.as_str()), Some(SLEEP_RULE));
+    }
+
+    #[test]
     fn a_workspace_inherits_the_profiles_sweep_rules() {
         use crate::workspace::WorkspaceConfig;
         let root = std::env::temp_dir().join(format!("browsah-sweep-inherit-{}", std::process::id()));
@@ -525,6 +542,20 @@ mod tests {
         // A workspace can switch the inherited sweeping off.
         assert_eq!(names("off"), (false, "10m".into(), None));
         // And the workspaces that have rules are found through the inheritance.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_sleep_and_workspace_rules_both_reach_the_window() {
+        // `sleep_tabs_after` in profile.yaml, the sweep rules in the workspace's own file (what a window is built from).
+        let root = std::env::temp_dir().join(format!("browsah-sweep-layers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("default")).unwrap();
+        std::fs::write(root.join("profile.yaml"), "sleep_tabs_after: 5m\n").unwrap();
+        std::fs::write(root.join("default/workspace.yaml"), "sweep:\n  enabled: true\n  interval: 5m\n  rules:\n    - name: Stale searches\n      match: { url: [\"*.google.com\", \"duckduckgo.com\"] }\n      idle_for: 1d\n      score_below: 0.5\n      half_life: 15m\n      action: close\n").unwrap();
+        let loaded = crate::config::load_window(&root.join("no-config.yaml"), &root.join("profile.yaml"), Some(&root.join("default/workspace.yaml"))).unwrap();
+        let s = Sweeper::from_config(&loaded.config.sweep, loaded.config.sleep_tabs_after.as_deref()).unwrap();
+        assert_eq!(s.rules.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Stale searches", SLEEP_RULE], "{:?}", loaded.warnings);
         let _ = std::fs::remove_dir_all(&root);
     }
 

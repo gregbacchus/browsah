@@ -138,4 +138,4 @@ BROWSAH_SCREENSHOT=/tmp/shell.png ./target/release/browsah --selftest   # also s
 - IME candidate-window placement via `on_ime_composition_range_changed`.
 - Latency of consecutive inputs (held key, continuous scroll) and with heavy pages; and a
   native-window baseline for comparison.
-- Non-text clipboard content, middle-click primary-selection paste, and accessibility.
+- Middle-click primary-selection paste, and accessibility. (A pasted picture is handled: [2026-11-23-paste-image.md](2026-11-23-paste-image.md).)

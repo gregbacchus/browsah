@@ -152,7 +152,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -491,6 +491,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("copybutton") {
         run_copybutton(shell, r).await;
+    }
+    if wants("pasteimage") {
+        run_pasteimage(shell, r).await;
     }
     if wants("navhistory") {
         run_navhistory(shell, r).await;
@@ -5097,6 +5100,45 @@ async fn run_copybutton(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(500)).await;
     let got = read().await;
     r.check("a page that was not just used cannot set the clipboard", got == "untouched", || format!("clipboard {got:?}"));
+}
+
+/// Pasting a screenshot: the clipboard holds only an image (what a screenshot tool leaves there), and the person presses Ctrl+V in a
+/// chat box. Windowless Chromium cannot read the Wayland clipboard, so the page would see an empty paste unless we hand it the image.
+async fn run_pasteimage(shell: &Rc<Shell>, r: &mut Report) {
+    let st = &shell.state();
+    let d = Driver { shell };
+    let title = || st.borrow().title.clone();
+    shell.entry.set_text(&page("paste.html"));
+    shell.entry.emit_by_name::<()>("activate", &[]);
+    let ok = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.title.starts_with("paste:") }).await;
+    r.check("the paste test page loads", ok, || title());
+    if !ok {
+        return;
+    }
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let clipboard = gdk::Display::default().expect("display").clipboard();
+    // A 40x30 picture, as a screenshot would leave it (image only, no text).
+    let (w, h) = (40, 30);
+    let bytes: Vec<u8> = (0..w * h).flat_map(|i| [(i % 256) as u8, 80, 160, 255]).collect();
+    let texture = gdk::MemoryTexture::new(w, h, gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(bytes), (w * 4) as usize);
+    clipboard.set_texture(&texture);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    r.check("the clipboard holds an image and no text", clipboard.formats().contain_mime_type("image/png") && !clipboard.formats().contain_mime_type("text/plain"), || format!("{:?}", clipboard.formats().to_str()));
+    d.click(100.0, 60.0);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    d.key(gdk::Key::v, gdk::ModifierType::CONTROL_MASK);
+    let done = wait_until(5_000, || title().starts_with("paste:files=")).await;
+    r.check("Ctrl+V of a screenshot gives the page one image file", done && title().contains("files=1") && title().contains("type=image/png"), || title());
+    r.check("the image is not empty", done && title().split("size=").nth(1).and_then(|s| s.split(' ').next()).and_then(|n| n.parse::<u32>().ok()).is_some_and(|n| n > 50), || title());
+    // Text still pastes as text.
+    clipboard.set_text("hello");
+    glib::timeout_future(Duration::from_millis(300)).await;
+    d.key(gdk::Key::v, gdk::ModifierType::CONTROL_MASK);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let id = shell.view().cdp_eval("document.getElementById('box').value");
+    let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
+    let value = shell.view().cdp_result(id).map(|(_, j)| j).unwrap_or_default();
+    r.check("text still pastes as text", value.contains("hello"), || value.clone());
 }
 
 fn hold_history_button(button: &gtk::Button) -> Option<gtk::Popover> {

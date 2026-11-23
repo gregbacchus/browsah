@@ -242,14 +242,15 @@ impl Shell {
             };
             let idle = crate::sweep::short_duration(now - usage.last_used().unwrap_or(tab.created.get()));
             crate::log_info!(
-                "sweep {:?}: rule {:?} {:?} {url} (title {:?}, idle {idle}, score {:.2}, pinned {}, {})",
+                "sweep {:?}: rule {:?} {:?} {url} (title {:?}, idle {idle}, score {:.2}, pinned {}, {}; rules loaded: {})",
                 self.workspace_id(),
                 rule.name,
                 rule.action,
                 tab.state.borrow().title,
                 rule.score_of(&usage, now),
                 tab.is_pinned(),
-                if tab.view().is_dormant() { "already asleep" } else { "awake" }
+                if tab.view().is_dormant() { "already asleep" } else { "awake" },
+                sweeper.rules.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
             );
             match rule.action {
                 Action::Close => {
