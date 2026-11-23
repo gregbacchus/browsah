@@ -5139,6 +5139,25 @@ async fn run_pasteimage(shell: &Rc<Shell>, r: &mut Report) {
     let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
     let value = shell.view().cdp_result(id).map(|(_, j)| j).unwrap_or_default();
     r.check("text still pastes as text", value.contains("hello"), || value.clone());
+    // Clipboard managers (Copyous, Clipboard Indicator) paste by sending Shift+Insert (Ctrl+Shift+Insert in a terminal): the same paste.
+    for (what, mods) in [("Shift+Insert", gdk::ModifierType::SHIFT_MASK), ("Ctrl+Shift+Insert", gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK)] {
+        shell.view().cdp_eval("document.getElementById('box').value = ''; document.title = 'paste:-'");
+        glib::timeout_future(Duration::from_millis(300)).await;
+        clipboard.set_text("from the manager");
+        glib::timeout_future(Duration::from_millis(300)).await;
+        d.key(gdk::Key::Insert, mods);
+        glib::timeout_future(Duration::from_millis(600)).await;
+        let id = shell.view().cdp_eval("document.getElementById('box').value");
+        let _ = wait_until(5_000, || shell.view().cdp_result(id).is_some()).await;
+        let value = shell.view().cdp_result(id).map(|(_, j)| j).unwrap_or_default();
+        r.check(&format!("{what} pastes the clipboard's text"), value.contains("from the manager"), || value.clone());
+    }
+    shell.view().cdp_eval("document.title = 'paste:-'");
+    clipboard.set_texture(&texture);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    d.key(gdk::Key::Insert, gdk::ModifierType::SHIFT_MASK);
+    let done = wait_until(5_000, || title().starts_with("paste:files=")).await;
+    r.check("Shift+Insert of a picture gives the page the image file", done && title().contains("files=1"), || title());
 }
 
 fn hold_history_button(button: &gtk::Button) -> Option<gtk::Popover> {

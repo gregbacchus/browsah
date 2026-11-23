@@ -3297,9 +3297,25 @@ impl BrowserView {
     /// Returns whether the key was fully handled.
     fn clipboard_shortcut(self: &Rc<Self>, key: gdk::Key, state: gdk::ModifierType) -> bool {
         use gdk::ModifierType as M;
-        if !state.contains(M::CONTROL_MASK) || state.intersects(M::ALT_MASK | M::SUPER_MASK) {
+        if state.intersects(M::ALT_MASK | M::SUPER_MASK) {
             return false;
         }
+        // Ctrl+C, Ctrl+X and Ctrl+V, and the classic keys that clipboard managers (Copyous, Clipboard Indicator) send to paste:
+        // Shift+Insert (Ctrl+Shift+Insert in a terminal) pastes, Ctrl+Insert copies, Shift+Delete cuts.
+        let (ctrl, shift) = (state.contains(M::CONTROL_MASK), state.contains(M::SHIFT_MASK));
+        let insert = matches!(key, gdk::Key::Insert | gdk::Key::KP_Insert);
+        let delete = matches!(key, gdk::Key::Delete | gdk::Key::KP_Delete);
+        let key = if insert && shift {
+            gdk::Key::v
+        } else if insert && ctrl {
+            gdk::Key::c
+        } else if delete && shift && !ctrl {
+            gdk::Key::x
+        } else if ctrl {
+            key
+        } else {
+            return false; // a plain key
+        };
         let clipboard = self.widget.display().clipboard();
         match key {
             gdk::Key::c | gdk::Key::C | gdk::Key::x | gdk::Key::X => {
