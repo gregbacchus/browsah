@@ -928,6 +928,10 @@ async fn run_tabs(shell: &Rc<Shell>, r: &mut Report) {
     .await;
     r.check("the new tab loads the target page", ok, || format!("{:?}", second.state.borrow()));
     r.check("the new tab is selected", shell.current().is_some_and(|c| Rc::ptr_eq(&c, &second)), || "not selected".into());
+    // Ctrl+Home/End and Ctrl+Shift+Home/End belong to text fields, not to the tab strip (libadwaita would switch tabs on them).
+    let sc = shell.tab_view.shortcuts();
+    let taken = adw::TabViewShortcuts::CONTROL_HOME | adw::TabViewShortcuts::CONTROL_END | adw::TabViewShortcuts::CONTROL_SHIFT_HOME | adw::TabViewShortcuts::CONTROL_SHIFT_END;
+    r.check("the tab strip leaves Ctrl+Home/End to the page, keeps Alt+digits and Ctrl+Page Up/Down", !sc.intersects(taken) && sc.contains(adw::TabViewShortcuts::ALT_DIGITS | adw::TabViewShortcuts::CONTROL_PAGE_UP | adw::TabViewShortcuts::CONTROL_PAGE_DOWN), || format!("{sc:?}"));
     r.check("tab titles follow their pages", first.page.title() == "Popup test" && second.page.title() == "Page B", || {
         format!("{:?} {:?}", first.page.title(), second.page.title())
     });

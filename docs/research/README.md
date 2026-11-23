@@ -61,3 +61,4 @@ Next steps are in [../roadmap.md](../roadmap.md).
 - Reproduction commands must be copy-pasteable from the repo root.
 - [2026-11-23-paste-image.md](2026-11-23-paste-image.md): Ctrl+V of a screenshot gave pages an empty paste (claude.ai); the picture is now handed to the page as a paste event.
 - [2026-11-20-window-close-tab.md](2026-11-20-window-close-tab.md): a tab whose page calls window.close() stayed open (fixed).
+- [2026-11-24-shortcut-audit.md](2026-11-24-shortcut-audit.md): Ctrl+Home in a text box switched to the first tab (libadwaita's TabView shortcuts); audit of our shortcuts and the inherited ones.

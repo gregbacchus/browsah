@@ -2000,6 +2000,9 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     crate::icons::bind(&bookmarks_button, crate::icons::LIST_STAR);
 
     let tab_view = adw::TabView::new();
+    // libadwaita's own tab shortcuts include Ctrl+Home/End (first/last tab) and Ctrl+Shift+Home/End, which are "go to the start/end" and
+    // "select to the start/end" in every text field: they must reach the page, so those four are off (docs/research/shortcut-audit.md).
+    tab_view.set_shortcuts(adw::TabViewShortcuts::ALL_SHORTCUTS & !(adw::TabViewShortcuts::CONTROL_HOME | adw::TabViewShortcuts::CONTROL_END | adw::TabViewShortcuts::CONTROL_SHIFT_HOME | adw::TabViewShortcuts::CONTROL_SHIFT_END));
     // No menu model on the view: the tab menu is ours (`Shell::show_tab_menu`), and libadwaita would open its own popover as well.
     let tab_menu = gio::Menu::new();
     let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
