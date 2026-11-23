@@ -378,6 +378,7 @@ pub fn merge(base: &mut Value, over: &Value) {
                     let plain = Value::String(plain.to_owned());
                     match (b.get_mut(&plain), v) {
                         (Some(Value::Sequence(bs)), Value::Sequence(vs)) => bs.extend(vs.iter().cloned()),
+                        (Some(Value::Sequence(_)), Value::Null) => {} // `rules+:` with nothing under it appends nothing
                         _ => {
                             b.insert(plain, v.clone());
                         }
@@ -389,6 +390,9 @@ pub fn merge(base: &mut Value, over: &Value) {
                 }
             }
         }
+        // A list key with nothing under it (`rules:` followed only by commented-out entries) is `null`: it must not wipe the
+        // list a lower layer set. `[]` is how a layer asks for an empty list.
+        (Value::Sequence(_), Value::Null) => {}
         (b, o) => *b = o.clone(),
     }
 }
@@ -973,6 +977,14 @@ mod tests {
         let mut base = yaml("a: 1\nm: { x: 1, y: 2 }\nl: [1, 2]\nk: [1]\n");
         merge(&mut base, &yaml("a: 5\nm: { y: 9, z: 3 }\nl: [7]\nk+: [2, 3]\nnew+: [4]\n"));
         assert_eq!(base, yaml("a: 5\nm: { x: 1, y: 9, z: 3 }\nl: [7]\nk: [1, 2, 3]\nnew: [4]\n"));
+        // A list key with nothing under it (`null`) keeps the lower layer's list; `[]` empties it.
+        let mut n = yaml("rules: [1, 2]\nflags: [3]\n");
+        merge(&mut n, &yaml("rules:\nflags: []\n"));
+        assert_eq!(n, yaml("rules: [1, 2]\nflags: []\n"));
+        // `rules+:` with nothing under it appends nothing.
+        let mut p = yaml("rules: [1, 2]\n");
+        merge(&mut p, &yaml("rules+:\n"));
+        assert_eq!(p, yaml("rules: [1, 2]\n"));
         // A scalar replaces a map and vice versa.
         let mut b = yaml("a: { x: 1 }");
         merge(&mut b, &yaml("a: 2"));

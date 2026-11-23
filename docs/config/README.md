@@ -70,7 +70,9 @@ Settings come in layers, each a YAML file with the same option names as [options
 A web app's file, `.../profiles/<id>/apps/<id>/app.yaml` ([webapp.md](webapp.md)), is the third layer in the same way, for that app's windows only. The upper layer is merged over the lower:
 
 - maps merge key by key, so a profile can change one option inside `input` and keep the rest;
-- a value or a list in the upper layer replaces the lower one;
+- a value or a list in the upper layer replaces the lower one; a list key with nothing under it (`rules:` followed only
+  by commented-out entries, which YAML reads as `null`) keeps the lower layer's list, as does an empty `rules+:`; `[]` is
+  how a layer sets an empty list;
 - a key ending in `+` appends a list instead: `chromium: { flags+: ["--foo"] }` adds to the
   application's flags;
 - application-only options (`watch_config`) are ignored in a profile or workspace, and options fixed
