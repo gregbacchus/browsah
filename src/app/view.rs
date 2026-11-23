@@ -1095,6 +1095,20 @@ impl CookieRules {
     }
 }
 
+/// Schemes the browser shows itself: never handed to the desktop, whatever a list says.
+const OWN_SCHEMES: &[&str] = &["http", "https", "file", "about", "data", "blob", "javascript", "chrome", "chrome-extension", "chrome-error", "chrome-untrusted", "devtools", "view-source", "ws", "wss", "ftp", "filesystem"];
+
+/// Whether an address with this scheme is one to hand to the desktop's handler (`routing.desktop_schemes`, a sign-in's expected callback,
+/// `BROWSAH_ALLOW_SCHEMES`): `Some(true)` when this view expects it as a sign-in's callback, `Some(false)` when it is merely allowed.
+fn desktop_scheme(shared: &Shared, scheme: &str) -> Option<bool> {
+    if scheme.is_empty() || OWN_SCHEMES.contains(&scheme) {
+        return None;
+    }
+    let from_env = std::env::var("BROWSAH_ALLOW_SCHEMES").unwrap_or_default();
+    let signin = shared.allowed_schemes.lock().unwrap().iter().any(|s| s == scheme);
+    (signin || crate::router::scheme_allowed(scheme) || from_env.split(',').any(|s| !s.is_empty() && s == scheme)).then_some(signin)
+}
+
 wrap_resource_request_handler! {
     struct ViewResources { shared: Arc<Shared> }
 
@@ -1121,12 +1135,9 @@ wrap_resource_request_handler! {
             let (Some(request), Some(allow)) = (request, allow_os_execution) else { return };
             let url = CefString::from(&request.url()).to_string();
             let scheme = url.split_once(':').map(|(s, _)| s.to_lowercase()).unwrap_or_default();
-            let from_env = std::env::var("BROWSAH_ALLOW_SCHEMES").unwrap_or_default();
-            let signin = self.shared.allowed_schemes.lock().unwrap().iter().any(|s| *s == scheme);
-            let expected = signin || crate::router::scheme_allowed(&scheme) || from_env.split(',').any(|s| !s.is_empty() && s == scheme);
             // Chromium's own launching needs a prompt that does not exist here, so the shell does it.
             *allow = 0;
-            if expected {
+            if let Some(signin) = desktop_scheme(&self.shared, &scheme) {
                 send(self.shared.id, ViewEvent::ExternalLaunch { scheme, url, signin });
             } else if !scheme.is_empty() {
                 send(self.shared.id, ViewEvent::SchemeBlocked(scheme));
@@ -1222,6 +1233,17 @@ wrap_request_handler! {
             let (Some(frame), Some(request)) = (frame, request) else { return 0 };
             if frame.is_main() == 0 {
                 return 0;
+            }
+            // An address the desktop is to handle (a sign-in's `claude://` callback, a `zoommtg://` link): hand it over here and cancel the
+            // navigation. Left to Chromium it was handed over too, but the tab then showed "This site can't be reached"
+            // (ERR_UNKNOWN_URL_SCHEME) over the page it came from.
+            {
+                let url = CefString::from(&request.url()).to_string();
+                let scheme = url.split_once(':').map(|(s, _)| s.to_lowercase()).unwrap_or_default();
+                if let Some(signin) = desktop_scheme(&self.shared, &scheme) {
+                    send(self.shared.id, ViewEvent::ExternalLaunch { scheme, url, signin });
+                    return 1;
+                }
             }
             if is_redirect != 0 {
                 // A hop of the redirects of a clicked link: with `routing.follow_redirects`, judge where it leads (a tracking or

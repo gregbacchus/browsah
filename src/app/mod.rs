@@ -123,6 +123,13 @@ thread_local! {
     static STORE: RefCell<Option<Rc<Store>>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// The addresses handed to the desktop's handler this run (for the self-test).
+    static LAUNCHED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The self-test sets this so that nothing is really launched.
+    static NO_OS_LAUNCH: Cell<bool> = const { Cell::new(false) };
+}
+
 fn store() -> Option<Rc<Store>> {
     STORE.with(|s| s.borrow().clone())
 }
@@ -1743,12 +1750,13 @@ impl Shell {
                 self.toast(&format!("Blocked a {scheme}: link. It is not handed to the desktop. To do that, add {scheme} to routing.desktop_schemes"));
             }
             ViewEvent::ExternalLaunch { scheme, url, signin } => {
+                LAUNCHED.with(|l| l.borrow_mut().push(url.clone()));
                 // The sign-in handed its result to the application: an ephemeral window with only
                 // this tab has nothing more to show.
                 if std::env::var_os("BROWSAH_DEBUG").is_some() {
                     eprintln!("browsah: handing a {scheme}: address to the desktop");
                 }
-                if std::env::var_os("BROWSAH_NO_OS_LAUNCH").is_none() {
+                if std::env::var_os("BROWSAH_NO_OS_LAUNCH").is_none() && !NO_OS_LAUNCH.with(|f| f.get()) {
                     if let Err(e) = gio::AppInfo::launch_default_for_uri(&url, gio::AppLaunchContext::NONE) {
                         self.toast(&format!("Cannot open {url}: {e}"));
                     }

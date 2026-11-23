@@ -1812,6 +1812,29 @@ async fn run_routing(shell: &Rc<Shell>, r: &mut Report) {
         r.check("the sign-in page loads there", ok, || "not loaded".into());
     }
 
+    // An address the desktop is to handle (`claude://` after a sign-in): handed over, and the tab keeps the page it was on, with no
+    // "This site can't be reached" page in its place.
+    {
+        let rules = std::env::temp_dir().join("browsah-desktop-scheme.yaml");
+        std::fs::write(&rules, "routing:\n  desktop_schemes: [browsahtest]\n").expect("rules");
+        let routing_before = crate::router::Router::load(&app_rules, Some(&profile));
+        crate::router::install(crate::router::Router::load(&rules, Some(&profile)));
+        super::NO_OS_LAUNCH.with(|f| f.set(true));
+        let tab = shell.current().expect("tab");
+        tab.view().navigate(&format!("http://localhost:{port}/b.html"));
+        let _ = wait_until(15_000, || { let s = tab.state.borrow(); s.title == "Page B" && !s.loading }).await;
+        let before = super::LAUNCHED.with(|l| l.borrow().len());
+        tab.view().navigate("browsahtest://callback?code=1");
+        let launched = wait_until(10_000, || super::LAUNCHED.with(|l| l.borrow().len()) > before).await;
+        glib::timeout_future(Duration::from_millis(1200)).await;
+        let (title, address) = { let s = tab.state.borrow(); (s.title.clone(), s.address.clone()) };
+        r.check("an address for the desktop's handler is handed over", launched && super::LAUNCHED.with(|l| l.borrow().last().is_some_and(|u| u.starts_with("browsahtest://"))), || format!("{:?}", super::LAUNCHED.with(|l| l.borrow().clone())));
+        r.check("and the tab keeps its page (no error page for the unknown scheme)", title == "Page B" && address.starts_with("http://localhost"), || format!("{title:?} {address:?}"));
+        super::NO_OS_LAUNCH.with(|f| f.set(false));
+        crate::router::install(routing_before);
+        let _ = std::fs::remove_file(&rules);
+    }
+
     // A workspace named on the command line is an explicit choice: no routing.
     let rc_tabs = find("rc").map(|s| s.tab_count()).unwrap_or(0);
     app.open(&[gio::File::for_uri(&format!("http://localhost:{port}/b.html"))], "rb");

@@ -35,3 +35,12 @@ Not measured: the exact `claude://` address the callback page uses (it needs a r
 
 - `BROWSAH_DEBUG=1 browsah`, sign in from Claude Desktop, read the router lines.
 - Workaround meanwhile: `BROWSAH_ALLOW_SCHEMES=claude browsah` (all views).
+
+## Update 2026-11-23: the hand-back worked, but the tab showed an error page
+
+Reported (screenshot): with `desktop_schemes: [claude]` the sign-in did open Claude Desktop, yet the tab showed "This site can't be reached"
+for `claude://claude.ai/sso-callback?code=...` (`ERR_UNKNOWN_URL_SCHEME`). Cause: the address was handed over from `on_protocol_execution`, but
+the navigation itself carried on and failed. Now `on_before_browse` hands over an address whose scheme is allowed and cancels the navigation,
+so the tab keeps the page it was on (`view::desktop_scheme`; `on_protocol_execution` stays as the fallback). The `routing` self-test section
+checks both (it failed on the old code with the tab's title replaced by the error page, and passes now); a real Claude Desktop sign-in was
+not run here.
