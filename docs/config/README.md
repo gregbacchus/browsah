@@ -52,7 +52,11 @@ as `<name>.bak`; comments you wrote in the old file are not carried over). The s
 | `recently_swept` | [Sweep](sweep.md#getting-swept-tabs-back-the-recently-swept-button) |
 | `cookies`, `print` | [Options](options.md#cookies) |
 | `routing` | [Routing](routing.md) |
-| `nav`, `tabs` (workspace only) | [Workspace](workspace.md) |
+| `name`, `color` (a workspace's own) | [Workspace options](workspace.md#options) |
+| `nav` (back, forward, address bar, bookmarks...) | [Workspace: navigation and tabs](workspace.md#navigation-and-tabs) |
+| `tabs.allow_new`, `tabs.popups`, `modals` | [Workspace: navigation and tabs](workspace.md#navigation-and-tabs) |
+| `tabs.pinned` (url, title, size, **color**, scope) | [Workspace: pinned tabs](workspace.md#pinned-tabs) |
+| tab groups (not options: made from the tab menu) | [Workspace: tab groups](workspace.md#tab-groups) |
 
 ## Layers and reloading
 

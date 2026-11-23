@@ -1353,6 +1353,7 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     let ws_dir = profile.workspaces_dir().join("locked");
     let port = start_test_server();
     let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = crate::store::Store::open(&profile.dir.join("data.sqlite")).map(|s| s.delete_workspace("locked")); // tabs a former run remembered
     std::fs::create_dir_all(&ws_dir).expect("workspace dir");
     std::fs::write(
         ws_dir.join("workspace.yaml"),
@@ -1369,7 +1370,9 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     r.check("a workspace with a pinned tab opens on it (and nothing else)", ok, || format!("{:?}", find().map(|s| (s.tab_count(), s.current().map(|t| t.state.borrow().title.clone())))));
     let Some(w) = find() else { return };
     let pinned = w.current().expect("tab");
-    r.check("the tab is pinned and it is the only tab", pinned.is_pinned() && !pinned.page.is_pinned() && w.tab_count() == 1, || format!("pinned={} tabs={}", pinned.page.is_pinned(), w.tab_count()));
+    glib::timeout_future(Duration::from_millis(600)).await;
+    shot(&w.window, "locked-pin");
+    r.check("the tab is pinned and it is the only tab", pinned.is_pinned() && !pinned.page.is_pinned() && w.tab_count() == 1, || format!("is_pinned={} page_pinned={} tabs={} full={} titles={:?}", pinned.is_pinned(), pinned.page.is_pinned(), w.tab_count(), pinned.full_pin.get(), w.tabs.borrow().iter().map(|t| (t.state.borrow().title.clone(), t.state.borrow().address.clone())).collect::<Vec<_>>()));
     r.check("the address bar is read-only and forward is hidden", !w.entry.is_editable() && !w.forward.is_visible() && w.back.is_visible(), || {
         format!("editable={} forward={} back={}", w.entry.is_editable(), w.forward.is_visible(), w.back.is_visible())
     });
@@ -3818,7 +3821,7 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("workspace dir");
     let _ = crate::store::Store::open(&db).map(|s| s.delete_workspace("gr1"));
-    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\ncolor: '#f4e3b5'\n")).expect("ws");
+    std::fs::write(dir.join("workspace.yaml"), format!("home_page: 'http://localhost:{port}/b.html'\ncolor: '#f4e3b5'\ntabs:\n  pinned:\n    - url: http://localhost:{port}/a.html\n      title: Pinned A\n      size: full\n      color: {{ light: '#ffd9a0', dark: '#5a3a00' }}\n")).expect("ws");
     let find = || super::windows().into_iter().find(|s| s.workspace.as_ref().is_some_and(|w| w.id == "gr1"));
     ActionGroupExt::activate_action(&app, "open-workspace", Some(&"gr1".to_variant()));
     let _ = wait_until(15_000, || find().is_some_and(|s| s.current().is_some_and(|t| t.state.borrow().title == "Page B" && !t.state.borrow().loading))).await;
@@ -3843,6 +3846,29 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
     let painted = super::tab_of_page(&ws.tab_bar, &t4.page).is_some_and(|w| w.css_classes().iter().any(|c| c == "browsah-group-e01b24"));
     r.check("the group's tab in the bar is painted in the group's colour", painted, || format!("{:?}", super::tab_of_page(&ws.tab_bar, &t4.page).map(|w| w.css_classes())));
     shot(&ws.window, "groups-bar");
+    // A workspace's full-size pin keeps showing its title beside the groups (it must not shrink to an icon).
+    if let Some(pin) = ws.tabs().into_iter().find(|t| t.full_pin.get()) {
+        let widget = super::tab_of_page(&ws.tab_bar, &pin.page);
+        let label = widget.as_ref().and_then(|w| find_label(w, &pin.page.title()));
+        r.check("a full-size pin shows its title next to a group", label.as_ref().is_some_and(|l| l.is_mapped() && l.width() > 20), || format!("{:?} label {:?} width {:?}", pin.page.title(), label.is_some(), label.map(|l| l.width())));
+        // Its colour: painted, and the title reads on it (black or white by contrast), whichever appearance the desktop has.
+        if let Some(w) = super::tab_of_page(&ws.tab_bar, &pin.page) {
+            let dark = adw::StyleManager::default().is_dark();
+            let want = if dark { "#5a3a00" } else { "#ffd9a0" };
+            r.check("a pin with a colour is painted in it", w.css_classes().iter().any(|c| *c == format!("browsah-pin-{}", &want[1..])), || format!("{:?}", w.css_classes()));
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let text = find_label(&w, &pin.page.title()).map(|l| l.color());
+            let hex = |c: gtk::gdk::RGBA| format!("#{:02x}{:02x}{:02x}", (c.red() * 255.0).round() as u8, (c.green() * 255.0).round() as u8, (c.blue() * 255.0).round() as u8);
+            let ratio = text.map(|c| crate::icons::contrast_ratio(&hex(c), want));
+            r.check("the pin's title reads on its colour (4.5:1)", ratio.is_some_and(|x| x >= 4.5), || format!("{ratio:?}"));
+            let px = pixels(&ws.window, &[w.compute_point(&ws.window, &gtk::graphene::Point::new(6.0, 6.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0))]);
+            let shown = px.first().map(|p| format!("#{:02x}{:02x}{:02x}", p.0, p.1, p.2));
+            r.check("the pin is drawn in its colour (pixel in the tab)", shown.as_deref().is_some_and(|c| crate::icons::contrast_ratio(c, want) < 1.25), || format!("{shown:?} want {want}"));
+            shot(&ws.window, "groups-pin-colour");
+        }
+    } else {
+        r.check("the workspace has a full-size pin", false, || "none".into());
+    }
 
     // The drop-down lists the group's tabs; choosing one swaps it into the bar.
     ws.show_group_dropdown(&t4.page);

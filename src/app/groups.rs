@@ -17,6 +17,46 @@ thread_local! {
     static PAINTED: RefCell<(HashSet<String>, Option<gtk::CssProvider>)> = RefCell::new((HashSet::new(), None));
 }
 
+thread_local! {
+    /// Colours of pinned tabs the display's style sheet already paints (class name to its `(background, text)`), and the sheet.
+    static PIN_PAINTED: RefCell<(std::collections::BTreeMap<String, (String, String)>, Option<gtk::CssProvider>)> = RefCell::new((std::collections::BTreeMap::new(), None));
+}
+
+/// Paint tabs of class `browsah-pin-<hex>` in `bg` with text and icons that read on it (black or white, by `icons::foreground`). The class is
+/// doubled in the selectors so it wins over the window colour's own tab rules (`workspace_css`) whatever the load order.
+fn paint_pin_rule(bg: &str) -> String {
+    let class = format!("browsah-pin-{}", bg.trim_start_matches('#'));
+    let fg = crate::icons::foreground(crate::icons::dark_background(bg)).to_owned();
+    PIN_PAINTED.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.0.insert(class.clone(), (bg.to_owned(), fg)).is_some() {
+            return;
+        }
+        let Some(display) = gtk::gdk::Display::default() else { return };
+        if p.1.is_none() {
+            let provider = gtk::CssProvider::new();
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+            p.1 = Some(provider);
+        }
+        let css: String = p
+            .0
+            .iter()
+            .map(|(c, (bg, fg))| {
+                format!(
+                    "tab.{c}.{c}, tab.{c}.{c}:selected {{ background-color: {bg}; color: {fg}; }}\n\
+                     tab.{c}.{c}:hover, tab.{c}.{c}:selected:hover {{ background-color: mix({bg}, {fg}, 0.14); }}\n\
+                     tab.{c}.{c} label, tab.{c}.{c} image, tab.{c}.{c} button, tab.{c}.{c}:selected label, tab.{c}.{c}:selected image, tab.{c}.{c}:selected button {{ color: {fg}; }}\n\
+                     tab.{c}.{c}:selected {{ box-shadow: inset 0 0 0 2px {fg}; }}\n"
+                )
+            })
+            .collect();
+        if let Some(provider) = &p.1 {
+            provider.load_from_string(&css);
+        }
+    });
+    class
+}
+
 /// Make sure the display's style sheet paints tabs of `color` (the class is `color_class(color)`).
 fn paint_rule(color: &str) {
     let Ok(rgba) = gtk::gdk::RGBA::parse(color) else { return };
@@ -160,9 +200,14 @@ impl Shell {
         fn walk(shell: &Shell, widget: &gtk::Widget) {
             if widget.type_().name() == "AdwTab" {
                 for class in widget.css_classes() {
-                    if class.starts_with("browsah-group-") {
+                    if class.starts_with("browsah-group-") || class.starts_with("browsah-pin-") {
                         widget.remove_css_class(&class);
                     }
+                }
+                let page = widget.property::<Option<adw::TabPage>>("page");
+                if let Some(pair) = page.as_ref().and_then(|p| shell.tab_for_page(p)).and_then(|t| t.pin_color.borrow().clone()) {
+                    let bg = if adw::StyleManager::default().is_dark() { pair.dark } else { pair.light };
+                    widget.add_css_class(&paint_pin_rule(&bg));
                 }
                 let group = widget.property::<Option<adw::TabPage>>("page").and_then(|p| shell.tab_for_page(&p)).and_then(|t| shell.group(t.group.get()));
                 if let Some(g) = group {

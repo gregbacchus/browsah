@@ -79,6 +79,8 @@ pub struct Tab {
     pub page: adw::TabPage,
     /// A workspace pin drawn as an ordinary libadwaita tab.
     full_pin: Cell<bool>,
+    /// The colour a workspace pin is painted in (`tabs.pinned[].color`); its text and icons are chosen to read on it.
+    pin_color: RefCell<Option<crate::profile::ColorPair>>,
     /// The address the tab was opened on (what a fallback reload uses before the page has reported its own).
     first_url: RefCell<String>,
     /// Pages before and after the browser's own list (nearest last), kept across restarts and sleep (`navhistory`).
@@ -371,6 +373,7 @@ impl Shell {
         adw::StyleManager::default().connect_dark_notify(move |_| {
             if let Some(shell) = window.upgrade().and_then(|w| shell_of(&w)) {
                 shell.refresh_color_css();
+                shell.refresh_group_chrome(); // a pin's colour has a light and a dark form
             }
         });
     }
@@ -898,12 +901,14 @@ impl Shell {
                 tab.page.set_icon(Some(&gio::ThemedIcon::new("web-browser-symbolic")));
             }
             tab.page.set_tooltip(p.title.as_deref().unwrap_or(&p.url));
+            *tab.pin_color.borrow_mut() = p.color.clone();
             if i == 0 {
                 self.tab_view.set_selected_page(&tab.page);
             }
         }
         if !pinned.is_empty() {
             self.on_selected();
+            self.schedule_group_chrome(); // paints the pins that have a colour once the bar has made their widgets
         }
     }
 
@@ -1411,7 +1416,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0), split: RefCell::new(None), focus: Cell::new(split::Side::Left) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), pin_color: RefCell::new(None), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0), split: RefCell::new(None), focus: Cell::new(split::Side::Left) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {

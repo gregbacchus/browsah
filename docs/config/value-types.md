@@ -16,7 +16,7 @@ The *Type* column of every option table uses these names.
 ## Colours
 
 `#rgb` or `#rrggbb` (quote it in YAML, otherwise `#` starts a comment). Where a colour has a light and a
-dark form (a profile's or workspace's `color`) it is written as one of:
+dark form (a profile's, workspace's or pinned tab's `color`) it is written as one of:
 
 ```yaml
 color: "#4a2f80"                 # one colour, used for both

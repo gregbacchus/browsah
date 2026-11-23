@@ -11,7 +11,7 @@ a worked example with a comment.
 | [Value types](config/value-types.md) | Colours, address patterns, durations, actions, list merging, YAML notes |
 | [Options](config/options.md) | The application file (`config.yaml`): search, theme, window, rendering, chromium, input, history, permissions, downloads, cookies, print, gpu |
 | [Profiles: `profile.yaml`](config/profile.md) | Name, colour, default workspace; the `browsah profile` command |
-| [Workspaces: `workspace.yaml`](config/workspace.md) | Navigation controls, pinned tabs, popups, modals, groups; the `browsah workspace` command |
+| [Workspaces: `workspace.yaml`](config/workspace.md) | Navigation controls (`nav`), tabs and pinned tabs (`tabs`, incl. each pin's colour), popups, modals, sweeping, groups; the `browsah workspace` command |
 | [Web apps](config/webapp.md) | `app.yaml`: one site in a window of its own, its launcher entry and icon; installing from a page |
 | [Routing](config/routing.md) | Where links go: rules, redirectors, sign-ins, modals, `browsah route test` |
 | [Permissions and downloads](config/permissions.md) | What pages may do, remembered answers, the downloads folder |

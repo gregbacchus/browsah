@@ -113,7 +113,7 @@ pub fn parse_app(text: &str) -> Result<AppConfig, String> {
 pub fn window_config(app: AppConfig) -> WorkspaceConfig {
     let mut c = WorkspaceConfig { name: app.name.clone(), color: app.color.clone(), modals: app.modals.clone(), ..WorkspaceConfig::default() };
     let scope = if app.scope.is_empty() { vec![crate::cookies::host_of(&app.url)] } else { app.scope.clone() };
-    c.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, size: PinnedTabSize::Icon, scope });
+    c.tabs.pinned.push(PinnedTab { url: app.url.clone(), title: None, size: PinnedTabSize::Icon, color: None, scope });
     c.tabs.allow_new = app.multiple_tabs;
     c.tabs.popups = PopupPolicy::Modal;
     c.nav = match app.display {

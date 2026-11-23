@@ -75,6 +75,13 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `name` | text | the workspace id | Display name, shown in the window title. |
 | `color` | colour pair | none | The workspace's accent colour: one colour, two in one string (`"#4a2f80 #7a56c2"`, light then dark), or a map with `light` and `dark`. It tints the window's header and tab bar. Without one, the window takes the profile's `color` (if it has one). The colour also frames the page: a border of the same colour down its sides and along its bottom, with rounded page corners, maximized or not (fullscreen shows the page alone). The bottom is as thick as the sides, except while the find bar is shown there. Its presence, thickness and radius are the `window.frame` options, which a workspace can set for itself (`window:` in its `workspace.yaml`). |
 | `nav` | map | all shown | Which navigation controls the window shows (below). |
+
+### Navigation and tabs
+
+What the window shows (`nav`), and how tabs and popups behave (`tabs`). Pinned tabs, also under `tabs`, have [their own table](#pinned-tabs).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
 | `nav.back` | bool | `true` | Show the back button (and allow `Alt+Left`). |
 | `nav.forward` | bool | `true` | Show the forward button (and allow `Alt+Right`). |
 | `nav.reload` | bool | `true` | Show the reload and stop buttons (`Ctrl+R` still works). |
@@ -88,6 +95,13 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `tabs.popups` | `tab`, `modal` or `block` | `tab` | What a popup opened by a page's script (`window.open` with window features) becomes: a tab of the window, a [modal](routing.md#modals) over it, or nothing. Plain `window.open(url)` and `target="_blank"` links ask for a tab and are [routed](routing.md) instead. |
 | `modals` | map | overlay | How modals are shown. |
 | `modals.style` | `overlay` or `window` | `overlay` | `overlay`: over the window's content. `window`: a separate window kept above the workspace's window. |
+
+### Sweeping tabs
+
+Rules that close or put to sleep tabs that are not used; the full description is in [sweep.md](sweep.md).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
 | `sweep` | map | off | Tidying up tabs that are not used (below, and [sweep.md](sweep.md)). **Also valid in `config.yaml`, `profile.yaml` and an app's `app.yaml`**: a workspace inherits the profile's section, its own keys win and `rules+` adds to the inherited rules. Applies to open windows when the configuration reloads. |
 | `sweep.enabled` | bool | `false` | Sweeping is off unless this is `true`. |
 | `sweep.interval` | duration | `5m` | How often the rules are checked: a number and a unit (`30s`, `5m`, `2h`, `1d`), from 30 seconds to a day. |
@@ -99,10 +113,18 @@ The files are reloaded when they change, like the others ([Layers and reloading]
 | `sweep.rules[].score_below` | number | none | The tab's use score (see [sweep.md](sweep.md)) is below this. A rule needs `idle_for`, `score_below` or both; both must hold. |
 | `sweep.rules[].half_life` | duration | `12h` | How fast use is forgotten when working out the score: use this long ago counts for half. |
 | `sweep.rules[].action` | `close` or `discard` | `close` | `close` closes the tab (recorded as closed by the rule; `Ctrl+Shift+T` reopens it). `discard` keeps the tab but frees its page (it shows its last screenshot and reloads when shown). |
+
+### Pinned tabs
+
+Pinned tabs are set in the workspace's `workspace.yaml` under `tabs.pinned`, a list with one map per tab (see the example below the table).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
 | `tabs.pinned` | list | none | Tabs that are always present, first in the window, and cannot be closed. Icon pins appear before full pins. Each is a map with the keys below. They load fresh each time the workspace opens. |
 | `tabs.pinned[].url` | text | required | The address the tab opens on. |
 | `tabs.pinned[].title` | text | the page's title | Label shown until the page gives its own title. |
 | `tabs.pinned[].size` | `icon` or `full` | `icon` | `icon` shows a compact tab with just the icon. `full` shows the icon and title, sharing the available width with ordinary tabs as the window resizes. Neither shows a close button. Set per entry in `workspace.yaml`. Changes apply the next time the workspace opens. |
+| `tabs.pinned[].color` | colour pair | the window's tab style | The pin's own colour, in the same forms as the workspace `color` (one colour, `"#light #dark"`, or a map with `light` and `dark`; see [value-types.md](value-types.md)). The tab is painted in it, selected or not (selected is marked by an outline), and its title, icon and hover shade are chosen to read on it: black or white, whichever has more contrast. Works for `icon` and `full` pins. Follows the desktop's light/dark appearance live; changes apply the next time the workspace opens. |
 | `tabs.pinned[].scope` | list of text | anywhere | Where the tab may navigate (patterns below). A navigation to an address outside it opens as a new tab (an ephemeral window if `allow_new` is `false`) and the pinned tab stays where it is. |
 
 **Scope patterns** are `host` or `host/path`. The host is exact (`mail.example.com`), or `*.example.com`
@@ -127,6 +149,9 @@ tabs:
     - url: https://mail.example.com/
       title: Mail
       size: full
+      color:
+        light: "#ffd9a0"
+        dark: "#5a3a00"
       scope: ["mail.example.com", "accounts.example.com/signin/*"]
 ```
 

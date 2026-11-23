@@ -23,6 +23,9 @@ tabs:
     - url: https://mail.example.com/
       title: Mail
       size: full          # icon and title, with no close button (default: icon)
+      color:              # the tab's own colour (light and dark); its text and icon turn black or white to read on it
+        light: "#ffd9a0"
+        dark: "#5a3a00"
       scope: ["mail.example.com", "accounts.example.com/signin/*"]   # navigation limits
 
 modals:

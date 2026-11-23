@@ -145,6 +145,9 @@ pub struct PinnedTab {
     /// Whether the tab bar shows only the icon or also the title.
     #[serde(default)]
     pub size: PinnedTabSize,
+    /// The tab's own colour (light and dark); its text and icon take whichever of black or white reads on it. None: the window's tab style.
+    #[serde(default)]
+    pub color: Option<ColorPair>,
     /// Where the tab may navigate (see `scope_matches`). Empty: anywhere.
     #[serde(default)]
     pub scope: Vec<String>,
@@ -571,6 +574,11 @@ mod tests {
         let explicit = parse_config("tabs: { pinned: [ { url: 'https://a.example/', size: icon } ] }").unwrap();
         assert_eq!(explicit.tabs.pinned[0].size, PinnedTabSize::Icon);
         assert!(parse_config("tabs: { pinned: [ { url: 'https://a.example/', size: large } ] }").is_err());
+        let coloured = parse_config("tabs: { pinned: [ { url: 'https://a.example/', color: { light: '#fc0', dark: '#330' } }, { url: 'https://b.example/', color: '#112233 #445566' } ] }").unwrap();
+        assert_eq!(coloured.tabs.pinned[0].color, Some(ColorPair { light: "#ffcc00".into(), dark: "#333300".into() }));
+        assert_eq!(coloured.tabs.pinned[1].color.as_ref().map(|c| c.dark.as_str()), Some("#445566"));
+        assert!(c.tabs.pinned[0].color.is_none());
+        assert!(parse_config("tabs: { pinned: [ { url: 'https://a.example/', color: red } ] }").is_err());
         assert!(c.tabs.pinned[1].scope.is_empty() && c.tabs.pinned[1].title.is_none());
         assert!(parse_config("nav: { address_bar: sideways }").is_err());
         assert!(parse_config("tabs: { pinned: [ { title: no url } ] }").is_err());
