@@ -387,8 +387,8 @@ impl TabStrip {
         let icon = gtk::Image::builder().pixel_size(16).build();
         let spinner = gtk::Spinner::new();
         let title = gtk::Label::builder().hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).width_chars(1).xalign(0.5).css_classes(["tab-title"]).build();
-        let indicator = gtk::Button::builder().css_classes(["flat", "tab-indicator"]).focusable(false).focus_on_click(false).build();
-        let close = gtk::Button::builder().icon_name("window-close-symbolic").css_classes(["flat", "tab-close-button"]).focusable(false).focus_on_click(false).tooltip_text("Close tab").build();
+        let indicator = gtk::Button::builder().valign(gtk::Align::Center).css_classes(["flat", "tab-indicator"]).focusable(false).focus_on_click(false).build();
+        let close = gtk::Button::builder().valign(gtk::Align::Center).icon_name("window-close-symbolic").css_classes(["flat", "tab-close-button"]).focusable(false).focus_on_click(false).tooltip_text("Close tab").build();
         widget.append(&icon);
         widget.append(&spinner);
         widget.append(&indicator);

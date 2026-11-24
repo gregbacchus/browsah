@@ -4285,6 +4285,10 @@ fn tab_widgets(root: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
 /// real pointer drag, and a drag between two windows, are not covered).
 async fn run_tabstrip(shell: &Rc<Shell>, r: &mut Report) {
     let base = shell.settings.borrow().clone();
+    // The default width, whatever the user's own config.yaml says (the self-test reads it too).
+    let mut wide = base.clone();
+    wide.tab_min_width = None;
+    shell.apply_config(&wide);
     let before = shell.tab_count();
     let tabs: Vec<_> = (0..6).map(|i| shell.open_tab(&format!("about:blank#{i}"), false)).collect();
     glib::timeout_future(Duration::from_millis(600)).await;
@@ -4324,6 +4328,16 @@ async fn run_tabstrip(shell: &Rc<Shell>, r: &mut Report) {
     if let Some(sb) = start.filter(|b| !b.is_visible()) {
         let slot_w = sb.parent().map(|p| p.width()).unwrap_or(0);
         r.check("a hidden start button leaves no gap before the tabs", slot_w == 0, || format!("slot is {slot_w} px wide"));
+    }
+    // The close button is a circle (as wide as tall), not stretched to the tab's height.
+    let sel = shell.tab_view.selected_page().and_then(|p| bar.tab_widget(&p));
+    let cb = sel.and_then(|w| super::pinned_tabs::child_with_class(&w, "tab-close-button")).and_then(|b| b.compute_bounds(&bar));
+    r.check("a tab's close button is round (as tall as wide)", cb.is_some_and(|b| (b.width() - b.height()).abs() < 1.5), || format!("{cb:?}"));
+    if let Some(b) = shell.tab_view.selected_page().and_then(|p| bar.tab_widget(&p)).and_then(|w| super::pinned_tabs::child_with_class(&w, "tab-close-button")) {
+        b.set_state_flags(gtk::StateFlags::PRELIGHT, false);
+        glib::timeout_future(Duration::from_millis(200)).await;
+        shot(&shell.window, "tabstrip-close-hover");
+        b.unset_state_flags(gtk::StateFlags::PRELIGHT);
     }
     // Closing through the tab's own button.
     let victim = tabs[5].clone();
