@@ -13,7 +13,7 @@ use gtk::{gdk, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// One entry of a context menu.
@@ -162,6 +162,40 @@ pub enum ViewEvent {
 struct RegHandle(#[allow(dead_code)] Registration);
 unsafe impl Send for RegHandle {}
 
+/// The prefix of the console message `WHEEL_HOOK` sends; the rest is `1` (the page cancelled a Ctrl+wheel event) or `0`.
+const WHEEL_PREFIX: &str = "\u{1}browsah-wheel\u{1}";
+
+/// A touchpad pinch is offered to the page first, as Chromium does on other platforms (`TouchpadPinchEventQueue`): as `Ctrl`+wheel
+/// events with `deltaY = 100 * ln(scale ratio)`, so a map can zoom itself. This script, run in every frame, reports whether the page
+/// cancelled such an event; only if it did not does the pinch become a two-finger touch pinch for Chromium (`BrowserView::pad_pinch`).
+const WHEEL_HOOK: &str = r#"(() => {
+  if (window.__browsahWheelHook) return;
+  window.__browsahWheelHook = true;
+  addEventListener('wheel', e => {
+    if (!e.ctrlKey) return;
+    setTimeout(() => { try { console.debug('\u0001browsah-wheel\u0001' + (e.defaultPrevented ? '1' : '0')); } catch (_) {} }, 0);
+  }, { capture: true, passive: true });
+})()"#;
+
+/// Touch input state of a view: the touches in progress and the touchpad pinch.
+#[derive(Default)]
+struct TouchState {
+    /// GDK touch sequences in progress and the id Chromium knows each by.
+    seqs: Vec<(gdk::EventSequence, i32)>,
+    next_id: i32,
+    /// The touchpad pinch: its last scale, the scale when it became a touch pinch, the wheel movement not yet sent, its centre
+    /// (the pointer, logical px) and whether the synthetic touch points are down.
+    pad_last: f64,
+    pad_base: f64,
+    pad_acc: f64,
+    pad_center: (f64, f64),
+    pad_touching: bool,
+}
+
+/// Touch ids of the synthetic points of a touchpad pinch (real touches count up from 1).
+const PAD_TOUCH_A: i32 = 100_000;
+const PAD_TOUCH_B: i32 = 100_001;
+
 /// The prefix of the console message a page's copy hook sends (`COPY_HOOK`); `on_console_message` takes it and the rest is the text.
 const COPY_PREFIX: &str = "\u{1}browsah-copy\u{1}";
 
@@ -294,6 +328,8 @@ struct Shared {
     cookies: Mutex<crate::cookies::CookiesConfig>,
     /// The person's zoom for this page (1.0 = 100 %), on top of the scale correction for device resolution.
     user_zoom: Mutex<f64>,
+    /// Who handles the current touchpad pinch: 0 not known yet, 1 the page (it cancelled `Ctrl`+wheel), 2 Chromium's page pinch.
+    pinch_verdict: AtomicU8,
     /// The last find-in-page result: (matches, active one).
     find_result: Mutex<(i32, i32)>,
     /// The colour scheme the page is to see: `Some(true)` dark, `Some(false)` light, `None` not set yet.
@@ -460,6 +496,7 @@ impl Shared {
             permissions: Mutex::new(crate::permissions::PermissionsConfig::default()),
             cookies: Mutex::new(crate::cookies::CookiesConfig::default()),
             user_zoom: Mutex::new(1.0),
+            pinch_verdict: AtomicU8::new(0),
             find_result: Mutex::new((0, 0)),
             scheme: Mutex::new(None),
             link_nav: AtomicBool::new(false),
@@ -522,6 +559,12 @@ static SYNTHETIC_POINTER_ONLY: AtomicBool = AtomicBool::new(false);
 
 pub fn set_synthetic_pointer_only(on: bool) {
     SYNTHETIC_POINTER_ONLY.store(on, Ordering::Relaxed);
+}
+
+/// Whether a GDK event is a touch-screen touch (those are sent to Chromium as touches, not turned into mouse input).
+fn is_touch_event(ev: Option<gdk::Event>) -> bool {
+    use gdk::EventType as T;
+    ev.is_some_and(|e| matches!(e.event_type(), T::TouchBegin | T::TouchUpdate | T::TouchEnd | T::TouchCancel))
 }
 
 fn ignore_pointer(current_event: Option<gdk::Event>) -> bool {
@@ -840,6 +883,7 @@ wrap_load_handler! {
                 }
                 // Every frame, each time it starts loading: the page's copy buttons (see `COPY_HOOK`).
                 frame.execute_java_script(Some(&CefString::from(COPY_HOOK)), Some(&CefString::from("browsah://copy-hook")), 0);
+                frame.execute_java_script(Some(&CefString::from(WHEEL_HOOK)), Some(&CefString::from("browsah://wheel-hook")), 0);
                 frame.execute_java_script(Some(&CefString::from(super::sweep::INPUT_HOOK)), Some(&CefString::from("browsah://input-hook")), 0);
             }
         }
@@ -871,6 +915,11 @@ wrap_display_handler! {
         // The copy hook's report (`COPY_HOOK`): the page's copy button wrote this text. Taken here, not logged.
         fn on_console_message(&self, _b: Option<&mut Browser>, _level: LogSeverity, message: Option<&CefString>, _source: Option<&CefString>, _line: ::std::os::raw::c_int) -> ::std::os::raw::c_int {
             let Some(text) = message.map(|m| m.to_string()) else { return 0 };
+            if let Some(verdict) = text.strip_prefix(WHEEL_PREFIX) {
+                // The first answer of a pinch says who handles it.
+                let _ = self.shared.pinch_verdict.compare_exchange(0, if verdict == "1" { 1 } else { 2 }, Ordering::Relaxed, Ordering::Relaxed);
+                return 1;
+            }
             match text.strip_prefix(COPY_PREFIX) {
                 Some(copied) => {
                     send(self.shared.id, ViewEvent::ClipboardWrite(copied.to_owned()));
@@ -2015,6 +2064,8 @@ pub struct Controllers {
     pub motion: gtk::EventControllerMotion,
     pub click: gtk::GestureClick,
     pub scroll: gtk::EventControllerScroll,
+    /// Raw touch and touchpad-pinch events (GTK has no gesture for handing touches on): see `BrowserView::raw_event`.
+    pub raw: gtk::EventControllerLegacy,
     pub key: gtk::EventControllerKey,
     pub focus: gtk::EventControllerFocus,
     pub im: gtk::IMMulticontext,
@@ -2044,6 +2095,9 @@ pub struct BrowserView {
     last_input: Cell<Option<std::time::Instant>>,
     /// Scroll distance not yet sent (sub-pixel remainders), and the kinetic-scroll generation.
     scroll_acc: Cell<(f64, f64)>,
+    touch: RefCell<TouchState>,
+    /// The mouse button last sent down and not yet up (0: none), so a press can never be left stuck.
+    button_down: Cell<u32>,
     kinetic_gen: Cell<u64>,
 }
 
@@ -2240,6 +2294,7 @@ impl BrowserView {
             motion: gtk::EventControllerMotion::new(),
             click: gtk::GestureClick::builder().button(0).build(),
             scroll: gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES),
+            raw: gtk::EventControllerLegacy::new(),
             key: gtk::EventControllerKey::new(),
             focus: gtk::EventControllerFocus::new(),
             im: gtk::IMMulticontext::new(),
@@ -2254,6 +2309,8 @@ impl BrowserView {
             input_events: Cell::new(0),
             last_input: Cell::new(None),
             scroll_acc: Cell::new((0.0, 0.0)),
+            touch: RefCell::new(TouchState::default()),
+            button_down: Cell::new(0),
             kinetic_gen: Cell::new(0),
         });
         view.connect_input();
@@ -2328,6 +2385,168 @@ impl BrowserView {
         if let Some(h) = self.shared.host.lock().unwrap().as_ref() {
             f(&h.0);
         }
+    }
+
+    /// One touch point to Chromium (`kind`: 0 released, 1 pressed, 2 moved, 3 cancelled), at logical widget coordinates.
+    pub(super) fn send_touch(&self, id: i32, x: f64, y: f64, kind: u32) {
+        let k = self.k() as f64;
+        let ev = TouchEvent {
+            id,
+            x: (x * k) as f32,
+            y: (y * k) as f32,
+            radius_x: 1.0,
+            radius_y: 1.0,
+            rotation_angle: 0.0,
+            pressure: if kind == 0 || kind == 3 { 0.0 } else { 1.0 },
+            type_: TouchEventType::from(match kind {
+                0 => sys::cef_touch_event_type_t::CEF_TET_RELEASED,
+                1 => sys::cef_touch_event_type_t::CEF_TET_PRESSED,
+                2 => sys::cef_touch_event_type_t::CEF_TET_MOVED,
+                _ => sys::cef_touch_event_type_t::CEF_TET_CANCELLED,
+            }),
+            modifiers: 0,
+            pointer_type: PointerType::from(sys::cef_pointer_type_t::CEF_POINTER_TYPE_TOUCH),
+        };
+        self.with_host(|h| h.send_touch_event(Some(&ev)));
+    }
+
+    /// An event's position in this widget's logical coordinates.
+    fn event_pos(&self, ev: &gdk::Event) -> Option<(f64, f64)> {
+        let (sx, sy) = ev.position()?;
+        let native = self.widget.native()?;
+        let (tx, ty) = native.surface_transform();
+        let p = native.compute_point(&self.widget, &gtk::graphene::Point::new((sx - tx) as f32, (sy - ty) as f32))?;
+        Some((p.x() as f64, p.y() as f64))
+    }
+
+    /// Touch-screen touches and touchpad pinches (the raw controller). Touches go to Chromium as they are: it recognises taps,
+    /// scrolling, flings, long presses and the two-finger pinch itself, and the page sees touch events (and may cancel them, as a
+    /// map does). Returns whether the event was taken.
+    fn raw_event(&self, ev: &gdk::Event) -> bool {
+        use gdk::EventType as T;
+        match ev.event_type() {
+            T::TouchBegin | T::TouchUpdate | T::TouchEnd | T::TouchCancel => {
+                if ignore_pointer(Some(ev.clone())) {
+                    return true;
+                }
+                let seq = ev.event_sequence();
+                let Some((x, y)) = self.event_pos(ev) else { return false };
+                self.note_input();
+                self.kinetic_gen.set(self.kinetic_gen.get() + 1); // a touch stops any touchpad coasting
+                let (id, kind) = {
+                    let mut t = self.touch.borrow_mut();
+                    let existing = t.seqs.iter().position(|(s, _)| *s == seq);
+                    match ev.event_type() {
+                        T::TouchBegin => {
+                            t.next_id += 1;
+                            let id = t.next_id;
+                            t.seqs.push((seq, id));
+                            (id, 1)
+                        }
+                        T::TouchUpdate => match existing { Some(i) => (t.seqs[i].1, 2), None => return true },
+                        T::TouchEnd => match existing { Some(i) => (t.seqs.remove(i).1, 0), None => return true },
+                        _ => match existing { Some(i) => (t.seqs.remove(i).1, 3), None => return true },
+                    }
+                };
+                if kind == 1 {
+                    self.widget.grab_focus();
+                    self.refocus();
+                }
+                self.send_touch(id, x, y, kind);
+                true
+            }
+            T::TouchpadPinch => {
+                let Ok(pad) = ev.clone().downcast::<gdk::TouchpadEvent>() else { return false };
+                if let Some(pos) = self.event_pos(ev) {
+                    self.touch.borrow_mut().pad_center = pos;
+                }
+                self.pad_pinch(pad.gesture_phase(), pad.pinch_scale());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A touchpad pinch (`scale` is relative to where it began). First the page is offered `Ctrl`+wheel events, the way Chromium does
+    /// it elsewhere (a map zooms itself and cancels them). Once the page has not cancelled one, the pinch becomes two touch points
+    /// around the pointer, spreading as the fingers do, so Chromium zooms the view (a page pinch, anchored at the pointer).
+    pub(super) fn pad_pinch(&self, phase: gdk::TouchpadGesturePhase, scale: f64) {
+        use gdk::TouchpadGesturePhase as P;
+        let debug = std::env::var_os("BROWSAH_DEBUG_PINCH").is_some();
+        if debug {
+            eprintln!("browsah: pad pinch {phase:?} scale={scale:.3} verdict={}", self.shared.pinch_verdict.load(Ordering::Relaxed));
+        }
+        match phase {
+            P::Begin => {
+                self.note_input();
+                self.shared.pinch_verdict.store(0, Ordering::Relaxed);
+                let mut t = self.touch.borrow_mut();
+                t.pad_last = 1.0;
+                t.pad_base = 1.0;
+                t.pad_acc = 0.0;
+                t.pad_touching = false;
+            }
+            P::Update => {
+                if !scale.is_finite() || scale <= 0.0 {
+                    return;
+                }
+                let verdict = self.shared.pinch_verdict.load(Ordering::Relaxed);
+                let (cx, cy) = self.touch.borrow().pad_center;
+                if verdict != 2 {
+                    // Chromium's own number: deltaY = 100 * ln(scale ratio), negative to zoom in (CEF's delta has the other sign).
+                    let px = {
+                        let mut t = self.touch.borrow_mut();
+                        t.pad_acc += (scale / t.pad_last).ln() * 100.0;
+                        t.pad_last = scale;
+                        input::take_whole(&mut t.pad_acc)
+                    };
+                    if px != 0 {
+                        let ev = self.mouse_event(cx, cy, gdk::ModifierType::CONTROL_MASK);
+                        self.with_host(|h| h.send_mouse_wheel_event(Some(&ev), 0, px));
+                    }
+                    if verdict != 2 {
+                        return; // the page has it, or has not answered yet
+                    }
+                }
+                let mut t = self.touch.borrow_mut();
+                const HALF: f64 = 40.0;
+                if !t.pad_touching {
+                    t.pad_touching = true;
+                    t.pad_base = scale;
+                    drop(t);
+                    self.send_touch(PAD_TOUCH_A, cx - HALF, cy, 1);
+                    self.send_touch(PAD_TOUCH_B, cx + HALF, cy, 1);
+                    return;
+                }
+                let half = HALF * (scale / t.pad_base);
+                drop(t);
+                self.send_touch(PAD_TOUCH_A, cx - half, cy, 2);
+                self.send_touch(PAD_TOUCH_B, cx + half, cy, 2);
+            }
+            P::End | P::Cancel => {
+                let (touching, (cx, cy), base, last) = {
+                    let mut t = self.touch.borrow_mut();
+                    (std::mem::replace(&mut t.pad_touching, false), t.pad_center, t.pad_base, t.pad_last)
+                };
+                if touching {
+                    let half = 40.0 * (last / base);
+                    let kind = if phase == P::End { 0 } else { 3 };
+                    self.send_touch(PAD_TOUCH_A, cx - half, cy, kind);
+                    self.send_touch(PAD_TOUCH_B, cx + half, cy, kind);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Put a pinch-zoomed page back to normal size (`Ctrl+0`).
+    pub fn reset_page_scale(&self) {
+        let Some(h) = self.shared.host.lock().unwrap().as_ref().map(|h| HostHandle(h.0.clone())) else { return };
+        self.shared.post_cdp(move |id| {
+            let h = h;
+            let Some(mut params) = parse_json(Some(&CefString::from(r#"{"pageScaleFactor":1}"#)), JsonParserOptions::RFC).and_then(|v| v.dictionary()) else { return };
+            h.0.execute_dev_tools_method(id, Some(&CefString::from("Emulation.setPageScaleFactor")), Some(&mut params));
+        });
     }
 
     /// Load `url`. Before the browser exists (a tab just opened) it is remembered and loaded
@@ -2969,7 +3188,14 @@ impl BrowserView {
                 if ignore_pointer(ctrl.current_event()) {
                     return;
                 }
+                if is_touch_event(ctrl.current_event()) {
+                    return;
+                }
                 if let Some(v) = w.upgrade() {
+                    // A pointer moving with no button held while we think one is down: the release was lost.
+                    if v.button_down.get() == 1 && !ctrl.current_event_state().contains(gdk::ModifierType::BUTTON1_MASK) {
+                        v.release_stuck_button();
+                    }
                     v.pointer_moved(x, y, ctrl.current_event_state());
                 }
             }
@@ -3005,9 +3231,20 @@ impl BrowserView {
         });
 
         // Buttons. Pressing focuses the page, like clicking in any browser.
+        c.raw.set_propagation_phase(gtk::PropagationPhase::Capture);
+        c.raw.connect_event({
+            let w = weak.clone();
+            move |_, ev| match w.upgrade() {
+                Some(v) if v.raw_event(ev) => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
+            }
+        });
         c.click.connect_pressed({
             let w = weak.clone();
             move |g, n_press, x, y| {
+                if is_touch_event(g.current_event()) {
+                    return; // touches go to Chromium as touches (`raw_event`), not as a mouse
+                }
                 if let Some(v) = w.upgrade() {
                     v.widget.grab_focus();
                     v.refocus(); // grab_focus sends nothing when the widget already had focus
@@ -3015,9 +3252,21 @@ impl BrowserView {
                 }
             }
         });
+        // Another gesture took the press away: the release will never come, so send it now.
+        c.click.connect_cancel({
+            let w = weak.clone();
+            move |_, _| {
+                if let Some(v) = w.upgrade() {
+                    v.release_stuck_button();
+                }
+            }
+        });
         c.click.connect_released({
             let w = weak.clone();
             move |g, n_press, x, y| {
+                if is_touch_event(g.current_event()) {
+                    return;
+                }
                 if let Some(v) = w.upgrade() {
                     v.click(g.current_button(), n_press, x, y, g.current_event_state(), true);
                 }
@@ -3129,6 +3378,7 @@ impl BrowserView {
         self.widget.add_controller(c.motion.clone());
         self.widget.add_controller(c.click.clone());
         self.widget.add_controller(c.scroll.clone());
+        self.widget.add_controller(c.raw.clone());
         self.widget.add_controller(c.key.clone());
         self.widget.add_controller(c.focus.clone());
         self.connect_drop();
@@ -3210,8 +3460,20 @@ impl BrowserView {
         if self.page_dragging() {
             return;
         }
+        self.button_down.set(if up { 0 } else { button.max(1) });
         let ev = self.mouse_event(x, y, state);
         self.with_host(|h| h.send_mouse_click_event(Some(&ev), kind, up as _, n_press.max(1)));
+    }
+
+    /// Send the mouse-up for a button we sent down and never released (see `button_down`).
+    fn release_stuck_button(&self) {
+        let button = self.button_down.replace(0);
+        if button != 0 {
+            let (x, y) = self.pointer.get();
+            let kind = match button { 2 => MouseButtonType::MIDDLE, 3 => MouseButtonType::RIGHT, _ => MouseButtonType::LEFT };
+            let ev = self.mouse_event(x, y, gdk::ModifierType::empty());
+            self.with_host(|h| h.send_mouse_click_event(Some(&ev), kind, 1, 1));
+        }
     }
 
     /// Whether a drag that started in the page is running.

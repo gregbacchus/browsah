@@ -25,7 +25,7 @@ Needs GTK >= 4.14 and libadwaita >= 1.5 (Ubuntu 24.04 or newer) and a Wayland se
 a host name, or search words in the address bar. Shortcuts: `Ctrl+L` address bar (clicking into it also selects the address), `Ctrl+Alt+C` copy the page address (also in the menus, for windows with no address bar), `Ctrl+R`/`F5`
 reload, `Alt+Left`/`Alt+Right` back/forward, `Ctrl+T` new tab, `Ctrl+W` close tab,
 `Ctrl+Tab`/`Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`PageUp`) next/previous tab, `Alt+1`..`Alt+9` tab by
-number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site. `Ctrl+F` finds in the page (`Enter`/`Shift+Enter` or
+number. `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (or `Ctrl` with the wheel) zoom the page, remembered per site. A two-finger pinch (touch screen or touchpad) zooms the view under your fingers like in Chrome (not remembered, no reflow); pages that handle pinching themselves, such as maps, get it first. `Ctrl+0` also puts a pinched view back. `Ctrl+F` finds in the page (`Enter`/`Shift+Enter` or
 `Ctrl+G`/`Ctrl+Shift+G` move between matches, `Esc` closes). `F11` fills the screen; so does a video's own
 fullscreen button (the window's bars hide; `Esc` or `F11` leaves). `F12` (or `Ctrl+Shift+I`) opens Chromium's
 developer tools for the page in a window of their own. `Ctrl+Shift+P` saves the page as a PDF (a file dialog

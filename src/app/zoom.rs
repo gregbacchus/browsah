@@ -37,6 +37,9 @@ impl Shell {
         let Some(tab) = self.current() else { return };
         let view = tab.focused_view();
         let next = next_factor(view.user_zoom(), dir);
+        if dir == 0 {
+            view.reset_page_scale(); // a pinch's view zoom goes too
+        }
         view.set_user_zoom(next);
         let address = tab.focused_state().borrow().address.clone();
         if let (Some(host), Some(st)) = (zoom_host(&address), store()) {

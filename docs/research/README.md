@@ -63,3 +63,4 @@ Next steps are in [../roadmap.md](../roadmap.md).
 - [2026-11-20-window-close-tab.md](2026-11-20-window-close-tab.md): a tab whose page calls window.close() stayed open (fixed).
 - [2026-11-24-shortcut-audit.md](2026-11-24-shortcut-audit.md): Ctrl+Home in a text box switched to the first tab (libadwaita's TabView shortcuts); audit of our shortcuts and the inherited ones.
 - [2026-11-24-own-tab-strip.md](2026-11-24-own-tab-strip.md): why `tab_min_width` could not go below 118 px, and the tab strip that replaces `adw::TabBar`
+- [2026-11-24-pinch-zoom.md](2026-11-24-pinch-zoom.md): pinch to zoom: touch forwarded to Chromium, touchpad pinch offered to the page as Ctrl+wheel first, stuck-button fix

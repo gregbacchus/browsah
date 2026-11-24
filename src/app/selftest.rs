@@ -152,7 +152,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "tabstrip", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "pinch", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "tabstrip", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -443,6 +443,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("zoom") {
         run_zoom(shell, r).await;
+    }
+    if wants("pinch") {
+        run_pinch(shell, r).await;
     }
     if wants("find") {
         run_find(shell, r).await;
@@ -5940,4 +5943,89 @@ async fn run_split(shell: &Rc<Shell>, r: &mut Report) {
     shell.tab_view.close_page(&tab.page);
     let ok = wait_until(10_000, || crate::cef_rt::live_browsers() == browsers - 2).await;
     r.check("closing a split tab closes both browsers", ok, || format!("{} browsers, were {browsers}", crate::cef_rt::live_browsers()));
+}
+
+
+/// Touch input: two touch points moving apart reach Chromium and make a pinch (the view zooms, the page does not reflow).
+async fn run_pinch(shell: &Rc<Shell>, r: &mut Report) {
+    let st = shell.state();
+    let view = shell.view();
+    let before = st.borrow().load_cycles;
+    view.navigate("data:text/html,<title>pinch</title><meta name=viewport content='width=device-width,initial-scale=1'><body style='margin:0;height:3000px'><div style='height:600px;background:linear-gradient(90deg,red,blue)'></div><script>window.ev=[];for(const n of ['touchstart','touchmove','touchend','pointerdown','pointermove'])addEventListener(n,e=>ev.push(n),{passive:true})</script>");
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let tab = shell.current().expect("tab");
+    let scale = || async { eval_string(&tab, "String(visualViewport.scale)").await.and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) };
+    r.check("a page starts at viewport scale 1", (scale().await - 1.0).abs() < 0.001, || String::new());
+    let (cx, cy) = (300.0, 300.0);
+    view.send_touch(1, cx - 40.0, cy, 1);
+    view.send_touch(2, cx + 40.0, cy, 1);
+    for i in 1..=20 {
+        let d = 40.0 + i as f64 * 6.0;
+        view.send_touch(1, cx - d, cy, 2);
+        view.send_touch(2, cx + d, cy, 2);
+        glib::timeout_future(Duration::from_millis(16)).await;
+    }
+    view.send_touch(1, cx - 160.0, cy, 0);
+    view.send_touch(2, cx + 160.0, cy, 0);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let s = scale().await;
+    let ev = eval_string(&tab, "ev.join(',')").await.unwrap_or_default();
+    r.check("two touch points moving apart pinch the view (scale above 1)", s > 1.3, || format!("scale {s}, page saw: {ev}"));
+    r.check("the page saw the touches", ev.contains("touchstart") && ev.contains("touchmove"), || format!("page saw: {ev}"));
+    shot(&shell.window, "pinch-touch");
+
+    // Ctrl+0 puts the view back.
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-reset", None);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    r.check("Ctrl+0 resets a pinched view to scale 1", (scale().await - 1.0).abs() < 0.001, || format!("{}", 0));
+
+    // A touchpad pinch on a page that does not take Ctrl+wheel: offered as wheel events first, then a touch pinch (the view zooms).
+    let width = || async { eval_string(&tab, "String(innerWidth)").await.unwrap_or_default() };
+    let w0 = width().await;
+    view.pad_pinch(gdk::TouchpadGesturePhase::Begin, 1.0);
+    for i in 1..=30 {
+        view.pad_pinch(gdk::TouchpadGesturePhase::Update, 1.0 + i as f64 * 0.05);
+        glib::timeout_future(Duration::from_millis(16)).await;
+    }
+    view.pad_pinch(gdk::TouchpadGesturePhase::End, 2.5);
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let s = scale().await;
+    r.check("a touchpad pinch zooms the view of a page that ignores Ctrl+wheel", s > 1.3, || format!("scale {s}"));
+    let w1 = width().await;
+    r.check("the touchpad pinch does not reflow the page (it is not the page zoom)", w1 == w0 && (view.user_zoom() - 1.0).abs() < 0.001, || format!("{w0} -> {w1}"));
+    let _ = WidgetExt::activate_action(&shell.window, "win.zoom-reset", None);
+    glib::timeout_future(Duration::from_millis(400)).await;
+
+    // A page that cancels Ctrl+wheel (a map) gets the pinch as wheel events (spreading is deltaY < 0) and the view stays as it is.
+    let before = st.borrow().load_cycles;
+    view.navigate("data:text/html,<title>wait</title><body style='margin:0;height:3000px'><script>window.n=0;window.dys=[];addEventListener('wheel',e=>{if(e.ctrlKey){e.preventDefault();n++;dys.push(Math.round(e.deltaY));document.title='wheel'+n}},{passive:false})</script>");
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    view.pad_pinch(gdk::TouchpadGesturePhase::Begin, 1.0);
+    for i in 1..=20 {
+        view.pad_pinch(gdk::TouchpadGesturePhase::Update, 1.0 + i as f64 * 0.05);
+        glib::timeout_future(Duration::from_millis(30)).await;
+    }
+    view.pad_pinch(gdk::TouchpadGesturePhase::End, 2.0);
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let dys = eval_string(&tab, "dys.join(',')").await.unwrap_or_default();
+    let nums: Vec<i32> = dys.split(',').filter_map(|v| v.parse().ok()).collect();
+    let total: i32 = nums.iter().sum();
+    r.check("a page that cancels Ctrl+wheel gets the touchpad pinch as wheel events, spreading is deltaY < 0", !nums.is_empty() && nums.iter().all(|d| *d <= 0) && (-75..=-60).contains(&total), || format!("total {total}: {dys}"));
+    let s2 = scale().await;
+    r.check("and the view is not pinch-zoomed", (s2 - 1.0).abs() < 0.001, || format!("{s2}"));
+
+    // A press that another gesture takes away is still released (the page sees mouseup), so the button is never left down.
+    let before = st.borrow().load_cycles;
+    view.navigate("data:text/html,<title>wait</title><body style='margin:0'><div style='width:400px;height:400px;background:%23ccc'></div><script>window.m=[];for(const n of ['mousedown','mouseup'])addEventListener(n,e=>m.push(n))</script>");
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let d = Driver { shell };
+    d.press(100.0, 100.0);
+    glib::timeout_future(Duration::from_millis(200)).await;
+    view.controllers.click.emit_by_name::<()>("cancel", &[&None::<gdk::EventSequence>]);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let m = eval_string(&tab, "m.join(',')").await.unwrap_or_default();
+    r.check("a cancelled press is released (no stuck mouse button)", m == "mousedown,mouseup", || m.clone());
 }
