@@ -25,6 +25,7 @@ mod modal;
 mod picker;
 mod swept;
 mod pinned_tabs;
+mod tabstrip;
 mod prompts;
 mod split;
 mod stall;
@@ -217,7 +218,7 @@ struct Persist {
 pub struct Shell {
     pub window: adw::ApplicationWindow,
     pub tab_view: adw::TabView,
-    tab_bar: adw::TabBar,
+    tab_bar: tabstrip::TabStrip,
     pub entry: gtk::Entry,
     /// The header bar (a web app with no address bar puts its tabs in it while it has more than one).
     pub header: adw::HeaderBar,
@@ -321,7 +322,6 @@ pub struct Shell {
     /// The workspace colour's style sheet, if it has one.
     color_css: RefCell<Option<gtk::CssProvider>>,
     /// The tab strip's minimum tab width (`tab_min_width`): a provider for the display, a class on this window's tab bar.
-    tab_width_css: RefCell<Option<gtk::CssProvider>>,
     /// How this window's unfocused split pane looks (`split.inactive`).
     split_css: RefCell<Option<gtk::CssProvider>>,
     /// The colour the window is tinted with (its workspace's, else its profile's), and the name it is styled under.
@@ -380,34 +380,9 @@ impl Shell {
 
     /// (Re)write the window's colour style sheet from its colour and `window.frame` (at start, when the appearance changes
     /// between light and dark, and when the configuration is reloaded).
-    /// Apply `tab_min_width` to this window's tab bar: tabs keep at least that width and the strip scrolls when they do not fit.
+    /// Apply `tab_min_width` to this window's tab strip: tabs keep at least that width and the strip scrolls when they do not fit.
     pub(crate) fn refresh_tab_width(&self) {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        if self.tab_width_css.borrow().is_none() {
-            // One class per window, so each window's provider styles only its own tab bar.
-            self.tab_bar.set_widget_name(&format!("browsah-tabw-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        }
-        let class = self.tab_bar.widget_name().to_string();
-        let width = self.settings.borrow().tab_min_width;
-        let mut slot = self.tab_width_css.borrow_mut();
-        if slot.is_none() {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            }
-            *slot = Some(provider);
-        }
-        let provider = slot.as_ref().expect("set above");
-        match width {
-            Some(w) => {
-                self.tab_bar.add_css_class(&class);
-                provider.load_from_string(&format!("tabbar.{class} tab {{ min-width: {w}px; }}"));
-            }
-            None => {
-                self.tab_bar.remove_css_class(&class);
-                provider.load_from_string("");
-            }
-        }
+        self.tab_bar.set_min_tab_width(self.settings.borrow().tab_min_width);
     }
 
     pub(crate) fn refresh_color_css(&self) {
@@ -2005,7 +1980,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
     tab_view.set_shortcuts(adw::TabViewShortcuts::ALL_SHORTCUTS & !(adw::TabViewShortcuts::CONTROL_HOME | adw::TabViewShortcuts::CONTROL_END | adw::TabViewShortcuts::CONTROL_SHIFT_HOME | adw::TabViewShortcuts::CONTROL_SHIFT_END));
     // No menu model on the view: the tab menu is ours (`Shell::show_tab_menu`), and libadwaita would open its own popover as well.
     let tab_menu = gio::Menu::new();
-    let tab_bar = adw::TabBar::builder().view(&tab_view).autohide(false).build();
+    let tab_bar = tabstrip::TabStrip::new(&tab_view);
     let new_tab_button = icon_button("tab-new-symbolic", "New tab (Ctrl+T)", "win.new-tab");
     new_tab_button.add_css_class("browsah-new-tab");
     // No "+" without an address bar to type in: a hidden or read-only address bar means no new-tab button either.
@@ -2138,7 +2113,6 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         split_button: split_button.clone(),
         star: star.clone(),
         color_css: RefCell::new(None),
-        tab_width_css: RefCell::new(None),
         split_css: RefCell::new(None),
         color: RefCell::new(None),
         persist: workspace.as_ref().map(|w| Persist { workspace: w.id.clone(), shots: w.dir.join("shots") }),
@@ -2446,8 +2420,7 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
         let open = {
             let (weak, bar) = (weak.clone(), bar.clone());
             move |x: f64, y: f64| -> bool {
-                let Some(tab) = tab_at(&bar, x, y) else { return false };
-                let Some(page) = tab.property::<Option<adw::TabPage>>("page") else { return false };
+                let Some(page) = bar.page_at(x, y) else { return false };
                 if let Some(s) = weak.upgrade() {
                     s.show_tab_menu(&bar, x as i32, y as i32, Some(&page));
                 }
@@ -2478,8 +2451,8 @@ fn build(app: &adw::Application, opts: &Options, cfg: &Config, start_url: &str, 
                     if w.is::<gtk::Button>() {
                         return;
                     }
-                    if w.type_().name() == "AdwTab" {
-                        let (Some(page), Some(s)) = (w.property::<Option<adw::TabPage>>("page"), weak.upgrade()) else { return };
+                    if let Some(page) = bar.page_at(x, y) {
+                        let Some(s) = weak.upgrade() else { return };
                         if s.is_group_front(&page) {
                             s.tab_view.set_selected_page(&page);
                             s.show_group_dropdown(&page);
@@ -3439,15 +3412,15 @@ fn workspace_css(class: &str, bg: &str, frame: &crate::config::FrameConfig) -> S
     let tab = crate::icons::surface_on(bg, crate::icons::MIN_SURFACE_CONTRAST);
     let mut css = format!(
         "window.{class} {{ --headerbar-bg-color: {bg}; --headerbar-fg-color: {fg}; --headerbar-backdrop-color: {bg}; }}\n\
-         window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabbar > revealer > box {{ background-color: {bg}; color: {fg}; }}\n\
+         window.{class} headerbar, window.{class} headerbar:backdrop, window.{class} tabstrip {{ background-color: {bg}; color: {fg}; }}\n\
          window.{class} toolbarview > revealer.top-bar, window.{class} toolbarview > revealer.top-bar > windowhandle {{ background-color: {bg}; }}\n\
          window.{class} toolbarview > revealer.bottom-bar, window.{class} toolbarview > revealer.bottom-bar > windowhandle {{ background-color: {bg}; color: {fg}; }}\n\
-         window.{class} headerbar button, window.{class} headerbar windowcontrols button, window.{class} tabbar button.browsah-new-tab, window.{class} tabbar tab, window.{class} .browsah-find-bar button {{ color: {fg}; }}\n\
+         window.{class} headerbar button, window.{class} headerbar windowcontrols button, window.{class} tabstrip button.browsah-new-tab, window.{class} tabstrip tabitem, window.{class} .browsah-find-bar button {{ color: {fg}; }}\n\
          window.{class} entry text selection, window.{class} entry text selection:focus-within {{ background-color: {sel_bg}; color: {sel_fg}; }}\n\
          window.{class} headerbar entry, window.{class} headerbar entry:focus-within {{ background-color: {fbg}; color: {ffg}; }}\n\
          window.{class} headerbar entry text, window.{class} headerbar entry image {{ color: {ffg}; }}\n\
-         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected:hover {{ background-color: {tbg}; }}\n\
-         window.{class} tabbar tab:selected, window.{class} tabbar tab:selected label, window.{class} tabbar tab:selected button {{ color: {tfg}; }}\n\
+         window.{class} tabstrip tabitem:selected, window.{class} tabstrip tabitem:selected:hover {{ background-color: {tbg}; }}\n\
+         window.{class} tabstrip tabitem:selected, window.{class} tabstrip tabitem:selected label, window.{class} tabstrip tabitem:selected button {{ color: {tfg}; }}\n\
          window.{class} popover.background button, window.{class} popover.background button label, window.{class} popover.background label {{ color: @popover_fg_color; }}\n\
          window.{class} popover.background entry, window.{class} popover.background entry:focus-within {{ background-color: alpha(@popover_fg_color, 0.1); color: @popover_fg_color; }}\n\
          window.{class} popover.background entry text, window.{class} popover.background entry image {{ color: @popover_fg_color; }}",
@@ -3565,34 +3538,14 @@ fn windows_workspace_kind(window: &adw::ApplicationWindow) -> (Option<String>, b
     WINDOWS.with(|w| w.borrow().iter().find(|s| &s.window == window).map(|s| (s.workspace.as_ref().map(|w| w.id.clone()), s.workspace.as_ref().is_some_and(|w| w.is_app()))).unwrap_or((None, false)))
 }
 
-/// libadwaita's tab widget (private API, named by its type) under (x, y) of the tab bar, if the point is on a tab.
-fn tab_at(bar: &adw::TabBar, x: f64, y: f64) -> Option<gtk::Widget> {
-    let mut widget = bar.pick(x, y, gtk::PickFlags::DEFAULT);
-    while let Some(w) = widget {
-        if w.type_().name() == "AdwTab" {
-            return Some(w);
-        }
-        widget = w.parent();
-    }
-    None
+/// The tab widget of the strip under (x, y), if the point is on a tab.
+fn tab_at(bar: &tabstrip::TabStrip, x: f64, y: f64) -> Option<gtk::Widget> {
+    bar.page_at(x, y).and_then(|p| bar.tab_widget(&p))
 }
 
 /// The tab widget that shows `page`.
-fn tab_of_page(bar: &adw::TabBar, page: &adw::TabPage) -> Option<gtk::Widget> {
-    fn find(widget: &gtk::Widget, page: &adw::TabPage) -> Option<gtk::Widget> {
-        if widget.type_().name() == "AdwTab" && widget.property::<Option<adw::TabPage>>("page").as_ref() == Some(page) {
-            return Some(widget.clone());
-        }
-        let mut child = widget.first_child();
-        while let Some(c) = child {
-            if let Some(found) = find(&c, page) {
-                return Some(found);
-            }
-            child = c.next_sibling();
-        }
-        None
-    }
-    find(bar.upcast_ref(), page)
+fn tab_of_page(bar: &tabstrip::TabStrip, page: &adw::TabPage) -> Option<gtk::Widget> {
+    bar.tab_widget(page)
 }
 
 /// The main menu: a window with no workspace, the profile's workspaces, and the page tools.

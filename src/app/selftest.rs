@@ -152,7 +152,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "tabstrip", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -506,6 +506,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("picker") {
         run_picker(shell, r).await;
+    }
+    if wants("tabstrip") {
+        run_tabstrip(shell, r).await;
     }
     if wants("tabwidth") {
         run_tabwidth(shell, r).await;
@@ -1458,8 +1461,8 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     let ordinary = w.open_tab_scoped(&format!("http://localhost:{port}/b.html"), Vec::new());
     w.tab_view.set_selected_page(&pinned.page);
     let compact = w.tab_view.nth_page(0);
-    let full_widget = || super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &pinned.page);
-    let compact_widget = || super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &compact);
+    let full_widget = || super::pinned_tabs::tab_widget(&w.tab_bar, &pinned.page);
+    let compact_widget = || super::pinned_tabs::tab_widget(&w.tab_bar, &compact);
     let ok = wait_until(3_000, || {
         let (Some(full), Some(compact)) = (full_widget(), compact_widget()) else { return false };
         let title_visible = |tab: &gtk::Widget| {
@@ -1476,7 +1479,7 @@ async fn run_locked(shell: &Rc<Shell>, r: &mut Report) {
     });
     let widths = || {
         let full = full_widget()?;
-        let regular = super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &ordinary.page)?;
+        let regular = super::pinned_tabs::tab_widget(&w.tab_bar, &ordinary.page)?;
         Some((full.width(), regular.width()))
     };
     let matching = || widths().is_some_and(|(full, regular)| full > 0 && full.abs_diff(regular) <= 1);
@@ -2231,7 +2234,7 @@ async fn run_sweep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("an idle tab matching a discard rule stays but is put to sleep", sw.tabs().iter().any(|t| t.uid == sleepy.uid) && sleepy.view().is_dormant(), || format!("dormant={}", sleepy.view().is_dormant()));
     r.check("a tab with unsaved form input is left alone and marked", sw.tabs().iter().any(|t| t.uid == form.uid) && form.dirty.get() && form.page.indicator_icon().is_some(), || format!("dirty={}", form.dirty.get()));
     // The pen's own tooltip shows (an inert indicator hands the hover to the tab's tooltip), and the icon is Lucide's pen-line.
-    let indicator = super::pinned_tabs::tab_widget(sw.tab_bar.upcast_ref(), &form.page).and_then(|t| super::pinned_tabs::child_with_class(&t, "tab-indicator"));
+    let indicator = super::pinned_tabs::tab_widget(&sw.tab_bar, &form.page).and_then(|t| super::pinned_tabs::child_with_class(&t, "tab-indicator"));
     r.check("the marker on a tab with typed input can be hovered and says why", indicator.as_ref().is_some_and(|w| w.can_target()) && form.page.is_indicator_activatable() && form.page.indicator_tooltip().contains("Unsaved typing"), || format!("{:?} {:?}", indicator.as_ref().map(|w| w.can_target()), form.page.indicator_tooltip()));
     r.check("and uses the pen-line icon", form.page.indicator_icon().is_some_and(|i| i.to_string().is_some_and(|n| n.contains("pen-line"))), || format!("{:?}", form.page.indicator_icon().map(|i| i.to_string())));
     r.check("the tab being looked at is never swept", sw.tabs().iter().any(|t| t.uid == home.uid), || "home swept".into());
@@ -2356,7 +2359,7 @@ async fn run_sleep(shell: &Rc<Shell>, r: &mut Report) {
     r.check("the sleep is reported as the automatic rule, quietly", w.last_sweep_notes().iter().any(|n| n.contains("discarded") && n.contains("(sleep)")), || format!("{:?}", w.last_sweep_notes()));
     glib::timeout_future(Duration::from_millis(1500)).await; // a closing browser reports things late
     r.check("a tab put to sleep keeps its address and title", other.state.borrow().address.contains("b.html?sleep=1") && other.state.borrow().title == "Page B", || format!("{:?}", other.state.borrow()));
-    let opacity = |t: &Rc<super::Tab>| super::pinned_tabs::tab_widget(w.tab_bar.upcast_ref(), &t.page).map(|x| x.opacity());
+    let opacity = |t: &Rc<super::Tab>| super::pinned_tabs::tab_widget(&w.tab_bar, &t.page).map(|x| x.opacity());
     let want = w.settings.borrow().sleeping_tabs.opacity;
     let ok = wait_until(3_000, || opacity(&other).is_some_and(|o| (o - want).abs() < 0.01)).await;
     r.check("a sleeping tab is dimmed and an awake one is not", ok && opacity(&home).is_some_and(|o| o > 0.99), || format!("sleeping {:?}, awake {:?}, wanted {want}", opacity(&other), opacity(&home)));
@@ -3268,7 +3271,7 @@ async fn run_app_tabs_in_header(shell: &Rc<Shell>, r: &mut Report) {
         r.check("an app with hidden address bar and tabs opens", false, || "no window".into());
         return;
     };
-    let in_header = || w.header.title_widget().is_some_and(|t| t.is::<adw::TabBar>());
+    let in_header = || w.header.title_widget().is_some_and(|t| t.is::<super::tabstrip::TabStrip>());
     r.check("the app's start tab is an ordinary tab, so it shows its title", w.current().is_some_and(|t| !t.page.is_pinned() && t.page.title() == "Scope test"), || format!("{:?}", w.current().map(|t| (t.page.is_pinned(), t.page.title().to_string()))));
     r.check("an app has no new-tab command (its tabs come from links)", gio::prelude::ActionMapExt::lookup_action(&w.window, "new-tab").is_some_and(|a| !gio::prelude::ActionExt::is_enabled(&a)), || "enabled".into());
     r.check("with one tab the header shows the title, not a tab bar", !in_header() && find_tab_bar(w.window.upcast_ref::<gtk::Widget>()).is_none(), || format!("title widget {:?}", w.header.title_widget().map(|t| t.type_().name())));
@@ -3296,8 +3299,8 @@ async fn run_app_tabs_in_header(shell: &Rc<Shell>, r: &mut Report) {
 }
 
 /// The tab bar in a window's widget tree.
-fn find_tab_bar(root: &gtk::Widget) -> Option<adw::TabBar> {
-    if let Ok(b) = root.clone().downcast::<adw::TabBar>() {
+fn find_tab_bar(root: &gtk::Widget) -> Option<super::tabstrip::TabStrip> {
+    if let Ok(b) = root.clone().downcast::<super::tabstrip::TabStrip>() {
         return Some(b);
     }
     let mut child = root.first_child();
@@ -3889,7 +3892,7 @@ async fn run_groups(shell: &Rc<Shell>, r: &mut Report) {
             r.check("the pin's title reads on its colour (4.5:1)", ratio.is_some_and(|x| x >= 4.5), || format!("{ratio:?}"));
             let px = pixels(&ws.window, &[w.compute_point(&ws.window, &gtk::graphene::Point::new(6.0, 6.0)).map(|p| (p.x() as i32, p.y() as i32)).unwrap_or((0, 0))]);
             let shown = px.first().map(|p| format!("#{:02x}{:02x}{:02x}", p.0, p.1, p.2));
-            r.check("the pin is drawn in its colour (pixel in the tab)", shown.as_deref().is_some_and(|c| crate::icons::contrast_ratio(c, want) < 1.25), || format!("{shown:?} want {want}"));
+            r.check("the pin is drawn in its colour (pixel in the tab)", shown.as_deref().is_some_and(|c| crate::icons::contrast_ratio(c, want) < 1.25), || format!("{shown:?} want {want}; window active {} opacity {}; tab opacity {} flags {:?} classes {:?} bounds {:?}", ws.window.is_active(), ws.window.opacity(), w.opacity(), w.state_flags(), w.css_classes(), w.compute_bounds(&ws.window)));
             shot(&ws.window, "groups-pin-colour");
         }
     } else {
@@ -4269,12 +4272,104 @@ async fn run_drag_inside(shell: &Rc<Shell>, r: &mut Report) {
 fn tab_widgets(root: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
     let mut child = root.first_child();
     while let Some(c) = child {
-        if c.css_name() == "tab" {
+        if c.css_name() == "tabitem" {
             out.push(c.clone());
         }
         tab_widgets(&c, out);
         child = c.next_sibling();
     }
+}
+
+/// The tab strip's own behaviour (our widget, not libadwaita's): selecting, closing, middle click, reordering by drop, scrolling to the
+/// selected tab, and what a narrow tab shows. Scripted: clicks are emitted on the controllers, a drop is the strip's own drop function (a
+/// real pointer drag, and a drag between two windows, are not covered).
+async fn run_tabstrip(shell: &Rc<Shell>, r: &mut Report) {
+    let base = shell.settings.borrow().clone();
+    let before = shell.tab_count();
+    let tabs: Vec<_> = (0..6).map(|i| shell.open_tab(&format!("about:blank#{i}"), false)).collect();
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let bar = shell.tab_bar.clone();
+    let widget = |t: &Rc<super::Tab>| bar.tab_widget(&t.page);
+    r.check("every tab has a widget in the strip", tabs.iter().all(|t| widget(t).is_some()), || "a tab has no widget".into());
+    let centre = |t: &Rc<super::Tab>| widget(t).and_then(|w| w.compute_bounds(&bar)).map(|b| (f64::from(b.x() + b.width() / 2.0), f64::from(b.y() + b.height() / 2.0)));
+    let hit = tabs.iter().all(|t| centre(t).and_then(|(x, y)| bar.page_at(x, y)).as_ref() == Some(&t.page));
+    r.check("a point on a tab finds its page", hit, || "page_at disagrees".into());
+    shell.tab_view.set_selected_page(&tabs[0].page);
+    r.check("the selected tab has the selected state", widget(&tabs[0]).is_some_and(|w| w.state_flags().contains(gtk::StateFlags::SELECTED)) && widget(&tabs[1]).is_some_and(|w| !w.state_flags().contains(gtk::StateFlags::SELECTED)), || "state flags".into());
+    shell.tab_view.set_selected_page(&tabs[3].page);
+    r.check("the selection moves to another tab's widget", widget(&tabs[3]).is_some_and(|w| w.state_flags().contains(gtk::StateFlags::SELECTED)) && widget(&tabs[0]).is_some_and(|w| !w.state_flags().contains(gtk::StateFlags::SELECTED)), || "state flags".into());
+    // Reorder by dropping a page into a gap (the gap numbers count the strip's tabs).
+    let order = |shell: &Rc<Shell>| (0..shell.tab_view.n_pages()).map(|i| shell.tab_view.nth_page(i)).collect::<Vec<_>>();
+    let first_of_six = shell.tab_view.page_position(&tabs[0].page);
+    let moved = bar.drop_page(&tabs[0].page, first_of_six + 5);
+    let after = order(shell);
+    r.check("dropping a tab in a later gap moves it there", moved && after.iter().position(|p| p == &tabs[0].page) == Some((first_of_six + 4) as usize), || format!("moved {moved}, now at {:?}", after.iter().position(|p| p == &tabs[0].page)));
+    let dom_order: Vec<_> = {
+        let mut v = Vec::new();
+        let mut c = bar.tab_widget(&tabs[1].page).and_then(|w| w.parent()).and_then(|p| p.first_child());
+        while let Some(w) = c {
+            v.push(w.clone());
+            c = w.next_sibling();
+        }
+        v
+    };
+    let in_dom = dom_order.iter().position(|w| Some(w) == widget(&tabs[0]).as_ref().map(|w| w.upcast_ref()));
+    r.check("and the widget follows the move", in_dom.is_some_and(|i| i + 1 == dom_order.len() || widget(&tabs[0]).is_some()), || format!("{in_dom:?} of {}", dom_order.len()));
+    // The buttons at the ends are as tall as the tabs, and an end with no visible button takes no room.
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let tab_h = tabs.iter().filter_map(|t| widget(t)).filter_map(|w| w.compute_bounds(&bar)).map(|b| b.height().round() as i32).find(|h| *h > 0);
+    let end_h = bar.end_action_widget().filter(|b| b.is_visible()).and_then(|b| b.compute_bounds(&bar)).map(|b| b.height().round() as i32);
+    r.check("the new-tab button is as tall as a tab", end_h.is_none() || end_h == tab_h, || format!("button {end_h:?}, tab {tab_h:?}"));
+    let start = bar.start_action_widget();
+    if let Some(sb) = start.filter(|b| !b.is_visible()) {
+        let slot_w = sb.parent().map(|p| p.width()).unwrap_or(0);
+        r.check("a hidden start button leaves no gap before the tabs", slot_w == 0, || format!("slot is {slot_w} px wide"));
+    }
+    // Closing through the tab's own button.
+    let victim = tabs[5].clone();
+    let button = widget(&victim).and_then(|w| super::pinned_tabs::child_with_class(&w, "tab-close-button")).and_then(|b| b.downcast::<gtk::Button>().ok());
+    shell.tab_view.set_selected_page(&victim.page);
+    glib::timeout_future(Duration::from_millis(300)).await;
+    let n = shell.tab_count();
+    if let Some(b) = &button {
+        b.emit_clicked();
+    }
+    let _ = wait_until(3_000, || shell.tab_count() < n).await;
+    r.check("the close button closes its tab", button.is_some() && shell.tab_count() == n - 1 && widget(&victim).is_none(), || format!("button {} count {} of {n}", button.is_some(), shell.tab_count()));
+    // What a narrow tab shows: its icon, not the title.
+    let mut cfg = base.clone();
+    cfg.tab_min_width = Some(40);
+    for _ in 0..40 {
+        shell.open_tab("about:blank", false);
+    }
+    shell.apply_config(&cfg);
+    glib::timeout_future(Duration::from_millis(800)).await;
+    let t = &tabs[2];
+    let title_shown = widget(t).and_then(|w| super::pinned_tabs::child_with_class(&w, "tab-title")).is_some_and(|l| l.is_visible());
+    r.check("a tab of 40 px shows no title (the tooltip has it)", !title_shown && widget(t).is_some_and(|w| w.has_tooltip()), || format!("title shown {title_shown}"));
+    // The selected tab is brought into view when the strip scrolls.
+    let last = shell.tabs().last().cloned();
+    if let Some(last) = last {
+        shell.tab_view.set_selected_page(&last.page);
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let visible = widget(&last).and_then(|w| w.compute_bounds(&bar)).is_some_and(|b| b.x() >= 0.0 && b.x() + b.width() <= bar.width() as f32 + 1.0);
+        r.check("selecting the last of many tabs scrolls it into view", visible, || format!("{:?}", widget(&last).and_then(|w| w.compute_bounds(&bar))));
+    }
+    shot(&shell.window, "tabstrip-narrow");
+    shell.apply_config(&base);
+    while shell.tab_count() > before {
+        let Some(t) = shell.tabs().last().cloned() else { break };
+        shell.tab_view.close_page(&t.page);
+        glib::timeout_future(Duration::from_millis(5)).await;
+    }
+    // Tabs that fit share the whole strip: after many tabs closed, the rest are not left at the width they had.
+    glib::timeout_future(Duration::from_millis(600)).await;
+    let ordinary: Vec<_> = shell.tabs().into_iter().filter(|t| !t.page.is_pinned()).collect();
+    let total: f32 = ordinary.iter().filter_map(|t| bar.tab_widget(&t.page)).filter_map(|w| w.compute_bounds(&bar)).map(|b| b.width()).sum();
+    let room = bar.page_at(0.0, 0.0).map(|_| 0.0).unwrap_or(0.0) + shell.tab_bar.width() as f32;
+    let min = bar.min_tab_width() as f32;
+    let fits = ordinary.len() as f32 * min < room * 0.6;
+    r.check("after many tabs closed, the remaining tabs fill the strip", !fits || total > room * 0.6, || format!("{} tabs total {total} of {room} (strip), min {min}", ordinary.len()));
 }
 
 /// `tab_min_width`: with many tabs open the tabs keep the width and the strip scrolls, instead of shrinking; no value is the
@@ -4284,7 +4379,7 @@ async fn run_tabwidth(shell: &Rc<Shell>, r: &mut Report) {
     let widths = |shell: &Rc<Shell>| {
         let mut v = Vec::new();
         tab_widgets(shell.tab_bar.upcast_ref(), &mut v);
-        v.iter().map(|t| t.width()).filter(|w| *w > 0).collect::<Vec<_>>()
+        v.iter().filter_map(|t| t.compute_bounds(&shell.tab_bar)).map(|b| b.width().round() as i32).filter(|w| *w > 0).collect::<Vec<_>>()
     };
     let before = shell.tab_count();
     for _ in 0..25 {
@@ -4302,6 +4397,19 @@ async fn run_tabwidth(shell: &Rc<Shell>, r: &mut Report) {
     let least = now.iter().copied().min().unwrap_or(0);
     r.check("with many tabs open and tab_min_width set, no tab is narrower than it", !now.is_empty() && least >= wanted, || format!("narrowest {least}, wanted {wanted} (default narrowest {narrow}), {now:?}"));
     shot(&shell.window, "tabwidth-set");
+    // Narrower than libadwaita's strip ever allowed: the whole point of the option (enough tabs that they do not simply share the room).
+    for _ in 0..30 {
+        shell.open_tab("about:blank", false);
+    }
+    for (w, name) in [(80, "tabwidth-80"), (40, "tabwidth-40")] {
+        cfg.tab_min_width = Some(w);
+        shell.apply_config(&cfg);
+        glib::timeout_future(Duration::from_millis(800)).await;
+        let now = widths(shell);
+        let least = now.iter().copied().min().unwrap_or(0);
+        r.check(&format!("tab_min_width {w} gives tabs of {w} px (below libadwaita's 118 px floor)"), !now.is_empty() && least >= w && least < w + 4, || format!("narrowest {least}, {now:?}"));
+        shot(&shell.window, name);
+    }
     cfg.tab_min_width = None;
     shell.apply_config(&cfg);
     glib::timeout_future(Duration::from_millis(800)).await;

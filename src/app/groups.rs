@@ -43,10 +43,10 @@ fn paint_pin_rule(bg: &str) -> String {
             .iter()
             .map(|(c, (bg, fg))| {
                 format!(
-                    "tab.{c}.{c}, tab.{c}.{c}:selected {{ background-color: {bg}; color: {fg}; }}\n\
-                     tab.{c}.{c}:hover, tab.{c}.{c}:selected:hover {{ background-color: mix({bg}, {fg}, 0.14); }}\n\
-                     tab.{c}.{c} label, tab.{c}.{c} image, tab.{c}.{c} button, tab.{c}.{c}:selected label, tab.{c}.{c}:selected image, tab.{c}.{c}:selected button {{ color: {fg}; }}\n\
-                     tab.{c}.{c}:selected {{ box-shadow: inset 0 0 0 2px {fg}; }}\n"
+                    "tabitem.{c}.{c}, tabitem.{c}.{c}:selected {{ background-color: {bg}; color: {fg}; }}\n\
+                     tabitem.{c}.{c}:hover, tabitem.{c}.{c}:selected:hover {{ background-color: mix({bg}, {fg}, 0.14); }}\n\
+                     tabitem.{c}.{c} label, tabitem.{c}.{c} image, tabitem.{c}.{c} button, tabitem.{c}.{c}:selected label, tabitem.{c}.{c}:selected image, tabitem.{c}.{c}:selected button {{ color: {fg}; }}\n\
+                     tabitem.{c}.{c}:selected {{ box-shadow: inset 0 0 0 2px {fg}; }}\n"
                 )
             })
             .collect();
@@ -79,7 +79,7 @@ fn paint_rule(color: &str) {
                 let hex = c.trim_start_matches("browsah-group-");
                 let rgba = gtk::gdk::RGBA::parse(format!("#{hex}")).unwrap_or(rgba);
                 let rgb = format!("rgb({}, {}, {})", (rgba.red() * 255.0).round(), (rgba.green() * 255.0).round(), (rgba.blue() * 255.0).round());
-                format!("tab.{c} {{ background-color: alpha({rgb}, 0.42); border-bottom: 3px solid {rgb}; }}\ntab.{c}:selected {{ background-color: alpha({rgb}, 0.7); }}\n")
+                format!("tabitem.{c} {{ background-color: alpha({rgb}, 0.42); box-shadow: inset 0 -3px 0 {rgb}; }}\ntabitem.{c}:selected {{ background-color: alpha({rgb}, 0.7); }}\n")
             })
             .collect();
         if let Some(provider) = &p.1 {
@@ -195,34 +195,26 @@ impl Shell {
         });
     }
 
-    /// Paint the group tabs in the bar in their colour (the tab widgets are libadwaita's own, found by type name).
+    /// Paint the group and pinned tabs in the bar in their colour (classes on the strip's tab widgets).
     pub(super) fn refresh_group_chrome(&self) {
-        fn walk(shell: &Shell, widget: &gtk::Widget) {
-            if widget.type_().name() == "AdwTab" {
-                for class in widget.css_classes() {
-                    if class.starts_with("browsah-group-") || class.starts_with("browsah-pin-") {
-                        widget.remove_css_class(&class);
-                    }
+        for i in 0..self.tab_view.n_pages() {
+            let page = self.tab_view.nth_page(i);
+            let Some(widget) = self.tab_bar.tab_widget(&page) else { continue };
+            for class in widget.css_classes() {
+                if class.starts_with("browsah-group-") || class.starts_with("browsah-pin-") {
+                    widget.remove_css_class(&class);
                 }
-                let page = widget.property::<Option<adw::TabPage>>("page");
-                if let Some(pair) = page.as_ref().and_then(|p| shell.tab_for_page(p)).and_then(|t| t.pin_color.borrow().clone()) {
-                    let bg = if adw::StyleManager::default().is_dark() { pair.dark } else { pair.light };
-                    widget.add_css_class(&paint_pin_rule(&bg));
-                }
-                let group = widget.property::<Option<adw::TabPage>>("page").and_then(|p| shell.tab_for_page(&p)).and_then(|t| shell.group(t.group.get()));
-                if let Some(g) = group {
-                    paint_rule(&g.color);
-                    widget.add_css_class(&color_class(&g.color));
-                }
-                return;
             }
-            let mut child = widget.first_child();
-            while let Some(c) = child {
-                walk(shell, &c);
-                child = c.next_sibling();
+            let tab = self.tab_for_page(&page);
+            if let Some(pair) = tab.as_ref().and_then(|t| t.pin_color.borrow().clone()) {
+                let bg = if adw::StyleManager::default().is_dark() { pair.dark } else { pair.light };
+                widget.add_css_class(&paint_pin_rule(&bg));
+            }
+            if let Some(g) = tab.as_ref().and_then(|t| self.group(t.group.get())) {
+                paint_rule(&g.color);
+                widget.add_css_class(&color_class(&g.color));
             }
         }
-        walk(self, self.tab_bar.upcast_ref());
     }
 
     /// The icon, tooltip and drop-down arrow a tab shows for its group.

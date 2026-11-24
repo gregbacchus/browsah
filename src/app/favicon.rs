@@ -75,7 +75,7 @@ impl Shell {
         let opacity = if tab.view().is_dormant() { self.settings.borrow().sleeping_tabs.opacity } else { 1.0 };
         let (bar, page) = (self.tab_bar.clone(), tab.page.clone());
         let apply = move || {
-            if let Some(w) = super::pinned_tabs::tab_widget(bar.upcast_ref(), &page) {
+            if let Some(w) = super::pinned_tabs::tab_widget(&bar, &page) {
                 w.set_opacity(opacity);
             }
         };
