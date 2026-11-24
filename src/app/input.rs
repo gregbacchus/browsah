@@ -169,7 +169,15 @@ static TOUCHPAD_GAIN_BITS: AtomicU64 = AtomicU64::new(0);
 
 static TOUCHPAD_ACCEL_BITS: AtomicU64 = AtomicU64::new(0);
 
-pub fn set_scroll_tuning(wheel_notch: f64, touchpad_speed: f64, touchpad_acceleration: f64) {
+static TOUCHPAD_FLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a touchpad flick keeps the page coasting (`input.touchpad_fling`).
+pub fn touchpad_fling() -> bool {
+    TOUCHPAD_FLING.load(Ordering::Relaxed)
+}
+
+pub fn set_scroll_tuning(wheel_notch: f64, touchpad_speed: f64, touchpad_acceleration: f64, touchpad_fling: bool) {
+    TOUCHPAD_FLING.store(touchpad_fling, Ordering::Relaxed);
     // Stored as the factor plus one so that an exact 0 is distinguishable from "unset".
     TOUCHPAD_ACCEL_BITS.store((touchpad_acceleration + 1.0).to_bits(), Ordering::Relaxed);
     WHEEL_NOTCH_BITS.store(wheel_notch.to_bits(), Ordering::Relaxed);

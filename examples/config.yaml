@@ -101,8 +101,9 @@ cookies:
 
 input:
   wheel_notch: 100         # CSS px per mouse-wheel notch, 10 to 1000
-  touchpad_acceleration: 0.025 # extra scaling for fast swipes, 0 to 1; 0 = linear
-  touchpad_speed: 6.0      # touchpad scroll multiplier, 0.1 to 20; raise if scrolling feels slow
+  touchpad_acceleration: 0.035 # extra scaling for fast swipes, 0 to 1; 0 = linear
+  touchpad_speed: 12.0     # touchpad scroll multiplier, 0.1 to 20; raise if scrolling feels slow
+  touchpad_fling: false    # keep coasting after a touchpad flick (off: scrolling stops when fingers lift)
 
 sweep:                      # tidy up tabs that are not used (docs/config/sweep.md); a profile or workspace can set its own, and inherits this
   enabled: false

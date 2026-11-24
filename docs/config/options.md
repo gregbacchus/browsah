@@ -106,14 +106,16 @@ chromium:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `input.wheel_notch` | number | `100` | CSS pixels scrolled by one mouse-wheel notch, 10 to 1000. Applies at startup. |
-| `input.touchpad_speed` | number | `6.0` | Multiplier on touchpad scrolling distance (and on the coasting after a flick), 0.1 to 20. Raise it if scrolling feels slow compared with other browsers. Applies at startup. |
-| `input.touchpad_acceleration` | number | `0.025` | Extra multiplier per pixel of one touchpad scroll event, 0 to 1: an event of `d` px is scaled by `1 + acceleration * d`, so fast swipes (large events, 30 to 40 px) scroll disproportionately further than slow ones (5 to 10 px). `0` is linear. Applies at startup. |
+| `input.touchpad_speed` | number | `12.0` | Multiplier on touchpad scrolling distance (and on the coasting after a flick, if `input.touchpad_fling` is on), 0.1 to 20. Raise it if scrolling feels slow compared with other browsers. Applies at startup. |
+| `input.touchpad_acceleration` | number | `0.035` | Extra multiplier per pixel of one touchpad scroll event, 0 to 1: an event of `d` px is scaled by `1 + acceleration * d`, so fast swipes (large events, 30 to 40 px) scroll disproportionately further than slow ones (5 to 10 px). `0` is linear. Applies at startup. |
+| `input.touchpad_fling` | bool | `false` | Keep the page coasting after a touchpad flick (two-finger scroll released while moving). Off by default: scrolling stops when your fingers lift. When on, the coasting keeps the modifier keys of the last scroll (`Ctrl` zoom pages keep zooming) and stops when fingers touch the pad again; pages that treat `Ctrl` key-up specially may speed up if you release `Ctrl` mid-fling. Applies at startup. |
 
 ```yaml
 input:
   wheel_notch: 100
-  touchpad_speed: 6.0
-  touchpad_acceleration: 0.025
+  touchpad_speed: 12.0
+  touchpad_acceleration: 0.035
+  touchpad_fling: false
 ```
 
 ## `history`

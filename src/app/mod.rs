@@ -1105,7 +1105,7 @@ impl Shell {
     /// Scrolling settings are process-wide statics, so the window being used sets them.
     pub fn apply_input_tuning(&self) {
         let c = self.settings.borrow();
-        input::set_scroll_tuning(c.input.wheel_notch, c.input.touchpad_speed, c.input.touchpad_acceleration);
+        input::set_scroll_tuning(c.input.wheel_notch, c.input.touchpad_speed, c.input.touchpad_acceleration, c.input.touchpad_fling);
     }
 
     /// Show a short message over the page.
@@ -2937,7 +2937,7 @@ fn browser_windows() -> Vec<Rc<Shell>> {
 /// registered (see `main`). Returns the process exit code.
 pub fn run(app: adw::Application, opts: Rc<Options>, loaded: config::Loaded, profile: crate::profile::Profile) -> i32 {
     let cfg0 = loaded.config;
-    input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration);
+    input::set_scroll_tuning(cfg0.input.wheel_notch, cfg0.input.touchpad_speed, cfg0.input.touchpad_acceleration, cfg0.input.touchpad_fling);
     let exit = Rc::new(Cell::new(0));
     match Store::open(&profile.dir.join("data.sqlite")) {
         Ok(s) => {

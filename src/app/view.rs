@@ -2099,6 +2099,8 @@ pub struct BrowserView {
     /// The mouse button last sent down and not yet up (0: none), so a press can never be left stuck.
     button_down: Cell<u32>,
     kinetic_gen: Cell<u64>,
+    /// Modifier keys of the last scroll event, kept for the coasting that follows it.
+    scroll_state: Cell<gdk::ModifierType>,
 }
 
 impl BrowserView {
@@ -2312,6 +2314,7 @@ impl BrowserView {
             touch: RefCell::new(TouchState::default()),
             button_down: Cell::new(0),
             kinetic_gen: Cell::new(0),
+            scroll_state: Cell::new(gdk::ModifierType::empty()),
         });
         view.connect_input();
 
@@ -2462,6 +2465,11 @@ impl BrowserView {
                 }
                 self.pad_pinch(pad.gesture_phase(), pad.pinch_scale());
                 true
+            }
+            // Fingers resting on the touchpad stop any coasting.
+            T::TouchpadHold => {
+                self.kinetic_gen.set(self.kinetic_gen.get() + 1);
+                false
             }
             _ => false,
         }
@@ -3285,6 +3293,7 @@ impl BrowserView {
                 let Some(v) = w.upgrade() else { return glib::Propagation::Proceed };
                 v.note_input();
                 v.kinetic_gen.set(v.kinetic_gen.get() + 1); // new input stops any coasting
+                v.scroll_state.set(ctrl.current_event_state());
                 let k = v.k();
                 let unit = ctrl.unit();
                 if std::env::var_os("BROWSAH_DEBUG_SCROLL").is_some() {
@@ -3302,9 +3311,20 @@ impl BrowserView {
                 glib::Propagation::Stop
             }
         });
+        c.scroll.connect_scroll_begin({
+            let w = weak.clone();
+            move |_| {
+                if let Some(v) = w.upgrade() {
+                    v.kinetic_gen.set(v.kinetic_gen.get() + 1); // fingers back on the pad stop the coasting
+                }
+            }
+        });
         c.scroll.connect_decelerate({
             let w = weak.clone();
             move |_, vx, vy| {
+                if !input::touchpad_fling() {
+                    return;
+                }
                 if let Some(v) = w.upgrade() {
                     v.coast(vx, vy);
                 }
@@ -3416,10 +3436,13 @@ impl BrowserView {
             let dt = (now - last).as_secs_f64();
             last = now;
             let k = v.k();
+            if std::env::var_os("BROWSAH_DEBUG_SCROLL").is_some() {
+                eprintln!("browsah: coast vx={vx:.1} vy={vy:.1} dt={dt:.4} state={:?}", v.scroll_state.get());
+            }
             v.scroll_by(
                 input::wheel_delta_f(vx * dt, gdk::ScrollUnit::Surface, k),
                 input::wheel_delta_f(vy * dt, gdk::ScrollUnit::Surface, k),
-                gdk::ModifierType::empty(),
+                v.scroll_state.get(),
             );
             let decay = (-dt / TAU).exp();
             vx *= decay;

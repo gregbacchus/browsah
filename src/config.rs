@@ -211,6 +211,7 @@ pub struct InputConfig {
     pub wheel_notch: f64,
     pub touchpad_speed: f64,
     pub touchpad_acceleration: f64,
+    pub touchpad_fling: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -232,7 +233,7 @@ impl Default for HistoryConfig {
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { wheel_notch: 100.0, touchpad_speed: 6.0, touchpad_acceleration: 0.025 }
+        Self { wheel_notch: 100.0, touchpad_speed: 12.0, touchpad_acceleration: 0.035, touchpad_fling: false }
     }
 }
 
