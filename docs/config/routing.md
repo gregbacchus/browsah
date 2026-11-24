@@ -147,6 +147,12 @@ workspace do the moving; if none applies, the page becomes a tab of the window i
 [web app](webapp.md)'s window (no address bar, no way back), where it becomes a tab of a window with no workspace. The
 page keeps running when it moves. Closing the modal (the close button or `Esc`) closes the page.
 
+**Links inside a modal** are routed like links from the window under it. A link that asks for a new tab or window (Ctrl+click, middle
+click, *Open link in new tab*, `target=_blank`, a script's popup) and that no rule claims opens as a tab of that window, **except over
+a [web app](webapp.md)**: its window has no address bar and no way back, so an address outside the app's scope goes to a tab of a window
+with no workspace instead (an address inside the scope may become a tab of the app when it has `multiple_tabs`). Plain clicks stay in
+the modal unless a rule sends them elsewhere.
+
 Choose what opens as a modal with rules, so a list of sites (a whitelist) or everything except some
 sites (a blacklist) is a matter of rule order:
 

@@ -301,10 +301,25 @@ impl Modal {
                 let owner = self.owner.upgrade();
                 perform_route(&action, &url, owner.as_ref());
             }
-            // A popup of a modal becomes a tab of the window the modal is over.
+            // A popup of a modal becomes a tab of the window the modal is over, unless that is a web app's (see `outside_window`).
             ViewEvent::Popup(spec) => {
                 if let Some(owner) = self.owner.upgrade() {
-                    owner.adopt_tab(spec);
+                    match outside_window(&owner, "") {
+                        Some((target, _)) if Rc::ptr_eq(&target, &owner) => {
+                            owner.adopt_tab(spec);
+                        }
+                        Some((target, _)) => {
+                            target.adopt_tab(spec);
+                            target.window.present();
+                        }
+                        None => {}
+                    }
+                }
+            }
+            // Ctrl+click, middle click, "open in new tab" in the modal's page: a tab, never inside the modal. (Dropped before.)
+            ViewEvent::OpenTab { url, select } => {
+                if let Some(owner) = self.owner.upgrade() {
+                    open_from_modal(&owner, &url, select);
                 }
             }
             _ => {}
@@ -368,5 +383,36 @@ impl Modal {
         target.adopt_live_view(self.view.clone(), self.state.borrow().clone());
         target.window.present();
         self.dismiss();
+    }
+}
+
+/// Where a page opened from a modal (a popup, a new-tab click) belongs once the router has let it through: the window the modal is
+/// over, except a web app's window, which is no place for foreign pages (no address bar, no way back, and closing the modal
+/// would leave them there), or one that allows no new tabs: those go to a tab of a window with no workspace. `url` is what a new window would open on; the flag
+/// says that window was just made and already shows it.
+fn outside_window(owner: &Rc<Shell>, url: &str) -> Option<(Rc<Shell>, bool)> {
+    // A window that may not have more tabs (`tabs.allow_new: false`) is no place for them either.
+    if !owner.workspace.as_ref().is_some_and(|w| w.is_app()) && owner.allow_new_tabs {
+        return Some((owner.clone(), false));
+    }
+    match super::browser_windows().into_iter().rev().find(|s| s.workspace.is_none()) {
+        Some(w) => Some((w, false)),
+        None => NEW_EPHEMERAL.with(|f| f.borrow().clone()).map(|f| (f(url), true)),
+    }
+}
+
+/// Open `url` (a link of a modal's page that asked for a new tab) where `outside_window` says; an address inside a web app's own
+/// scope may become a tab of the app when the app has tabs.
+pub(super) fn open_from_modal(owner: &Rc<Shell>, url: &str, select: bool) {
+    let in_app_scope = owner.workspace.as_ref().filter(|w| w.is_app()).and_then(|w| w.config.tabs.pinned.first()).is_some_and(|p| crate::workspace::in_scope(&p.scope, url));
+    let Some((target, made)) = (if in_app_scope && owner.allow_new_tabs { Some((owner.clone(), false)) } else { outside_window(owner, url) }) else { return };
+    if owner.popup_policy == crate::workspace::PopupPolicy::Block && Rc::ptr_eq(&target, owner) {
+        return;
+    }
+    if !made {
+        target.open_tab(url, select);
+    }
+    if !Rc::ptr_eq(&target, owner) {
+        target.window.present();
     }
 }

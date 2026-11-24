@@ -3367,6 +3367,25 @@ async fn run_webapp_open(shell: &Rc<Shell>, r: &mut Report) {
     r.check("with one window and no tabs the window loads the address, and Back goes to the page before", ok && back, || format!("{} windows, {} tabs, {:?}", of("wo3").len(), of("wo3").first().map_or(0, |s| s.tab_count()), of("wo3").iter().map(address).collect::<Vec<_>>()));
     // An app's window is not where a plain launch or another application's link goes.
     r.check("web app windows are not browser windows", super::browser_windows().iter().all(|s| !s.workspace.as_ref().is_some_and(|w| w.is_app())) && super::windows().len() > super::browser_windows().len(), || format!("{} of {}", super::browser_windows().len(), super::windows().len()));
+    // A link a modal's page opens in a new tab (Ctrl+click, middle click) never lands in the app's window when it leaves the app's scope
+    // (the app has no address bar and no way back): it goes to a window with no workspace; an address inside the scope may be a tab.
+    if let Some(app3) = of("wo3").first().cloned().zip(of("wo2").first().cloned()) {
+        let (no_tabs, tabs) = app3;
+        let foreign = format!("http://127.0.0.1:{port}/b.html");
+        let plain_tabs = || super::windows().iter().filter(|s| s.workspace.is_none()).map(|s| s.tab_count()).sum::<usize>();
+        let (before_app, before_plain) = (no_tabs.tab_count(), plain_tabs());
+        super::modal::open_from_modal(&no_tabs, &foreign, true);
+        let ok = wait_until(15_000, || super::windows().iter().any(|s| s.workspace.is_none() && s.tabs().iter().any(|t| t.state.borrow().address == foreign))).await;
+        r.check("a new-tab link from a modal over a web app, outside its scope, opens in a window with no workspace", ok && no_tabs.tab_count() == before_app && plain_tabs() > before_plain, || format!("app tabs {} (was {before_app}), plain tabs {} (was {before_plain})", no_tabs.tab_count(), plain_tabs()));
+        let before_tabs = tabs.tab_count();
+        super::modal::open_from_modal(&tabs, &foreign, true);
+        glib::timeout_future(Duration::from_millis(800)).await;
+        r.check("even in an app that allows tabs, an address outside the scope does not become one of its tabs", tabs.tab_count() == before_tabs, || format!("{} tabs (was {before_tabs})", tabs.tab_count()));
+        let inside = format!("http://localhost:{port}/b.html");
+        super::modal::open_from_modal(&tabs, &inside, true);
+        let ok = wait_until(15_000, || tabs.tab_count() == before_tabs + 1).await;
+        r.check("an address inside the app's scope opens as a tab of an app that allows tabs", ok, || format!("{} tabs (was {before_tabs})", tabs.tab_count()));
+    }
     cleanup(true);
     let _ = wait_until(5_000, || super::windows().len() == 1).await;
 }
