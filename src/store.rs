@@ -487,6 +487,29 @@ impl Store {
         rows.map(|r| r.flatten().collect()).unwrap_or_default()
     }
 
+    /// How many visits `delete_visits_matching` would delete: those in `scope` whose address or title contains `query`.
+    pub fn count_visits_matching(&self, query: &str, scope: Scope) -> usize {
+        self.matching_ids(query, scope).len()
+    }
+
+    /// Delete the visits in `scope` whose address or title contains `query` (case-insensitive, as the history search matches).
+    /// An empty `query` deletes nothing: clearing everything is `clear_history`.
+    pub fn delete_visits_matching(&self, query: &str, scope: Scope) -> rusqlite::Result<usize> {
+        let ids = self.matching_ids(query, scope);
+        let mut n = 0;
+        for id in ids {
+            n += self.conn.execute("DELETE FROM visits WHERE id = ?1", params![id])?;
+        }
+        Ok(n)
+    }
+
+    fn matching_ids(&self, query: &str, scope: Scope) -> Vec<i64> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        self.search_visits(query, scope, i32::MAX as usize).into_iter().map(|v| v.id).collect()
+    }
+
     /// Delete visits (and closed tabs) older than `before` (unix seconds), or all of them with `None`.
     pub fn clear_history(&self, before: Option<i64>) -> rusqlite::Result<usize> {
         let cutoff = before.unwrap_or(i64::MAX);
@@ -568,6 +591,24 @@ mod tests {
         let loaded = s.load_tabs("w");
         assert_eq!(loaded[0].history, with.history);
         assert_eq!(loaded[1].history, "");
+    }
+
+    #[test]
+    fn visits_matching_a_pattern_can_be_counted_and_deleted() {
+        let s = Store::open_memory();
+        for i in 0..5 {
+            s.record_visit(Some("w"), &format!("https://maps.example/@{i},1z"), "Map", 100 + i).unwrap();
+        }
+        s.record_visit(None, "https://maps.example/@9,9z", "Map", 200).unwrap();
+        s.record_visit(Some("w"), "https://news.example/", "Maps are fun", 300).unwrap();
+        s.record_visit(Some("w"), "https://other.example/", "Other", 301).unwrap();
+        assert_eq!(s.count_visits_matching("MAPS.example", Scope::All), 6, "case-insensitive, address");
+        assert_eq!(s.count_visits_matching("maps", Scope::Workspace("w")), 6, "address or title, this workspace only");
+        assert_eq!(s.delete_visits_matching("", Scope::All).unwrap(), 0, "an empty pattern deletes nothing");
+        assert_eq!(s.delete_visits_matching("maps.example", Scope::Workspace("w")).unwrap(), 5);
+        assert_eq!(s.search_visits("", Scope::All, 100).len(), 3, "the other workspace's and unrelated visits stay");
+        assert_eq!(s.delete_visits_matching("maps", Scope::All).unwrap(), 2);
+        assert_eq!(s.search_visits("", Scope::All, 100).len(), 1);
     }
 
     #[test]

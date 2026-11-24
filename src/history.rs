@@ -34,8 +34,10 @@ pub fn when(at: i64, now: i64) -> String {
 const USAGE: &str = "usage:
   browsah history [QUERY] [--profile ID] [--workspace ID | --ephemeral] [--limit N]
   browsah history clear [--profile ID] [--older-than-days N] --yes
+  browsah history clear --match TEXT [--profile ID] [--workspace ID | --ephemeral] [--yes]
 
-Lists the profile's visited pages, newest first, or deletes them (all, or older than N days).
+Lists the profile's visited pages, newest first, or deletes them (all, or older than N days, or those whose address or
+title contains TEXT: without --yes it only says how many).
 The profile must not be running to clear it.";
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -73,6 +75,38 @@ pub fn cli(args: &[String]) -> i32 {
         }
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    if args.first().map(String::as_str) == Some("clear") && flag_value(args, "--match").is_some() {
+        let text = flag_value(args, "--match").unwrap_or_default();
+        if text.is_empty() {
+            eprintln!("--match needs some text (to delete everything use `history clear --yes`)");
+            return 1;
+        }
+        let ws = flag_value(args, "--workspace");
+        let scope = match (&ws, args.iter().any(|a| a == "--ephemeral")) {
+            (Some(w), _) => Scope::Workspace(w),
+            (None, true) => Scope::Ephemeral,
+            (None, false) => Scope::All,
+        };
+        let n = store.count_visits_matching(&text, scope);
+        if !args.iter().any(|a| a == "--yes") {
+            println!("{n} visits match {text:?}; run again with --yes to delete them");
+            return 0;
+        }
+        if crate::profile::is_running(&profile) {
+            eprintln!("profile {:?} is running; close it first (or delete from its history window, Ctrl+H)", profile.id);
+            return 1;
+        }
+        return match store.delete_visits_matching(&text, scope) {
+            Ok(n) => {
+                println!("deleted {n} visits");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     if args.first().map(String::as_str) == Some("clear") {
         if !args.iter().any(|a| a == "--yes") {
             eprintln!("this DELETES history (visited pages and closed tabs) of profile {:?}.\nrun again with --yes to continue\n\n{USAGE}", profile.id);

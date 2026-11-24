@@ -152,7 +152,7 @@ fn pixels(widget: &impl IsA<gtk::Widget>, points: &[(i32, i32)]) -> Vec<(u8, u8,
 const SECTIONS: &[&str] = &[
     "basic", "input", "scroll", "tabs", "opener", "windows", "restore", "locked", "bookmarks", "send_to_workspace", "routing", "modals", "history",
     "sweep", "closed_workspace_sweep", "new_tab_page", "permissions", "downloads", "cookies", "storage", "session_cookies", "session_scope", "webapp", "webapp_open",
-    "install", "suggest", "jsdialog", "zoom", "pinch", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "tabstrip", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
+    "install", "suggest", "jsdialog", "zoom", "pinch", "spahistory", "find", "fullscreen", "devtools", "print", "groups", "menu", "hidpi", "frame", "redirects", "theme", "favicon", "fullconfig", "docs", "drop", "edgebu", "picker", "tabwidth", "tabstrip", "sleep", "swept", "copybutton", "pasteimage", "navhistory", "ctxmenu", "probe", "newtab", "split", "taskmanager", "extensions", "contrast",
 ];
 
 pub fn spawn(app: adw::Application, shell: Rc<Shell>, exit: Rc<Cell<i32>>, accel: bool) {
@@ -446,6 +446,9 @@ async fn run(shell: &Rc<Shell>, r: &mut Report, accel: bool) {
     }
     if wants("pinch") {
         run_pinch(shell, r).await;
+    }
+    if wants("spahistory") {
+        run_spahistory(shell, r).await;
     }
     if wants("find") {
         run_find(shell, r).await;
@@ -2114,7 +2117,10 @@ async fn run_history(shell: &Rc<Shell>, r: &mut Report) {
     hv.search.set_text("again");
     let ok = wait_until(5_000, || count(&hv.visits) == 1).await;
     r.check("searching narrows the list", ok, || format!("{} rows", count(&hv.visits)));
+    r.check("the delete-matching button is on while there is a search", hv.delete.is_sensitive(), || String::new());
+    shot(&hw.window, "history-delete-matching");
     hv.search.set_text("");
+    r.check("and off when the search is empty (it never deletes everything)", !hv.delete.is_sensitive(), || String::new());
     hv.visits.row_at_index(count(&hv.visits).saturating_sub(1) as i32).map(|row| row.emit_by_name::<()>("activate", &[]));
     let ok = wait_until(15_000, || tab.state.borrow().address == home).await;
     r.check("activating a visit opens it in the current tab", ok, || format!("{:?}", tab.state.borrow().address));
@@ -6028,4 +6034,26 @@ async fn run_pinch(shell: &Rc<Shell>, r: &mut Report) {
     glib::timeout_future(Duration::from_millis(300)).await;
     let m = eval_string(&tab, "m.join(',')").await.unwrap_or_default();
     r.check("a cancelled press is released (no stuck mouse button)", m == "mousedown,mouseup", || m.clone());
+}
+
+
+/// A single-page app that changes its address while it is used (a map: `history.replaceState` on every pan, `pushState` now and then)
+/// leaves one history entry for the page, not one per address change.
+async fn run_spahistory(shell: &Rc<Shell>, r: &mut Report) {
+    use crate::store::Scope;
+    let port = start_test_server();
+    let st = shell.state();
+    let view = shell.view();
+    let store = || super::store().expect("store");
+    let _ = store().clear_history(None);
+    let before = st.borrow().load_cycles;
+    view.navigate(&format!("http://localhost:{port}/b.html"));
+    let _ = wait_until(15_000, || { let s = st.borrow(); !s.loading && s.load_cycles > before }).await;
+    glib::timeout_future(Duration::from_millis(500)).await;
+    let n0 = store().search_visits("", Scope::All, 1000).len();
+    let tab = shell.current().expect("tab");
+    let _ = eval_string(&tab, "(async () => { for (let i = 0; i < 40; i++) { history.replaceState(null, '', '/b.html?pan=' + i); await new Promise(r => setTimeout(r, 25)); } for (let i = 0; i < 5; i++) { history.pushState(null, '', '/b.html?place=' + i); await new Promise(r => setTimeout(r, 25)); } return 'done'; })()").await;
+    glib::timeout_future(Duration::from_millis(1500)).await;
+    let all = store().search_visits("", Scope::All, 1000);
+    r.check("the page's own address changes (replaceState, pushState) add no history entries", all.len() == n0, || format!("{n0} -> {}: {:?}", all.len(), all.iter().take(6).map(|v| v.url.clone()).collect::<Vec<_>>()));
 }

@@ -103,6 +103,8 @@ pub struct Tab {
     pub parked: std::cell::Cell<bool>,
     /// The address last written to the history (a reload is not a new visit).
     last_recorded: RefCell<String>,
+    /// A document (not just a same-page address change) started loading since the last visit was recorded.
+    new_document: Cell<bool>,
     /// How the tab has been used, for sweeping.
     usage: RefCell<crate::sweep::Usage>,
     /// When the tab was created (unix seconds); a tab with no use counts as idle since then.
@@ -428,7 +430,9 @@ impl Shell {
             let s = tab.state.borrow();
             (s.address.clone(), s.title.clone())
         };
-        if !self.remembers(&url) || *tab.last_recorded.borrow() == url {
+        // Chromium reports a finished load for every `history.pushState`/`replaceState` too (a map does it on each pan):
+        // only a document that actually loaded is a visit.
+        if !tab.new_document.replace(false) || !self.remembers(&url) || *tab.last_recorded.borrow() == url {
             return;
         }
         if let Some(store) = store() {
@@ -1391,7 +1395,7 @@ impl Shell {
         holder.append(&sad);
         let page = self.tab_view.append(&holder);
         page.set_title("New tab");
-        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), pin_color: RefCell::new(None), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0), split: RefCell::new(None), focus: Cell::new(split::Side::Left) });
+        let tab = Rc::new(Tab { view: RefCell::new(view), holder, sad, state, page: page.clone(), full_pin: Cell::new(false), pin_color: RefCell::new(None), first_url: RefCell::new(String::new()), hist_back: RefCell::new(Vec::new()), hist_fwd: RefCell::new(Vec::new()), skip_nav_until: Cell::new(None), owner: RefCell::new(Rc::downgrade(self)), uid, group: std::cell::Cell::new(0), favicon: RefCell::new(None), favicon_origin: RefCell::new(String::new()), parked: std::cell::Cell::new(false), last_recorded: RefCell::new(String::new()), new_document: Cell::new(false), usage: RefCell::new(crate::sweep::Usage::starting(now_secs())), created: std::cell::Cell::new(now_secs()), dirty: std::cell::Cell::new(false), dirty_why: RefCell::new(String::new()), playing: std::cell::Cell::new(false), input_seen: std::cell::Cell::new(0), split: RefCell::new(None), focus: Cell::new(split::Side::Left) });
         let _ = cell.set(Rc::downgrade(&tab));
         self.tabs.borrow_mut().push(tab.clone());
         if select {
@@ -1794,6 +1798,7 @@ impl Shell {
             }
             ViewEvent::Title(t) => tab.state.borrow_mut().title = t,
             ViewEvent::NavStart { history_step } => {
+                tab.new_document.set(true);
                 // A new navigation drops the pages that were ahead; back, forward, reload and the shell's own steps keep them.
                 let skipped = tab.skip_nav_until.get().is_some_and(|t| std::time::Instant::now() < t);
                 crate::log_debug!("history: navigation starts (step {history_step}, shell's own {skipped}, {} ahead)", tab.hist_fwd.borrow().len());

@@ -14,6 +14,8 @@ pub struct HistoryView {
     pub visits: gtk::ListBox,
     pub closed: gtk::ListBox,
     pub stack: adw::ViewStack,
+    /// Deletes the visits the search finds (enabled while there is a search).
+    pub delete: gtk::Button,
 }
 
 fn row(title: &str, subtitle: &str, url: &str) -> adw::ActionRow {
@@ -69,11 +71,14 @@ impl Shell {
         body.append(&stack);
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&switcher));
+        let delete = gtk::Button::builder().tooltip_text("Delete the visits matching the search").sensitive(false).build();
+        crate::icons::bind(&delete, crate::icons::TRASH_2);
+        header.pack_start(&delete);
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&body));
         let dialog = adw::Dialog::builder().title("History").child(&toolbar).content_width(780).content_height(640).build();
-        let view = Rc::new(HistoryView { dialog: dialog.clone(), search: search.clone(), all: all.clone(), visits: visits.clone(), closed: closed.clone(), stack: stack.clone() });
+        let view = Rc::new(HistoryView { dialog: dialog.clone(), search: search.clone(), all: all.clone(), visits: visits.clone(), closed: closed.clone(), stack: stack.clone(), delete: delete.clone() });
 
         let window = self.window.downgrade();
         let ws = self.workspace_id().map(str::to_owned);
@@ -161,7 +166,48 @@ impl Shell {
             let fill = fill.clone();
             move |_| fill()
         });
-        all.connect_toggled(move |_| fill());
+        all.connect_toggled({
+            let fill = fill.clone();
+            move |_| fill()
+        });
+        // Delete what the search finds (in the workspace or workspaces shown), after asking.
+        search.connect_search_changed({
+            let (delete, search) = (delete.clone(), search.clone());
+            move |_| delete.set_sensitive(!search.text().is_empty())
+        });
+        delete.connect_clicked({
+            let (view, store, ws, fill) = (view.clone(), store.clone(), ws.clone(), fill.clone());
+            move |b| {
+                let text = view.search.text().to_string();
+                let scope = match (&ws, view.all.is_active()) {
+                    (Some(w), false) => Scope::Workspace(w),
+                    (None, false) => Scope::Ephemeral,
+                    (_, true) => Scope::All,
+                };
+                let n = store.count_visits_matching(&text, scope);
+                if n == 0 {
+                    return;
+                }
+                let d = adw::AlertDialog::new(Some(&format!("Delete {n} visit{} matching \u{201c}{text}\u{201d}?", if n == 1 { "" } else { "s" })), Some("Pages whose address or title contains this text are removed from history. This cannot be undone."));
+                d.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+                d.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+                d.set_default_response(Some("cancel"));
+                d.set_close_response("cancel");
+                let (store, fill, ws, all) = (store.clone(), fill.clone(), ws.clone(), view.all.is_active());
+                d.connect_response(None, move |_, response| {
+                    if response == "delete" {
+                        let scope = match (&ws, all) {
+                            (Some(w), false) => Scope::Workspace(w),
+                            (None, false) => Scope::Ephemeral,
+                            (_, true) => Scope::All,
+                        };
+                        let _ = store.delete_visits_matching(&text, scope);
+                        fill();
+                    }
+                });
+                d.present(Some(b));
+            }
+        });
         *self.history.borrow_mut() = Some(view.clone());
         dialog.connect_closed({
             let window = self.window.downgrade();
