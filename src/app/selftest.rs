@@ -587,7 +587,10 @@ impl Driver<'_> {
 
     /// Press and release a key. Returns whether the press was consumed (false = propagated).
     fn key(&self, key: Key, mods: ModifierType) -> bool {
-        let keycode = 38u32;
+        self.key_with_code(key, 38, mods)
+    }
+
+    fn key_with_code(&self, key: Key, keycode: u32, mods: ModifierType) -> bool {
         let k = &self.shell.view().controllers.key;
         let consumed = k.emit_by_name::<bool>("key-pressed", &[&key, &keycode, &mods]);
         k.emit_by_name::<()>("key-released", &[&key, &keycode, &mods]);
@@ -783,6 +786,12 @@ async fn run_input(shell: &Rc<Shell>, r: &mut Report) {
     r.check("scrolling back returns to the top", ok, || title());
 
     // --- focus and keyboard
+    d.click(700.0, 300.0);
+    d.key_with_code(Key::e, 26, none); // Wayland's XKB code for KeyE on the US layout
+    let ok = wait_until(5_000, || field(&title(), "shortcut").contains("keyup/")).await;
+    r.check("plain e outside a text field reaches the page as a shortcut", ok
+        && field(&title(), "shortcut") == "keydown/e/KeyE/69,keypress/e/KeyE/101,keyup/e/KeyE/69", || title());
+
     d.click(170.0, 130.0);
     let ok = wait_until(5_000, || field(&title(), "f") == "ta" && field(&title(), "hf") == "true").await;
     r.check("clicking a text area focuses it and the page", ok, || title());

@@ -73,11 +73,13 @@ All at 2880x1568, native Wayland, zero-copy, single run each.
 
 ## What is not known (biggest risks first)
 
-1. **Input, verified only with emitted signals.** Mouse, wheel, keyboard, IME commit, focus,
-   cursors, tooltips, `<select>` popups, clipboard and a context menu are built and pass 46
-   scripted checks, and input to the next frame at GTK is ~7-8 ms (dmabuf). **Not verified:** real
+1. **Input.** The scripted checks exercise mouse, wheel, keyboard, IME commit, focus,
+   cursors, tooltips, `<select>` popups, clipboard and a context menu. Input to the next
+   frame at GTK is ~7-8 ms (dmabuf). **Not verified:** real
    device input, a real IME (preedit, candidate window), drag selection, drag and drop,
    kinetic scrolling, accessibility ([input](cef-input.md)).
+   Compositor-generated Wayland keys confirmed that the [keypress fix](2026-11-26-page-keypress.md)
+   restores the correct shortcut character and preserves text entry.
 2. **Other hardware.** AMD/Mesa on one GNOME session, and one Intel + NVIDIA laptop for the Intel fix (see [intel-noccs.md](intel-noccs.md)). NVIDIA rendering, other compositors
    (KDE, Sway), and fractional scales (125 %, 150 %) are untested; the Mesa workaround is
    GPU-specific.

@@ -9,6 +9,7 @@ Next steps are in [../roadmap.md](../roadmap.md).
 
 | Note | Date | Question | Short answer |
 |---|---|---|---|
+| [Plain-letter shortcuts](2026-11-26-page-keypress.md) | 2026-11-26 | Why might a Gmail shortcut like `e` fail? | The page saw `e` on keydown and `5` on keypress. Preserving the virtual key fixes the mismatch. |
 | [2026-11-20-teams-camera-microphone.md](2026-11-20-teams-camera-microphone.md) | 2026-11-20 | Why can camera and microphone fail in Teams although config allows them? | Probably Chromium's own state was not mirrored for them (pages that look first saw "prompt"/no devices); now mirrored. Not reproduced: no devices or Teams here. |
 | [split-panes.md](split-panes.md) | 2026-11-21 | Can a tab show two pages side by side? | Yes: a second view in a `Paned` of rounded cards; the address bar follows the focused pane; either pane closes. Not remembered across restarts; real pointer focus and the coloured-frame look not verified. |
 | [cookie-menu-blocked-only.md](cookie-menu-blocked-only.md) | 2026-11-21 | Why did the tab menu always say no cookies were blocked? | It only counts rule-blocked hosts, and with allow-all there is no filter, so it saw nothing. The row is now hidden when nothing was blocked; a per-site cookie menu is left for later. |
