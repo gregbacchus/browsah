@@ -3447,9 +3447,9 @@ impl BrowserView {
         self.with_host(|h| {
             h.send_key_event(Some(&ev));
             if press && ch != 0 {
-                // The character event is what inserts text into a field.
+                // Linux CEF uses the virtual key to identify CHAR events too.
+                // The Unicode value for 'e' is also VK_NUMPAD5.
                 ev.type_ = KeyEventType::CHAR;
-                ev.windows_key_code = ch as i32;
                 h.send_key_event(Some(&ev));
             }
         });

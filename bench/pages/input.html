@@ -21,13 +21,14 @@
 <div id="spacer"></div>
 <script>
   // The whole page state goes in the title, so the browser shell can read it back.
-  const st = { c: 0, h: 0, m: 0, kd: 0, kp: 0, ku: 0, wd: 0, k: '' };
+  const st = { c: 0, h: 0, m: 0, kd: 0, kp: 0, ku: 0, wd: 0, k: '', shortcut: [] };
   const f = id => document.getElementById(id);
   function show() {
     const v = x => String(x).replace(/\n/g, '⏎');
     document.title = ['c:' + st.c, 'h:' + st.h, 'm:' + st.m, 'w:' + Math.round(scrollY), 'wd:' + Math.round(st.wd),
       'kd:' + st.kd, 'kp:' + st.kp, 'ku:' + st.ku, 'k:' + st.k, 't:' + v(f('ta').value), 't2:' + v(f('ta2').value),
-      's:' + f('sel').value, 'f:' + (document.activeElement.id || '-'), 'hf:' + document.hasFocus()].join(' | ');
+      's:' + f('sel').value, 'f:' + (document.activeElement.id || '-'), 'hf:' + document.hasFocus(),
+      'shortcut:' + st.shortcut.join(',')].join(' | ');
   }
   f('btn').onclick = () => { st.c++; show(); };
   f('hand').onmouseenter = () => { st.h++; show(); };
@@ -36,6 +37,13 @@
   document.addEventListener('keydown', e => { st.kd++; st.k = e.key + (e.ctrlKey ? '^' : '') + (e.shiftKey ? '+' : ''); show(); });
   document.addEventListener('keypress', () => { st.kp++; });
   document.addEventListener('keyup', () => { st.ku++; show(); });
+  for (const type of ['keydown', 'keypress', 'keyup']) {
+    document.addEventListener(type, e => {
+      if (e.target !== document.body) return;
+      st.shortcut.push([type, e.key, e.code, e.which].join('/'));
+      show();
+    });
+  }
   addEventListener('scroll', show);
   addEventListener('focus', show); addEventListener('blur', show);
   for (const id of ['ta', 'ta2', 'sel']) { f(id).addEventListener('input', show); f(id).addEventListener('change', show); f(id).addEventListener('focus', show); }
