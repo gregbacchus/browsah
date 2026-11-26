@@ -3608,6 +3608,9 @@ fn main_menu() -> gio::Menu {
     config.append_item(&menu::item("Profile config (all options)\u{2026}", "win.config-profile", Some("sliders-horizontal")));
     config.append_item(&menu::item("Workspace config (all options)\u{2026}", "win.config-workspace", Some("sliders-horizontal")));
     menu.append_section(None, &config);
+    let version = gio::Menu::new();
+    version.append_item(&gio::MenuItem::new(Some(concat!("Browsah ", env!("CARGO_PKG_VERSION"))), None));
+    menu.append_section(None, &version);
     menu
 }
 

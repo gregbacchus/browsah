@@ -4085,6 +4085,9 @@ async fn run_menu(shell: &Rc<Shell>, r: &mut Report) {
     let weight = |label| menu.as_ref().and_then(|p| label_weight(p.upcast_ref(), label));
     if let Some(p) = &menu {
         check_menu_rows(p, r, "the main menu", &["New window", "Open workspace", "Find in page", "Print\u{2026}", "History"]);
+        let version = concat!("Browsah ", env!("CARGO_PKG_VERSION"));
+        r.check("the build version is the last menu item and cannot be activated", labels.last().is_some_and(|l| l == version)
+            && find_button(p.upcast_ref(), version).is_some_and(|b| !b.is_sensitive()), || format!("{labels:?}"));
     }
     r.check("main-menu items have regular weight", ["New window", "Open workspace", "Find in page"].iter().all(|label| weight(label) == Some(gtk::pango::Weight::Normal)), || format!("New window: {:?}, Open workspace: {:?}", weight("New window"), weight("Open workspace")));
     if let Some(p) = &menu {
