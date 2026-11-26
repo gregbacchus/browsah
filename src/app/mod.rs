@@ -1691,16 +1691,7 @@ impl Shell {
             ViewEvent::Zoom(dir) => self.zoom_step(dir),
             ViewEvent::Favicon(png) => self.set_favicon(tab, png),
             ViewEvent::PdfSaved { path, ok } => self.pdf_done(&path, ok),
-            ViewEvent::ClipboardWrite(text) => {
-                // A page's own copy button. Only if the person has just used this page (as with a browser's user-activation rule):
-                // a page must not be able to rewrite the clipboard on its own.
-                if tab.view().used_within(std::time::Duration::from_secs(5)) {
-                    crate::log_debug!("clipboard: a page copied {} character(s)", text.chars().count());
-                    WidgetExt::display(&self.window).clipboard().set_text(&text);
-                } else {
-                    crate::log_info!("clipboard: ignored a copy by a page nobody was using ({})", tab.state.borrow().address);
-                }
-            }
+            ViewEvent::ClipboardWrite(item) => tab.view().write_page_clipboard(item),
             ViewEvent::Fullscreen(on) => self.set_fullscreen(on, true),
             ViewEvent::FindResult { count, active } => self.find_result(tab, count, active),
             ViewEvent::JsDialog(q) => self.show_js_dialog(q),

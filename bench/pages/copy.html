@@ -4,15 +4,22 @@
 <style>
   body { margin: 0; font: 16px sans-serif; background: #f4f4f4; }
   button { position: absolute; left: 20px; width: 200px; height: 40px; box-sizing: border-box; }
-  #w { top: 20px; } #e { top: 80px; } #h { top: 140px; } #k { top: 200px; }
+  #w { top: 20px; } #e { top: 80px; } #h { top: 140px; } #k { top: 200px; } #p { top: 260px; }
+  #m { top: 320px; } #j { top: 380px; } #b { top: 440px; }
+  #d { top: 500px; }
 </style>
 <button id="w">writeText</button>
 <button id="e">execCommand textarea</button>
 <button id="h">copy event handler</button>
 <button id="k">clipboard.write</button>
+<button id="p">Copy canvas as PNG</button>
+<button id="m">Copy PNG, SVG, and text</button>
+<button id="j">Copy canvas as JPEG</button>
+<button id="b">Copy canvas as WebP</button>
+<button id="d">Copy rich and technical formats</button>
 <script>
-  // Four ways a "copy" button copies, the result of each (ok, or the error name) goes in the title for the self-test.
-  const st = { w: '-', e: '-', h: '-', k: '-' };
+  // The result of each copy (ok, or the error name) goes in the title for the self-test.
+  const st = { w: '-', e: '-', h: '-', k: '-', p: '-', m: '-', j: '-', b: '-', d: '-' };
   const show = () => { document.title = Object.entries(st).map(([k, v]) => k + ':' + v).join(' | '); };
   const f = id => document.getElementById(id);
   f('w').onclick = async () => {
@@ -39,6 +46,48 @@
       await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob(['via clipboard.write'], { type: 'text/plain' }) })]);
       st.k = 'ok';
     } catch (e) { st.k = 'err:' + e.name; }
+    show();
+  };
+  async function copyImage(id, type, withAlternates = false) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = id === 'p' ? 1024 : 128;
+      const ctx = canvas.getContext('2d');
+      const pixels = ctx.createImageData(canvas.width, canvas.height);
+      const bytes = new Uint8Array(pixels.data.buffer);
+      for (let offset = 0; offset < bytes.length; offset += 65536) {
+        crypto.getRandomValues(bytes.subarray(offset, offset + 65536));
+      }
+      ctx.putImageData(pixels, 0, 0);
+      const image = new Promise((resolve, reject) => {
+        canvas.toBlob(blob => blob?.type === type ? resolve(blob) : reject(new Error('Unexpected canvas format')), type);
+      });
+      const formats = { [type]: image };
+      if (withAlternates) {
+        formats['image/svg+xml'] = new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><rect width="16" height="16"/></svg>'], { type: 'image/svg+xml' });
+        formats['text/plain'] = new Blob(['Canvas text'], { type: 'text/plain' });
+      }
+      await navigator.clipboard.write([new ClipboardItem(formats)]);
+      st[id] = 'ok';
+    } catch (e) { st[id] = 'err:' + e.name; }
+    show();
+  }
+  f('p').onclick = () => copyImage('p', 'image/png');
+  f('m').onclick = () => copyImage('m', 'image/png', true);
+  f('j').onclick = () => copyImage('j', 'image/jpeg');
+  f('b').onclick = () => copyImage('b', 'image/webp');
+  f('d').onclick = async () => {
+    try {
+      const formats = {
+        'text/plain': new Blob(['one\ttwo\n']),
+        'text/html': new Blob(['<table><tr><td onclick="void 0">one</td><td>two</td></tr></table>']),
+        'application/json': new Blob(['{"value":42}']),
+        'web application/octet-stream': new Blob([new Uint8Array([0, 255, 128, 10])]),
+      };
+      if (!Object.keys(formats).every(type => ClipboardItem.supports(type))) throw new Error('supports');
+      await navigator.clipboard.write([new ClipboardItem(formats)]);
+      st.d = 'ok';
+    } catch (e) { st.d = 'err:' + e.name; }
     show();
   };
 </script>

@@ -99,6 +99,13 @@ pub fn accelerated_path_works() -> bool {
     ACCELERATED_FRAMES.load(Ordering::Relaxed) > 0
 }
 
+/// A page clipboard item with one or more alternate representations.
+#[derive(Debug, Clone)]
+pub enum PageClipboard {
+    Text(String),
+    Formats(Vec<(String, Vec<u8>)>),
+}
+
 /// What a page tells the shell about itself.
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
@@ -106,8 +113,8 @@ pub enum ViewEvent {
     ContextMenu(Arc<MenuRequest>),
     /// The browser exists; navigation calls now work.
     Ready,
-    /// A page's own copy button put this text on its clipboard (the shell puts it on the system clipboard, if the person has just used the page).
-    ClipboardWrite(String),
+    /// A page requested a clipboard write.
+    ClipboardWrite(PageClipboard),
     /// The main frame started a navigation. `history_step` is true for back, forward and reload (the tab's saved forward list stays).
     NavStart { history_step: bool },
     /// The main frame's address changed.
@@ -198,11 +205,75 @@ const PAD_TOUCH_B: i32 = 100_001;
 
 /// The prefix of the console message a page's copy hook sends (`COPY_HOOK`); `on_console_message` takes it and the rest is the text.
 const COPY_PREFIX: &str = "\u{1}browsah-copy\u{1}";
+const COPY_FORMATS_PREFIX: &str = "\u{1}browsah-copy-formats\u{1}";
+const COPY_DATA_MAX: usize = 16 * 1024 * 1024; // Also enforced before encoding in COPY_HOOK.
+const COPY_FORMATS_MAX: usize = 16;
+// Chromium's Linux clipboard names for the JSON map and its numbered binary representations.
+pub(super) const WEB_FORMAT_MAP: &str = "application/web;type=\"custom/formatmap\"";
+
+fn is_clipboard_mime(mime: &str) -> bool {
+    let mime = mime.strip_prefix("web ").unwrap_or(mime);
+    let Some((category, subtype)) = mime.split_once('/') else { return false };
+    [category, subtype].iter().all(|part| {
+        part.len() <= 127
+            && part.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && part.bytes().all(|c| c.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&c))
+    })
+}
+
+fn decode_clipboard_formats(payload: &str) -> Option<PageClipboard> {
+    // Allow for Base64 padding, MIME labels, and JSON framing for each representation.
+    if payload.len() > COPY_DATA_MAX.div_ceil(3) * 4 + COPY_FORMATS_MAX * 272 {
+        return None;
+    }
+    let encoded: Vec<(String, String)> = serde_json::from_str(payload).ok()?;
+    if encoded.is_empty() || encoded.len() > COPY_FORMATS_MAX {
+        return None;
+    }
+    let mut size = 0;
+    let mut formats = Vec::with_capacity(encoded.len());
+    for (mime, data) in encoded {
+        if !is_clipboard_mime(&mime) {
+            return None;
+        }
+        let bytes = glib::base64_decode(&data);
+        size += bytes.len();
+        if size > COPY_DATA_MAX {
+            return None;
+        }
+        formats.push((mime.to_ascii_lowercase(), bytes));
+    }
+    Some(PageClipboard::Formats(formats))
+}
+
+fn clipboard_providers(formats: Vec<(String, Vec<u8>)>) -> Vec<gdk::ContentProvider> {
+    let mut custom = std::collections::BTreeMap::new();
+    let mut providers = Vec::with_capacity(formats.len() + 1);
+    for (mime, bytes) in formats {
+        if mime == "text/plain" || mime == "text/html" || mime.starts_with("image/") {
+            providers.push(gdk::ContentProvider::for_bytes(&mime, &glib::Bytes::from_owned(bytes)));
+        } else {
+            // Custom representations use numbered slots so a page cannot claim a native type.
+            let name = mime.strip_prefix("web ").unwrap_or(&mime);
+            if custom.contains_key(name) {
+                continue;
+            }
+            let slot = format!("application/web;type=\"custom/format{}\"", custom.len());
+            providers.push(gdk::ContentProvider::for_bytes(&slot, &glib::Bytes::from_owned(bytes)));
+            custom.insert(name.to_owned(), slot);
+        }
+    }
+    if !custom.is_empty() {
+        let map = serde_json::to_string(&custom).expect("string map always serializes");
+        providers.push(gdk::ContentProvider::for_bytes(WEB_FORMAT_MAP, &glib::Bytes::from_owned(map)));
+    }
+    providers
+}
 
 /// Pages copy with `navigator.clipboard.writeText`/`write`, `document.execCommand('copy')` or a `copy` event handler. Windowless
 /// Chromium cannot reach the Wayland clipboard, so these fail in the page (`NotAllowedError`, `false`), and a copy that did work
 /// would stay inside the browser. This script, run in every frame as it starts loading (`on_load_start`), makes them succeed and
-/// reports the text as a console message; the shell uses it only if the person has just used the page. Paste (`readText`) is left alone.
+/// reports supported clipboard data as a console message; the shell checks for recent input.
 const COPY_HOOK: &str = r#"(() => {
   if (window.__browsahCopyHook) return;
   window.__browsahCopyHook = true;
@@ -238,10 +309,39 @@ const COPY_HOOK: &str = r#"(() => {
   const C = window.Clipboard && Clipboard.prototype;
   if (C) {
     C.writeText = function (t) { send(String(t)); return Promise.resolve(); };
+    const write = C.write;
+    const supports = ClipboardItem.supports;
+    const isFormat = type => /^(?:web )?[a-z0-9][a-z0-9!#$&^_.+\-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+\-]{0,126}$/i.test(type);
+    ClipboardItem.supports = type => isFormat(type) || supports.call(ClipboardItem, type);
+    const setHTML = Element.prototype.setHTML;
+    const encode = blob => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
     C.write = async function (items) {
-      for (const item of items || []) {
-        if (item.types.includes('text/plain')) send(await (await item.getType('text/plain')).text());
+      // The Wayland clipboard holds one item, which can offer more than one format.
+      const item = items?.[0];
+      if (!item) return write.call(this, items);
+      const types = item.types;
+      if (types.length > 16 || !types.every(isFormat))
+        throw new DOMException('Invalid clipboard formats', 'DataError');
+      const blobs = await Promise.all(types.map(type => item.getType(type)));
+      const checkSize = () => {
+        if (blobs.reduce((size, blob) => size + blob.size, 0) > 16 * 1024 * 1024)
+          throw new DOMException('Clipboard data exceeds the bridge size limit', 'DataError');
+      };
+      checkSize();
+      const html = types.findIndex(type => type.toLowerCase() === 'text/html');
+      if (html !== -1) {
+        const body = document.implementation.createHTMLDocument('').body;
+        setHTML.call(body, await blobs[html].text());
+        blobs[html] = new Blob([body.innerHTML], { type: 'text/html' });
+        checkSize();
       }
+      const formats = await Promise.all(blobs.map(async (blob, i) => [types[i].toLowerCase(), await encode(blob)]));
+      console.debug('\u0001browsah-copy-formats\u0001' + JSON.stringify(formats));
     };
   }
 })()"#;
@@ -920,9 +1020,15 @@ wrap_display_handler! {
                 let _ = self.shared.pinch_verdict.compare_exchange(0, if verdict == "1" { 1 } else { 2 }, Ordering::Relaxed, Ordering::Relaxed);
                 return 1;
             }
+            if let Some(payload) = text.strip_prefix(COPY_FORMATS_PREFIX) {
+                if let Some(item) = decode_clipboard_formats(payload) {
+                    send(self.shared.id, ViewEvent::ClipboardWrite(item));
+                }
+                return 1;
+            }
             match text.strip_prefix(COPY_PREFIX) {
                 Some(copied) => {
-                    send(self.shared.id, ViewEvent::ClipboardWrite(copied.to_owned()));
+                    send(self.shared.id, ViewEvent::ClipboardWrite(PageClipboard::Text(copied.to_owned())));
                     1
                 }
                 None => 0,
@@ -2712,6 +2818,22 @@ impl BrowserView {
         self.last_input.get().is_some_and(|t| t.elapsed() <= within)
     }
 
+    pub(super) fn write_page_clipboard(&self, item: PageClipboard) {
+        if !self.used_within(std::time::Duration::from_secs(5)) {
+            return;
+        }
+        let clipboard = self.widget.display().clipboard();
+        match item {
+            PageClipboard::Text(text) => clipboard.set_text(&text),
+            PageClipboard::Formats(formats) => {
+                let providers = clipboard_providers(formats);
+                if let Err(error) = clipboard.set_content(Some(&gdk::ContentProvider::new_union(&providers))) {
+                    crate::log_warn!("clipboard: could not publish page data: {error}");
+                }
+            }
+        }
+    }
+
     pub fn input_events(&self) -> u64 {
         self.input_events.get()
     }
@@ -3611,7 +3733,7 @@ impl BrowserView {
                 false // still sent to the page (cut removes the selection)
             }
             gdk::Key::v | gdk::Key::V => {
-                let formats = clipboard.formats();
+                let formats = clipboard.formats().union_deserialize_types();
                 if !formats.contains_type(glib::GString::static_type()) && !formats.contains_type(gdk::Texture::static_type()) {
                     return false; // neither text nor a picture: let the page handle it
                 }
@@ -3698,7 +3820,7 @@ impl BrowserView {
     pub(super) fn paste_from_clipboard(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         let clipboard = self.widget.display().clipboard();
-        let formats = clipboard.formats();
+        let formats = clipboard.formats().union_deserialize_types();
         if !formats.contains_type(glib::GString::static_type()) && formats.contains_type(gdk::Texture::static_type()) {
             clipboard.read_texture_async(None::<&gtk::gio::Cancellable>, move |res| {
                 if let (Ok(Some(texture)), Some(v)) = (res, weak.upgrade()) {

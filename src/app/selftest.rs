@@ -5258,6 +5258,51 @@ async fn run_copybutton(shell: &Rc<Shell>, r: &mut Report) {
         let got = read().await;
         r.check(&format!("a copy button using {name} reaches the system clipboard"), done && got == expect, || format!("page says {:?}, clipboard {got:?}", field(&title(), key)));
     }
+    let read_prefix = |mime: &str, count| {
+        let clipboard = clipboard.clone();
+        let mime = mime.to_owned();
+        async move {
+            let (stream, _) = clipboard.read_future(&[&mime], glib::Priority::DEFAULT).await.ok()?;
+            stream.read_bytes_future(count, glib::Priority::DEFAULT).await.ok()
+        }
+    };
+    for (key, y, mime, signature, text) in [
+        ("p", 280.0, "image/png", &b"\x89PNG\r\n\x1a\n"[..], ""),
+        ("m", 340.0, "image/png", &b"\x89PNG\r\n\x1a\n"[..], "Canvas text"),
+        ("j", 400.0, "image/jpeg", &b"\xff\xd8\xff"[..], ""),
+        ("b", 460.0, "image/webp", &b"RIFF"[..], ""),
+    ] {
+        clipboard.set_text("before image");
+        d.click(100.0, y);
+        let done = wait_until(5_000, || field(&title(), key) != "-"
+            && (field(&title(), key) != "ok" || clipboard.formats().contain_mime_type(mime))).await;
+        let header = read_prefix(mime, 16).await;
+        let got_text = read().await;
+        let svg_ok = key != "m" || read_prefix("image/svg+xml", 16).await.is_some_and(|b| b.starts_with(b"<svg "));
+        r.check(&format!("a page clipboard write preserves {mime} and alternate formats"), done && field(&title(), key) == "ok"
+            && header.is_some_and(|b| b.starts_with(signature) && (mime != "image/webp" || b.get(8..12) == Some(b"WEBP")))
+            && got_text == text && svg_ok, || format!("{} clipboard text {got_text:?}", title()));
+    }
+    d.click(100.0, 520.0);
+    let map_type = super::view::WEB_FORMAT_MAP;
+    let done = wait_until(5_000, || field(&title(), "d") != "-"
+        && (field(&title(), "d") != "ok" || clipboard.formats().contain_mime_type(map_type))).await;
+    let map = read_prefix(map_type, 512).await
+        .and_then(|bytes| serde_json::from_slice::<std::collections::BTreeMap<String, String>>(&bytes).ok())
+        .unwrap_or_default();
+    let html = read_prefix("text/html", 512).await;
+    let html = String::from_utf8_lossy(html.as_deref().unwrap_or_default());
+    r.check("structured copy preserves sanitized HTML and exact plain text", done && field(&title(), "d") == "ok"
+        && html.contains("<td>one</td><td>two</td>") && !html.contains("onclick") && read().await == "one\ttwo\n", || title());
+    for (mime, expected) in [("application/json", &b"{\"value\":42}"[..]), ("application/octet-stream", &[0, 255, 128, 10][..])] {
+        let payload = match map.get(mime) {
+            Some(slot) => read_prefix(slot, 512).await,
+            None => None,
+        };
+        r.check(&format!("structured copy preserves {mime} bytes in Chromium's custom format"), payload.as_deref() == Some(expected)
+            && !clipboard.formats().contain_mime_type(mime), || format!("{} map {map:?}", title()));
+    }
+
     // A page that copies without the person having used it must not be able to set the clipboard.
     clipboard.set_text("untouched");
     glib::timeout_future(Duration::from_millis(6000)).await;

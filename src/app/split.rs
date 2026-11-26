@@ -332,11 +332,7 @@ impl Shell {
                 }
                 return;
             }
-            ViewEvent::ClipboardWrite(text) => {
-                if p.view.used_within(std::time::Duration::from_secs(5)) {
-                    WidgetExt::display(&self.window).clipboard().set_text(&text);
-                }
-            }
+            ViewEvent::ClipboardWrite(item) => p.view.write_page_clipboard(item),
             ViewEvent::Route { action, url } => {
                 perform_route(&action, &url, Some(self));
             }

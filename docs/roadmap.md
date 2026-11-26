@@ -70,7 +70,8 @@ focus), so build it early on top of the thinnest navigation UI that lets you tes
 - **Status:** built and verified with emitted GTK signals (46 checks) and the latency measured
   (excluding GTK drawing and scan-out). **Still to verify by hand or with a real input device:**
   typing, scrolling and selecting with a real mouse and keyboard, a real IME, drag selection, drag
-  and drop. Candidate-window placement for IMEs and non-text clipboard content are not done.
+  and drop. Candidate-window placement for IMEs remains open. The clipboard
+  bridge covers text, images, HTML and [web custom format writes from pages](research/2026-11-26-copy-page-image.md).
 
 ### M3: Tabs (medium) = milestone B: DONE, without favicons
 
